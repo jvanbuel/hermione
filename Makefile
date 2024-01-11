@@ -1,7 +1,7 @@
-
+.PHONY: build run
 
 build:
-	go build -o hermione ./...
+	cargo build
 
 run:
-	go run cmd/main.go
+	cargo run

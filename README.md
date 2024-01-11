@@ -17,3 +17,14 @@ Hermione is an ambitious, yet overly confident teaching assistant (or, if you wi
 
 - Analyze student performance (e.g. time spent on exercises, number of attempts, etc.) to provide feedback to teachers on how to improve their exercises
 - Analyze student performance with and without
+
+
+### TODO
+
+- [] Write stdin, stdout and sterr to file for later analysis
+- Close goroutine after shell child process is closed
+- Write buffered output to limit disk IO
+- [ ] Create a simple CLI with Cobra
+    - [ ] add  
+- [ ] Create a simple TUI with Bubble Tea
+- [ ]
