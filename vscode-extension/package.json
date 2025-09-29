@@ -1,0 +1,62 @@
+{
+  "name": "hermione-vscode",
+  "displayName": "Hermione File Monitor",
+  "description": "Monitor active files and send updates to Hermione WebSocket service",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hermione.connect",
+        "title": "Connect to Hermione Service"
+      },
+      {
+        "command": "hermione.disconnect",
+        "title": "Disconnect from Hermione Service"
+      }
+    ],
+    "configuration": {
+      "title": "Hermione",
+      "properties": {
+        "hermione.serverUrl": {
+          "type": "string",
+          "default": "ws://localhost:8080",
+          "description": "WebSocket server URL for Hermione service"
+        },
+        "hermione.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to Hermione service on startup"
+        },
+        "hermione.sendFileContent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send file content along with file path updates"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "ws": "^8.14.0"
+  }
+}

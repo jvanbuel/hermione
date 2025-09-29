@@ -3,3 +3,9 @@ hermione
 # Added by cargo
 
 /target
+node_modules
+dist
+build
+out
+.DS_Store
+*.vsix

@@ -1,30 +1,194 @@
-# ![1696401093521](image/README/1696401093521.png)
+# 🔮 Hermione - Real-time File Monitor
 
-Hermione is an ambitious, yet overly confident teaching assistant (or, if you will, a teacher's pet).
+A WebSocket-based system that allows VSCode extensions to share active file information with web applications in real-time.
+
+## Architecture
+
+- **WebSocket Server** (Rust + tokio-tungstenite): Central server managing sessions and message routing
+- **VSCode Extension** (TypeScript): Monitors active files and sends updates to the server
+- **Svelte Web App** (JavaScript + Svelte): Displays active file information from all connected VSCode sessions
+
+## Components
+
+### 1. WebSocket Server (`src/main.rs`)
+
+A Rust-based WebSocket server that:
+- Manages client connections and sessions
+- Routes messages between VSCode extensions and web clients
+- Handles session creation and file update broadcasting
+- Runs on `ws://localhost:8080`
+
+**Message Types:**
+- `register`: Client registration (vscode/webapp)
+- `file_update`: File change notifications from VSCode
+- `session_created`: New session confirmation
+- `file_updated`: Broadcast to web clients
+- `error`: Error messages
+
+### 2. VSCode Extension (`vscode-extension/`)
+
+A TypeScript extension that:
+- Connects to the WebSocket server on startup
+- Monitors active editor changes
+- Sends file path and content updates
+- Provides connect/disconnect commands
+- Shows connection status in the status bar
+
+**Features:**
+- Auto-reconnection on disconnect
+- Configurable server URL
+- Optional file content sharing
+- Debounced updates to prevent spam
+
+### 3. Svelte Web App (`webapp/`)
+
+A Svelte application that:
+- Connects to the WebSocket server
+- Displays active sessions and files
+- Shows file content with syntax highlighting
+- Auto-reconnects on connection loss
+- Responsive design with dark theme
+
+**Features:**
+- Real-time session monitoring
+- File type icons and language detection
+- Clean, modern UI
+- Connection status indicator
+
+## Quick Start
+
+### 1. Start the WebSocket Server
+
+```bash
+cargo run
+```
+
+The server will start on `ws://localhost:8080`.
+
+### 2. Set up the Svelte Web App
+
+```bash
+cd webapp
+npm install
+npm run dev
+```
+
+The web app will be available at `http://localhost:5173`.
+
+### 3. Install the VSCode Extension
+
+```bash
+cd vscode-extension
+npm install
+npm run compile
+```
+
+Then install the extension in VSCode:
+- Open the Command Palette (`Ctrl+Shift+P`)
+- Run "Extensions: Install from VSIX..."
+- Select the compiled extension
+
+Or for development:
+- Open the `vscode-extension` folder in VSCode
+- Press `F5` to launch a new Extension Development Host window
+
+## Configuration
+
+### VSCode Extension Settings
+
+- `hermione.serverUrl`: WebSocket server URL (default: `ws://localhost:8080`)
+- `hermione.autoConnect`: Auto-connect on startup (default: `true`)
+- `hermione.sendFileContent`: Include file content in updates (default: `true`)
 
 ### Commands
 
-- `configure`: configures the paths (folder structure) for a named `exercise` and the common struggles that students face as context for feedback. The config is stored as a yaml file and is used as context for (AI-generated) feedback.
-- `listen`: records the stdin and stdout of the student, and syncs it to a file (or remote storage) for in promptu feedback, and for later analysis
-- `summarize`: based on the recorded data, summarizes the students' progress and common struggles, as feedback to the teachers. Provide an easy-to-use interface to add this summary as additional exercise context.
+- `Hermione: Connect to Hermione Service`: Manual connection
+- `Hermione: Disconnect from Hermione Service`: Disconnect from service
 
-### Implementation ideas
+## Development
 
-- Use ChatGPT (teacher context) in combination with GitHub Copilot to provide feedback or suggestions to students
-- Use Bubble Tea for a TUI for teachers to provide exercise context to Hermione. Cobra as CLI framework.
+### WebSocket Server
 
-### Further random thoughts
+```bash
+# Run the server
+cargo run
 
-- Analyze student performance (e.g. time spent on exercises, number of attempts, etc.) to provide feedback to teachers on how to improve their exercises
-- Analyze student performance with and without
+# Check for compilation errors
+cargo check
 
+# Run with debug logging
+RUST_LOG=debug cargo run
+```
 
-### TODO
+### Svelte Web App
 
-- [] Write stdin, stdout and sterr to file for later analysis
-- Close goroutine after shell child process is closed
-- Write buffered output to limit disk IO
-- [ ] Create a simple CLI with Cobra
-    - [ ] add  
-- [ ] Create a simple TUI with Bubble Tea
-- [ ]
+```bash
+cd webapp
+npm run dev    # Development server
+npm run build  # Production build
+```
+
+### VSCode Extension
+
+```bash
+cd vscode-extension
+npm run compile  # Compile TypeScript
+npm run watch    # Watch mode for development
+```
+
+## Protocol
+
+### Client Registration
+
+**VSCode Extension:**
+```json
+{
+  "type": "register",
+  "client_type": "vscode"
+}
+```
+
+**Web App:**
+```json
+{
+  "type": "register",
+  "client_type": "webapp"
+}
+```
+
+### File Updates
+
+**From VSCode:**
+```json
+{
+  "type": "file_update",
+  "session_id": "uuid",
+  "active_file": "/path/to/file.js",
+  "file_content": "optional file content..."
+}
+```
+
+**To Web App:**
+```json
+{
+  "type": "file_updated",
+  "session_id": "uuid",
+  "active_file": "/path/to/file.js",
+  "file_content": "optional file content..."
+}
+```
+
+## Security Notes
+
+- The server runs on localhost only
+- File content sharing is optional and configurable
+- No authentication is currently implemented (suitable for local development)
+
+## Future Enhancements
+
+- [ ] Authentication and authorization
+- [ ] Multiple workspace support
+- [ ] File diff visualization
+- [ ] Custom themes for web app
+- [ ] Plugin system for custom file processors
+- [ ] Remote server deployment options
