@@ -2,16 +2,23 @@
   export let sessionId;
   export let session;
 
+  let expanded = true;
+
   function getFileIcon(filename) {
     if (!filename) return '📄';
 
     const ext = filename.split('.').pop()?.toLowerCase();
     const iconMap = {
       'js': '🟨',
+      'jsx': '⚛️',
       'ts': '🔷',
+      'tsx': '⚛️',
       'svelte': '🧡',
+      'vue': '💚',
       'html': '🔶',
       'css': '🎨',
+      'scss': '🎨',
+      'less': '🎨',
       'json': '📋',
       'md': '📝',
       'rs': '🦀',
@@ -19,9 +26,8 @@
       'java': '☕',
       'cpp': '⚙️',
       'c': '⚙️',
+      'h': '⚙️',
       'go': '🐹',
-      'vue': '💚',
-      'react': '⚛️',
       'php': '🐘',
       'rb': '💎',
       'swift': '🍎',
@@ -30,7 +36,10 @@
       'yaml': '📄',
       'yml': '📄',
       'xml': '📄',
-      'txt': '📄'
+      'sql': '🗄️',
+      'sh': '🐚',
+      'bash': '🐚',
+      'zsh': '🐚'
     };
 
     return iconMap[ext] || '📄';
@@ -44,22 +53,27 @@
   function formatFilePath(filepath) {
     if (!filepath) return '';
     const parts = filepath.split('/');
-    if (parts.length > 3) {
-      return '.../' + parts.slice(-3).join('/');
+    if (parts.length > 4) {
+      return '.../' + parts.slice(-4).join('/');
     }
     return filepath;
   }
 
-  function getLanguageFromFile(filename) {
-    if (!filename) return '';
+  function getLanguage(filename) {
+    if (!filename) return 'plaintext';
 
     const ext = filename.split('.').pop()?.toLowerCase();
     const langMap = {
       'js': 'javascript',
+      'jsx': 'javascript',
       'ts': 'typescript',
+      'tsx': 'typescript',
       'svelte': 'svelte',
+      'vue': 'vue',
       'html': 'html',
       'css': 'css',
+      'scss': 'scss',
+      'less': 'less',
       'json': 'json',
       'md': 'markdown',
       'rs': 'rust',
@@ -67,159 +81,265 @@
       'java': 'java',
       'cpp': 'cpp',
       'c': 'c',
+      'h': 'c',
       'go': 'go',
-      'vue': 'vue',
       'php': 'php',
       'rb': 'ruby',
       'swift': 'swift',
       'kt': 'kotlin',
-      'dart': 'dart'
+      'dart': 'dart',
+      'yaml': 'yaml',
+      'yml': 'yaml',
+      'xml': 'xml',
+      'sql': 'sql',
+      'sh': 'bash',
+      'bash': 'bash',
+      'zsh': 'bash'
     };
 
-    return langMap[ext] || '';
+    return langMap[ext] || 'plaintext';
+  }
+
+  function formatTimestamp(ts) {
+    if (!ts) return '';
+    const date = new Date(ts);
+    return date.toLocaleTimeString();
+  }
+
+  function getLineCount(content) {
+    if (!content) return 0;
+    return content.split('\n').length;
+  }
+
+  function highlightCursorLine(content, cursor) {
+    if (!content || !cursor) return content;
+    const lines = content.split('\n');
+    if (cursor.line < lines.length) {
+      lines[cursor.line] = `<span class="cursor-line">${lines[cursor.line]}</span>`;
+    }
+    return lines.join('\n');
   }
 </script>
 
-<div class="session-card">
-  <div class="session-header">
-    <h3>
-      <span class="session-icon">💻</span>
-      Session: {sessionId.slice(0, 8)}...
-    </h3>
-    <div class="file-info">
-      <span class="file-icon">{getFileIcon(session.active_file)}</span>
-      <div class="file-details">
-        <div class="file-name">{formatFileName(session.active_file)}</div>
-        <div class="file-path">{formatFilePath(session.active_file)}</div>
+<div class="card">
+  <div class="card-header" on:click={() => expanded = !expanded}>
+    <div class="student-info">
+      <span class="student-avatar">👤</span>
+      <div class="student-details">
+        <span class="student-name">{session.student_name || 'Anonymous'}</span>
+        <span class="session-id">{sessionId.slice(0, 8)}</span>
       </div>
+    </div>
+
+    <div class="file-info">
+      <span class="file-icon">{getFileIcon(session.current_file)}</span>
+      <div class="file-details">
+        <span class="file-name">{formatFileName(session.current_file)}</span>
+        <span class="file-path">{formatFilePath(session.current_file)}</span>
+      </div>
+    </div>
+
+    <div class="card-meta">
+      {#if session.cursor_position}
+        <span class="cursor-pos">Ln {session.cursor_position.line + 1}, Col {session.cursor_position.column + 1}</span>
+      {/if}
+      <span class="timestamp">{formatTimestamp(session.last_activity)}</span>
+      <span class="expand-icon">{expanded ? '▼' : '▶'}</span>
     </div>
   </div>
 
-  {#if session.file_content}
-    <div class="file-content">
+  {#if expanded && session.file_content}
+    <div class="card-content">
       <div class="content-header">
-        <span class="language-tag">{getLanguageFromFile(session.active_file)}</span>
-        <span class="content-length">{session.file_content.length} characters</span>
+        <span class="language-badge">{getLanguage(session.current_file)}</span>
+        <span class="line-count">{getLineCount(session.file_content)} lines</span>
       </div>
-      <pre><code>{session.file_content}</code></pre>
+      <pre class="code-block"><code>{session.file_content}</code></pre>
     </div>
-  {:else}
-    <div class="no-content">
-      <p>File content not available</p>
+  {:else if expanded}
+    <div class="card-content empty">
+      <p>No file content available</p>
     </div>
   {/if}
 </div>
 
 <style>
-  .session-card {
-    background: #2a2a2a;
-    border: 1px solid #404040;
+  .card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
     border-radius: 12px;
-    margin-bottom: 20px;
     overflow: hidden;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    transition: border-color 0.2s;
   }
 
-  .session-header {
-    padding: 20px;
-    background: #333;
-    border-bottom: 1px solid #404040;
+  .card:hover {
+    border-color: #3a3a3a;
   }
 
-  .session-header h3 {
-    margin: 0 0 15px 0;
-    color: #fff;
-    font-size: 1.2em;
+  .card-header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    padding: 16px;
+    background: #222;
+    cursor: pointer;
+    user-select: none;
   }
 
-  .session-icon {
-    font-size: 1.2em;
+  .card-header:hover {
+    background: #282828;
+  }
+
+  .student-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 150px;
+  }
+
+  .student-avatar {
+    font-size: 1.5rem;
+  }
+
+  .student-details {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .student-name {
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .session-id {
+    color: #666;
+    font-size: 0.75rem;
+    font-family: monospace;
   }
 
   .file-info {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+    padding: 0 16px;
   }
 
   .file-icon {
-    font-size: 2em;
+    font-size: 1.5rem;
+    flex-shrink: 0;
   }
 
   .file-details {
-    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
 
   .file-name {
     color: #fff;
-    font-weight: 600;
-    font-size: 1.1em;
-    margin-bottom: 4px;
+    font-weight: 500;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .file-path {
-    color: #888;
-    font-size: 0.9em;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  }
-
-  .file-content {
-    max-height: 400px;
+    color: #666;
+    font-size: 0.75rem;
+    font-family: monospace;
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .content-header {
-    padding: 12px 20px;
-    background: #1e1e1e;
-    border-bottom: 1px solid #404040;
+  .card-meta {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
   }
 
-  .language-tag {
-    background: #007acc;
-    color: white;
+  .cursor-pos {
+    color: #888;
+    font-size: 0.8rem;
+    font-family: monospace;
+    background: #2a2a2a;
     padding: 4px 8px;
     border-radius: 4px;
-    font-size: 0.8em;
-    font-weight: 500;
-    text-transform: uppercase;
   }
 
-  .content-length {
-    color: #888;
-    font-size: 0.8em;
+  .timestamp {
+    color: #666;
+    font-size: 0.8rem;
   }
 
-  pre {
-    margin: 0;
-    padding: 20px;
-    background: #1e1e1e;
-    color: #d4d4d4;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-    font-size: 0.9em;
-    line-height: 1.4;
-    overflow-x: auto;
-    white-space: pre-wrap;
-    word-wrap: break-word;
+  .expand-icon {
+    color: #666;
+    font-size: 0.7rem;
   }
 
-  code {
-    color: #d4d4d4;
+  .card-content {
+    border-top: 1px solid #2a2a2a;
   }
 
-  .no-content {
-    padding: 40px 20px;
+  .card-content.empty {
+    padding: 32px;
     text-align: center;
     color: #666;
   }
 
-  .no-content p {
+  .card-content.empty p {
     margin: 0;
     font-style: italic;
+  }
+
+  .content-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #2a2a2a;
+  }
+
+  .language-badge {
+    background: #007acc;
+    color: #fff;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  .line-count {
+    color: #666;
+    font-size: 0.8rem;
+  }
+
+  .code-block {
+    margin: 0;
+    padding: 16px;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .code-block code {
+    white-space: pre;
+  }
+
+  :global(.cursor-line) {
+    background: rgba(255, 255, 0, 0.1);
+    display: block;
   }
 </style>

@@ -1,12 +1,14 @@
 {
   "name": "hermione-vscode",
-  "displayName": "Hermione File Monitor",
-  "description": "Monitor active files and send updates to Hermione WebSocket service",
+  "displayName": "Hermione - Student Observability",
+  "description": "Monitor student coding activity and send updates to the Hermione observability platform",
   "version": "0.1.0",
+  "publisher": "hermione",
   "engines": {
     "vscode": "^1.74.0"
   },
   "categories": [
+    "Education",
     "Other"
   ],
   "activationEvents": [
@@ -17,11 +19,15 @@
     "commands": [
       {
         "command": "hermione.connect",
-        "title": "Connect to Hermione Service"
+        "title": "Hermione: Connect to Server"
       },
       {
         "command": "hermione.disconnect",
-        "title": "Disconnect from Hermione Service"
+        "title": "Hermione: Disconnect from Server"
+      },
+      {
+        "command": "hermione.toggleConnection",
+        "title": "Hermione: Toggle Connection"
       }
     ],
     "configuration": {
@@ -29,7 +35,7 @@
       "properties": {
         "hermione.serverUrl": {
           "type": "string",
-          "default": "ws://localhost:8080",
+          "default": "ws://localhost:8080/ws",
           "description": "WebSocket server URL for Hermione service"
         },
         "hermione.autoConnect": {
@@ -41,6 +47,41 @@
           "type": "boolean",
           "default": true,
           "description": "Send file content along with file path updates"
+        },
+        "hermione.sendCursorPosition": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send cursor position updates"
+        },
+        "hermione.studentName": {
+          "type": "string",
+          "default": "",
+          "description": "Student name for identification in the dashboard"
+        },
+        "hermione.debounceMs": {
+          "type": "number",
+          "default": 500,
+          "description": "Debounce delay for file content updates (milliseconds)"
+        },
+        "hermione.cursorDebounceMs": {
+          "type": "number",
+          "default": 200,
+          "description": "Debounce delay for cursor position updates (milliseconds)"
+        },
+        "hermione.maxFileSize": {
+          "type": "number",
+          "default": 100000,
+          "description": "Maximum file size to send (characters)"
+        },
+        "hermione.heartbeatInterval": {
+          "type": "number",
+          "default": 30000,
+          "description": "Heartbeat interval to keep connection alive (milliseconds)"
+        },
+        "hermione.reconnectDelay": {
+          "type": "number",
+          "default": 5000,
+          "description": "Delay before attempting to reconnect (milliseconds)"
         }
       }
     }

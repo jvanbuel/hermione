@@ -1,11 +1,29 @@
-hermione
-
-# Added by cargo
-
+# Rust
 /target
-node_modules
-dist
-build
-out
-.DS_Store
+Cargo.lock
+
+# Node.js
+node_modules/
+dist/
+build/
+out/
+
+# VS Code Extension
 *.vsix
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local

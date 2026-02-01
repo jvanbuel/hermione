@@ -1,0 +1,18 @@
+[package]
+name = "hermione-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Hermione observability platform backend"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1.0", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "5.5"
