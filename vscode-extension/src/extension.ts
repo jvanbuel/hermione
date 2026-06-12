@@ -30,9 +30,14 @@ class Reporter {
     private queue: FileEvent[] = [];
     private heartbeatTimer?: NodeJS.Timeout;
     private flushTimer?: NodeJS.Timeout;
+    private messagesTimer?: NodeJS.Timeout;
+    private lastMessageId = 0;
     private windowFocused = true;
     private statusBar: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
+
+    /** Poll interval for teacher broadcast messages. */
+    private static readonly MESSAGE_POLL_MS = 8000;
 
     constructor(private context: vscode.ExtensionContext) {
         this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -62,6 +67,12 @@ class Reporter {
 
         this.restartHeartbeat();
         this.onFocus(vscode.window.activeTextEditor); // report current file immediately
+
+        // Surface teacher broadcasts for this course.
+        this.lastMessageId = this.context.globalState.get(this.messageKey(), 0);
+        this.pollMessages();
+        this.messagesTimer = setInterval(() => this.pollMessages(), Reporter.MESSAGE_POLL_MS);
+
         this.updateStatusBar();
     }
 
@@ -70,9 +81,47 @@ class Reporter {
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
         }
+        if (this.messagesTimer) {
+            clearInterval(this.messagesTimer);
+        }
         this.disposables.forEach((d) => d.dispose());
         this.disposables = [];
         this.updateStatusBar();
+    }
+
+    private messageKey(): string {
+        return `hermione.lastMessageId:${this.serverUrl}`;
+    }
+
+    /** Fetches new broadcast messages and shows them as notifications. */
+    private async pollMessages(): Promise<void> {
+        if (!this.enabled) {
+            return;
+        }
+        try {
+            const headers: Record<string, string> = {};
+            if (this.token) {
+                headers['Authorization'] = `Bearer ${this.token}`;
+            }
+            const res = await fetch(`${this.serverUrl}/api/inbox?since=${this.lastMessageId}`, {
+                headers,
+            });
+            if (!res.ok) {
+                return;
+            }
+            const messages = (await res.json()) as { id: number; body: string }[];
+            for (const m of messages) {
+                vscode.window.showInformationMessage(`📣 ${m.body}`);
+                if (m.id > this.lastMessageId) {
+                    this.lastMessageId = m.id;
+                }
+            }
+            if (messages.length) {
+                await this.context.globalState.update(this.messageKey(), this.lastMessageId);
+            }
+        } catch (_) {
+            // Backend unreachable; try again next tick.
+        }
     }
 
     async setStudent(): Promise<void> {

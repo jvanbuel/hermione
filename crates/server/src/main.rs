@@ -5,6 +5,7 @@ mod auth;
 mod files;
 mod grpc;
 mod http;
+mod messages;
 mod state;
 mod tenancy;
 mod text;

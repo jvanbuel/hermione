@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
             "/api/analytics/time-per-file",
             get(crate::files::time_per_file),
         )
+        .route("/api/messages", post(crate::messages::broadcast))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_teacher,
@@ -86,9 +87,11 @@ pub fn router(state: AppState) -> Router {
         ));
 
     // Agent ingest: authenticated by a course enrollment token, which also
-    // determines the tenant the data lands in.
+    // determines the tenant the data lands in. The student inbox is read with
+    // the same credential.
     let ingest = Router::new()
         .route("/api/file-events", post(crate::files::ingest))
+        .route("/api/inbox", get(crate::messages::inbox))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_ingest,

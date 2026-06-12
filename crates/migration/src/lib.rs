@@ -8,6 +8,7 @@ mod m20240101_000003_create_file_events;
 mod m20240101_000004_index_file_events_at;
 mod m20240101_000005_multi_tenancy;
 mod m20240101_000006_session_error_count;
+mod m20240101_000007_create_messages;
 
 pub struct Migrator;
 
@@ -21,6 +22,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000004_index_file_events_at::Migration),
             Box::new(m20240101_000005_multi_tenancy::Migration),
             Box::new(m20240101_000006_session_error_count::Migration),
+            Box::new(m20240101_000007_create_messages::Migration),
         ]
     }
 }

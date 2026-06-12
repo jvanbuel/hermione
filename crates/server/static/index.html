@@ -122,6 +122,7 @@
     <select id="course" title="Course"></select>
     <span id="alert"></span>
     <span class="hint">Click a student to open their terminal · panes tile side by side</span>
+    <button id="broadcast" title="Send a message to all students in this course">📣 Broadcast</button>
     <button id="logout" title="Sign out">Sign out</button>
   </header>
   <div id="content">
@@ -333,6 +334,20 @@
     document.getElementById('logout').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
+    });
+
+    document.getElementById('broadcast').addEventListener('click', async () => {
+      if (!currentCourse) return;
+      const text = window.prompt('Message to all students in this course:');
+      if (!text || !text.trim()) return;
+      const btn = document.getElementById('broadcast');
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ course: currentCourse, text: text.trim() }),
+      });
+      btn.textContent = res.ok ? '✓ Sent' : '✕ Failed';
+      setTimeout(() => { btn.textContent = '📣 Broadcast'; }, 2000);
     });
 
     (async () => {
