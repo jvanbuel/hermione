@@ -26,6 +26,15 @@ const IDLE_GAP_SECS: i64 = 120;
 /// A student last seen within this many seconds is considered "active".
 const ACTIVE_WINDOW_SECS: i64 = 90;
 
+/// Live views (overview, activity) only consider events from the recent past —
+/// roughly one teaching session — so their cost stays bounded as history grows.
+const RECENT_WINDOW_HOURS: i64 = 8;
+
+/// Timestamp marking the start of the "recent" window.
+fn recent_cutoff() -> sea_orm::prelude::DateTimeWithTimeZone {
+    (Utc::now() - chrono::Duration::hours(RECENT_WINDOW_HOURS)).into()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEventIn {
@@ -90,6 +99,7 @@ struct ActivityDto {
 /// Latest file activity per student — what each student has open right now.
 pub async fn students_activity(State(state): State<AppState>) -> impl IntoResponse {
     let rows = match file_events::Entity::find()
+        .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_desc(file_events::Column::At)
         .all(&state.db)
         .await
@@ -266,6 +276,7 @@ struct Overview {
 
 pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
     let events = match file_events::Entity::find()
+        .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_asc(file_events::Column::At)
         .all(&state.db)
         .await

@@ -14,13 +14,21 @@ use hermione_proto::v1::{
 };
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
+    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
 };
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
 use crate::state::AppState;
+
+/// Max terminal events written in a single multi-row INSERT.
+const BATCH_SIZE: usize = 128;
+/// Max time a buffered terminal event waits before being persisted.
+const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+/// Rows read per page when replaying session history.
+const HISTORY_PAGE: u64 = 500;
 
 pub struct IngestService {
     pub state: AppState,
@@ -44,76 +52,97 @@ impl Ingest for IngestService {
         let mut seq: i64 = 0;
         let mut ended = false;
 
-        while let Some(item) = stream.next().await {
-            match item?.event {
-                Some(Event::Start(start)) => {
-                    let id = Uuid::new_v4();
-                    let model = sessions::ActiveModel {
-                        id: Set(id),
-                        student: Set(start.student),
-                        command: Set(start.command),
-                        hostname: Set(non_empty(start.hostname)),
-                        cols: Set(start.cols as i32),
-                        rows: Set(start.rows as i32),
-                        status: Set("active".to_string()),
-                        started_at: Set(chrono::Utc::now().into()),
-                        ended_at: Set(None),
-                        exit_code: Set(None),
-                    };
-                    sessions::Entity::insert(model)
-                        .exec(db)
-                        .await
-                        .map_err(internal)?;
-                    bcast = Some(self.state.hub.channel(id).await);
-                    session_id = Some(id);
-                    tracing::info!(%id, "session started");
-                }
+        // Terminal chunks arrive at high frequency, so we buffer them and write
+        // in batches (one multi-row INSERT) — flushed when the buffer fills or a
+        // short timer elapses, whichever comes first. Live fan-out still happens
+        // immediately, so batching doesn't delay the live view.
+        let mut buffer: Vec<terminal_events::ActiveModel> = Vec::with_capacity(BATCH_SIZE);
+        let mut flush_tick = tokio::time::interval(FLUSH_INTERVAL);
+        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-                Some(Event::Chunk(chunk)) => {
-                    let Some(id) = session_id else { continue };
-                    let kind = stream_label(chunk.stream);
-                    let model = terminal_events::ActiveModel {
-                        session_id: Set(id),
-                        seq: Set(seq),
-                        offset_ms: Set(chunk.offset_ms),
-                        stream: Set(kind.to_string()),
-                        data: Set(BASE64.encode(&chunk.data)),
-                        text: Set(Some(crate::text::plain(&chunk.data))),
-                        created_at: Set(chrono::Utc::now().into()),
-                        ..Default::default()
-                    };
-                    terminal_events::Entity::insert(model)
-                        .exec(db)
-                        .await
-                        .map_err(internal)?;
-                    seq += 1;
-                    if let Some(sender) = &bcast {
-                        let _ = sender.send(chunk);
+        loop {
+            tokio::select! {
+                maybe_item = stream.next() => {
+                    let Some(item) = maybe_item else { break };
+                    match item?.event {
+                        Some(Event::Start(start)) => {
+                            let id = Uuid::new_v4();
+                            let model = sessions::ActiveModel {
+                                id: Set(id),
+                                student: Set(start.student),
+                                command: Set(start.command),
+                                hostname: Set(non_empty(start.hostname)),
+                                cols: Set(start.cols as i32),
+                                rows: Set(start.rows as i32),
+                                status: Set("active".to_string()),
+                                started_at: Set(chrono::Utc::now().into()),
+                                ended_at: Set(None),
+                                exit_code: Set(None),
+                            };
+                            sessions::Entity::insert(model)
+                                .exec(db)
+                                .await
+                                .map_err(internal)?;
+                            bcast = Some(self.state.hub.channel(id).await);
+                            session_id = Some(id);
+                            tracing::info!(%id, "session started");
+                        }
+
+                        Some(Event::Chunk(chunk)) => {
+                            let Some(id) = session_id else { continue };
+                            let kind = stream_label(chunk.stream);
+                            buffer.push(terminal_events::ActiveModel {
+                                session_id: Set(id),
+                                seq: Set(seq),
+                                offset_ms: Set(chunk.offset_ms),
+                                stream: Set(kind.to_string()),
+                                data: Set(BASE64.encode(&chunk.data)),
+                                text: Set(Some(crate::text::plain(&chunk.data))),
+                                created_at: Set(chrono::Utc::now().into()),
+                                ..Default::default()
+                            });
+                            seq += 1;
+                            // Fan out live before the (possibly deferred) write.
+                            if let Some(sender) = &bcast {
+                                let _ = sender.send(chunk);
+                            }
+                            if buffer.len() >= BATCH_SIZE {
+                                flush(db, &mut buffer).await?;
+                            }
+                        }
+
+                        Some(Event::Resize(resize)) => {
+                            if let Some(id) = session_id {
+                                let model = sessions::ActiveModel {
+                                    id: Unchanged(id),
+                                    cols: Set(resize.cols as i32),
+                                    rows: Set(resize.rows as i32),
+                                    ..Default::default()
+                                };
+                                let _ = sessions::Entity::update(model).exec(db).await;
+                            }
+                        }
+
+                        Some(Event::End(end)) => {
+                            if let Some(id) = session_id {
+                                flush(db, &mut buffer).await?;
+                                finalize(db, id, Some(end.exit_code)).await;
+                                ended = true;
+                            }
+                        }
+
+                        None => {}
                     }
                 }
 
-                Some(Event::Resize(resize)) => {
-                    if let Some(id) = session_id {
-                        let model = sessions::ActiveModel {
-                            id: Unchanged(id),
-                            cols: Set(resize.cols as i32),
-                            rows: Set(resize.rows as i32),
-                            ..Default::default()
-                        };
-                        let _ = sessions::Entity::update(model).exec(db).await;
-                    }
+                _ = flush_tick.tick() => {
+                    flush(db, &mut buffer).await?;
                 }
-
-                Some(Event::End(end)) => {
-                    if let Some(id) = session_id {
-                        finalize(db, id, Some(end.exit_code)).await;
-                        ended = true;
-                    }
-                }
-
-                None => {}
             }
         }
+
+        // Drain anything still buffered when the stream ends.
+        flush(db, &mut buffer).await?;
 
         if let Some(id) = session_id {
             if !ended {
@@ -164,14 +193,16 @@ impl Viewer for ViewerService {
 
         let output = async_stream::try_stream! {
             if include_history {
-                let rows = terminal_events::Entity::find()
+                // Stream history in pages so long sessions don't load entirely
+                // into memory.
+                let mut pages = terminal_events::Entity::find()
                     .filter(terminal_events::Column::SessionId.eq(id))
                     .order_by_asc(terminal_events::Column::Seq)
-                    .all(&db)
-                    .await
-                    .map_err(internal)?;
-                for row in rows {
-                    yield decode_chunk(&row);
+                    .paginate(&db, HISTORY_PAGE);
+                while let Some(rows) = pages.fetch_and_next().await.map_err(internal)? {
+                    for row in rows {
+                        yield decode_chunk(&row);
+                    }
                 }
             }
 
@@ -190,6 +221,22 @@ impl Viewer for ViewerService {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/// Writes any buffered terminal events as a single multi-row INSERT.
+async fn flush(
+    db: &DatabaseConnection,
+    buffer: &mut Vec<terminal_events::ActiveModel>,
+) -> Result<(), Status> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    let batch = std::mem::take(buffer);
+    terminal_events::Entity::insert_many(batch)
+        .exec(db)
+        .await
+        .map_err(internal)?;
+    Ok(())
+}
 
 async fn finalize(db: &DatabaseConnection, id: Uuid, exit_code: Option<i32>) {
     let model = sessions::ActiveModel {

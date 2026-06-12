@@ -15,7 +15,10 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hermione_entity::{sessions, terminal_events};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
+
+/// Rows read per page when replaying session history.
+const HISTORY_PAGE: u64 = 500;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
@@ -147,12 +150,12 @@ async fn stream_session(
 
     let stream = async_stream::stream! {
         if include_history {
-            if let Ok(rows) = terminal_events::Entity::find()
+            // Replay history in pages to bound memory for long sessions.
+            let mut pages = terminal_events::Entity::find()
                 .filter(terminal_events::Column::SessionId.eq(id))
                 .order_by_asc(terminal_events::Column::Seq)
-                .all(&db)
-                .await
-            {
+                .paginate(&db, HISTORY_PAGE);
+            while let Ok(Some(rows)) = pages.fetch_and_next().await {
                 for row in rows {
                     yield Ok::<Event, Infallible>(sse_from_row(&row));
                 }
@@ -232,19 +235,22 @@ async fn transcript(
         _ => find = find.filter(terminal_events::Column::Stream.eq("stdout")),
     }
 
-    match find.all(&state.db).await {
-        Ok(rows) => {
-            let body: String = rows
-                .iter()
-                .map(|r| {
-                    r.text.clone().unwrap_or_else(|| {
+    // Build the transcript a page at a time so we never hold the whole session
+    // of rows in memory at once.
+    let mut body = String::new();
+    let mut pages = find.paginate(&state.db, HISTORY_PAGE);
+    loop {
+        match pages.fetch_and_next().await {
+            Ok(Some(rows)) => {
+                for r in rows {
+                    body.push_str(&r.text.unwrap_or_else(|| {
                         crate::text::plain(&BASE64.decode(r.data.as_bytes()).unwrap_or_default())
-                    })
-                })
-                .collect();
-            ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
-                .into_response()
+                    }));
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }

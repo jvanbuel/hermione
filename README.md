@@ -53,6 +53,11 @@ A Rust workspace with five crates:
   which may not be valid UTF-8) base64-encoded in `data` for faithful replay,
   and an ANSI-stripped, lossy-UTF8 plain-text version in `text` that is
   readable and searchable for offline analysis.
+- **Bounded cost as data grows.** Terminal chunks are buffered and written in
+  batched multi-row INSERTs (flushed by size or a short timer) rather than one
+  INSERT per read. Live queries (overview, activity) only scan a recent time
+  window, backed by an index; session history is replayed in pages so long
+  sessions never load entirely into memory.
 - **Editor activity: HTTP/JSON, not gRPC.** The VSCode extension is a Node
   process, so it reports file-focus and heartbeat events as plain JSON to the
   Axum server (`POST /api/file-events`). Far less machinery than gRPC in a
