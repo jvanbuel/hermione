@@ -69,15 +69,21 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "package": "vsce package --no-dependencies -o hermione-vscode.vsix"
+    "vscode:prepublish": "npm run bundle",
+    "compile": "tsc -p ./ --noEmit",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --external:bufferutil --external:utf-8-validate --outfile=out/extension.js",
+    "watch": "tsc -watch -p ./ --noEmit",
+    "package": "vsce package -o hermione-vscode.vsix"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.0",
     "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
     "typescript": "^5.4.0"
   }
 }

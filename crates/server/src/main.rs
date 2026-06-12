@@ -84,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db,
         hub: Hub::default(),
+        msg_hub: crate::state::MsgHub::default(),
         auth: Auth::new(),
         admin_token: config.admin_token.clone(),
         open_dev: Arc::new(AtomicBool::new(!has_admins)),

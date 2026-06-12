@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as vscode from 'vscode';
+import WebSocket from 'ws';
 import { ExerciseMap } from './exercises';
 
 interface FileEvent {
@@ -30,14 +31,12 @@ class Reporter {
     private queue: FileEvent[] = [];
     private heartbeatTimer?: NodeJS.Timeout;
     private flushTimer?: NodeJS.Timeout;
-    private messagesTimer?: NodeJS.Timeout;
+    private socket?: WebSocket;
+    private reconnectTimer?: NodeJS.Timeout;
     private lastMessageId = 0;
     private windowFocused = true;
     private statusBar: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
-
-    /** Poll interval for teacher broadcast messages. */
-    private static readonly MESSAGE_POLL_MS = 8000;
 
     constructor(private context: vscode.ExtensionContext) {
         this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -68,10 +67,9 @@ class Reporter {
         this.restartHeartbeat();
         this.onFocus(vscode.window.activeTextEditor); // report current file immediately
 
-        // Surface teacher broadcasts for this course.
+        // Surface teacher broadcasts for this course over a live WebSocket.
         this.lastMessageId = this.context.globalState.get(this.messageKey(), 0);
-        this.pollMessages();
-        this.messagesTimer = setInterval(() => this.pollMessages(), Reporter.MESSAGE_POLL_MS);
+        this.connectMessages();
 
         this.updateStatusBar();
     }
@@ -81,8 +79,17 @@ class Reporter {
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
         }
-        if (this.messagesTimer) {
-            clearInterval(this.messagesTimer);
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = undefined;
+        }
+        if (this.socket) {
+            try {
+                this.socket.close();
+            } catch (_) {
+                // already closing
+            }
+            this.socket = undefined;
         }
         this.disposables.forEach((d) => d.dispose());
         this.disposables = [];
@@ -93,35 +100,66 @@ class Reporter {
         return `hermione.lastMessageId:${this.serverUrl}`;
     }
 
-    /** Fetches new broadcast messages and shows them as notifications. */
-    private async pollMessages(): Promise<void> {
+    /**
+     * Opens the message WebSocket. On connect the server replays anything
+     * missed (via `since`), then pushes new broadcasts live; we reconnect with a
+     * fixed backoff if the connection drops.
+     */
+    private connectMessages(): void {
         if (!this.enabled) {
             return;
         }
-        try {
-            const headers: Record<string, string> = {};
-            if (this.token) {
-                headers['Authorization'] = `Bearer ${this.token}`;
-            }
-            const res = await fetch(`${this.serverUrl}/api/inbox?since=${this.lastMessageId}`, {
-                headers,
-            });
-            if (!res.ok) {
-                return;
-            }
-            const messages = (await res.json()) as { id: number; body: string }[];
-            for (const m of messages) {
-                vscode.window.showInformationMessage(`📣 ${m.body}`);
-                if (m.id > this.lastMessageId) {
-                    this.lastMessageId = m.id;
-                }
-            }
-            if (messages.length) {
-                await this.context.globalState.update(this.messageKey(), this.lastMessageId);
-            }
-        } catch (_) {
-            // Backend unreachable; try again next tick.
+        const base = this.serverUrl.replace(/^http/, 'ws');
+        const params = new URLSearchParams();
+        if (this.token) {
+            params.set('token', this.token);
         }
+        params.set('since', String(this.lastMessageId));
+
+        let ws: WebSocket;
+        try {
+            ws = new WebSocket(`${base}/ws?${params.toString()}`);
+        } catch (_) {
+            this.scheduleReconnect();
+            return;
+        }
+        this.socket = ws;
+
+        ws.on('message', (data: WebSocket.RawData) => {
+            try {
+                const m = JSON.parse(data.toString()) as { id: number; body: string };
+                if (m && m.body) {
+                    vscode.window.showInformationMessage(`📣 ${m.body}`);
+                    if (m.id > this.lastMessageId) {
+                        this.lastMessageId = m.id;
+                        this.context.globalState.update(this.messageKey(), this.lastMessageId);
+                    }
+                }
+            } catch (_) {
+                // ignore malformed frames
+            }
+        });
+        ws.on('close', () => {
+            this.socket = undefined;
+            this.scheduleReconnect();
+        });
+        ws.on('error', () => {
+            try {
+                ws.close();
+            } catch (_) {
+                // already closing
+            }
+        });
+    }
+
+    private scheduleReconnect(): void {
+        if (this.reconnectTimer || !this.enabled) {
+            return;
+        }
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = undefined;
+            this.connectMessages();
+        }, 5000);
     }
 
     async setStudent(): Promise<void> {

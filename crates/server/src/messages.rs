@@ -53,7 +53,21 @@ pub async fn broadcast(
         .exec_with_returning(&state.db)
         .await
     {
-        Ok(msg) => Json(serde_json::json!({ "id": msg.id })).into_response(),
+        Ok(msg) => {
+            // Push to everyone currently connected for this course.
+            state
+                .msg_hub
+                .publish(
+                    course_id,
+                    crate::state::MessageOut {
+                        id: msg.id,
+                        body: msg.body,
+                        created_at_unix_ms: msg.created_at.timestamp_millis(),
+                    },
+                )
+                .await;
+            Json(serde_json::json!({ "id": msg.id })).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

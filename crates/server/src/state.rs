@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use hermione_proto::v1::TerminalChunk;
 use sea_orm::DatabaseConnection;
+use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
@@ -38,11 +39,46 @@ impl Hub {
     }
 }
 
+/// A message pushed to course members over WebSocket.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageOut {
+    pub id: i64,
+    pub body: String,
+    pub created_at_unix_ms: i64,
+}
+
+/// Per-course broadcast channels for live messaging (teacher → students today;
+/// the same fan-out underpins two-way chat later).
+#[derive(Clone, Default)]
+pub struct MsgHub {
+    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<MessageOut>>>>,
+}
+
+impl MsgHub {
+    async fn channel(&self, course_id: Uuid) -> broadcast::Sender<MessageOut> {
+        let mut map = self.channels.write().await;
+        map.entry(course_id)
+            .or_insert_with(|| broadcast::channel(256).0)
+            .clone()
+    }
+
+    pub async fn subscribe(&self, course_id: Uuid) -> broadcast::Receiver<MessageOut> {
+        self.channel(course_id).await.subscribe()
+    }
+
+    /// Publishes a message to everyone currently connected for the course.
+    pub async fn publish(&self, course_id: Uuid, msg: MessageOut) {
+        let _ = self.channel(course_id).await.send(msg);
+    }
+}
+
 /// State shared across the gRPC and HTTP servers.
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
     pub hub: Hub,
+    pub msg_hub: MsgHub,
     pub auth: Auth,
     /// Super-admin secret for the provisioning API. `None` disables it.
     pub admin_token: Option<String>,

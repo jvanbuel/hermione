@@ -29,6 +29,10 @@ event when a file is closed.
 Events are queued and retried, so a brief backend outage neither loses data nor
 disrupts the editor.
 
+It also opens a WebSocket (`/ws`) to receive **teacher broadcasts** for the
+course in real time, shown as notifications. On (re)connect it replays anything
+missed via a `since` cursor, so messages aren't lost across disconnects.
+
 ## Settings
 
 | Setting                      | Default                  | Description                                      |
@@ -61,9 +65,11 @@ Files that match no rule simply have no exercise.
 
 ```bash
 npm install
-npm run compile      # or: npm run watch
+npm run compile      # type-check (tsc --noEmit)
+npm run bundle       # build out/extension.js (esbuild, inlines `ws`)
+npm run package      # produce hermione-vscode.vsix
 ```
 
 Then press `F5` in VSCode to launch an Extension Development Host. Make sure the
 backend is running (`cargo run -p hermione-server`) and open
-**http://localhost:8080** to watch activity appear under "Students · open files".
+**http://localhost:8080** to watch activity appear on the board.

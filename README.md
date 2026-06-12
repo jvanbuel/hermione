@@ -165,9 +165,15 @@ cd vscode-extension && npm install && npm run compile
   student has open right now).
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
+- `POST /api/messages` — teacher broadcasts a message to a course (persisted).
+- `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
+  token (`?token=`) or the session cookie (`?course=`); pass `?since=<id>` to
+  replay missed messages, omit it for live-only. Used by the extension (real-time
+  broadcasts) and the dashboard.
+- `GET /api/inbox?since=<id>` — HTTP fallback for the message inbox.
 
 The teacher routes require a session cookie (obtained via `POST /api/login`);
-`POST /api/file-events` requires the agent bearer token. See below.
+agent routes require a course enrollment token. See below.
 
 ---
 

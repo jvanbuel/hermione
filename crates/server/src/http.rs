@@ -4,7 +4,10 @@
 use std::convert::Infallible;
 
 use axum::{
-    extract::{Extension, Path, Query, Request, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Extension, Path, Query, Request, State,
+    },
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{
@@ -15,8 +18,9 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use hermione_entity::{sessions, terminal_events};
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
+use futures::{SinkExt, StreamExt};
+use hermione_entity::{messages, sessions, terminal_events};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
@@ -24,7 +28,7 @@ use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 use crate::auth::{constant_time_eq, AuthCtx};
-use crate::state::AppState;
+use crate::state::{AppState, MessageOut};
 use crate::tenancy::{self, DEFAULT_COURSE_ID};
 
 /// A request's resolved course (tenant), injected by ingest auth.
@@ -49,6 +53,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
+        // The message stream authenticates itself (enrollment token or cookie).
+        .route("/ws", get(ws_handler))
         .route("/vendor/xterm.js", get(xterm_js))
         .route("/vendor/xterm.css", get(xterm_css))
         .route("/vendor/addon-fit.js", get(addon_fit_js));
@@ -254,6 +260,112 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
         let (k, v) = c.trim().split_once('=')?;
         (k == SESSION_COOKIE).then(|| v.to_string())
     })
+}
+
+// --- message stream (WebSocket) --------------------------------------------
+
+#[derive(Deserialize)]
+struct WsQuery {
+    /// Enrollment token (extension clients).
+    token: Option<String>,
+    /// Course slug (teacher/dashboard clients, paired with the session cookie).
+    course: Option<String>,
+    /// Resume after this message id (catch up on anything missed while away).
+    /// Omit for live-only delivery (e.g. the dashboard monitor).
+    since: Option<i64>,
+}
+
+/// Live message channel. Authenticates the same way the rest of the API does —
+/// an enrollment token (students) or the session cookie + course (teachers) —
+/// then upgrades and streams that course's messages.
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(q): Query<WsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let course_id = if let Some(token) = q.token.as_deref() {
+        match tenancy::course_by_token(&state.db, token).await {
+            Some(course) => course.id,
+            None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),
+        }
+    } else {
+        let ctx = match state
+            .auth
+            .admin_for(session_cookie(&headers).as_deref())
+            .await
+        {
+            Some(admin_id) => AuthCtx::Admin(admin_id),
+            None if state.open_dev.load(Ordering::Relaxed) => AuthCtx::OpenDev,
+            None => return (StatusCode::UNAUTHORIZED, "login required").into_response(),
+        };
+        match resolve_course(&state, ctx, q.course.clone()).await {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        }
+    };
+
+    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since))
+}
+
+/// Sends any missed messages (when `since` is given), then tails live ones.
+/// Inbound frames are ignored for now — the hook where student→teacher chat
+/// will land.
+async fn message_socket(socket: WebSocket, state: AppState, course_id: Uuid, since: Option<i64>) {
+    let (mut sender, mut receiver) = socket.split();
+
+    // Catch up from the durable store (Postgres is the source of truth). Skipped
+    // for live-only clients that don't pass `since`.
+    if let Some(since) = since {
+        if let Ok(rows) = messages::Entity::find()
+            .filter(messages::Column::CourseId.eq(course_id))
+            .filter(messages::Column::Id.gt(since))
+            .order_by_asc(messages::Column::Id)
+            .limit(50)
+            .all(&state.db)
+            .await
+        {
+            for m in rows {
+                let dto = MessageOut {
+                    id: m.id,
+                    body: m.body,
+                    created_at_unix_ms: m.created_at.timestamp_millis(),
+                };
+                if sender.send(Message::Text(to_text(&dto))).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    // Then tail live messages.
+    let mut rx = state.msg_hub.subscribe(course_id).await;
+    loop {
+        tokio::select! {
+            inbound = receiver.next() => {
+                match inbound {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    Some(Ok(_)) => {} // ignored until chat lands
+                }
+            }
+            msg = rx.recv() => {
+                match msg {
+                    Ok(m) => {
+                        if sender.send(Message::Text(to_text(&m))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+fn to_text(msg: &MessageOut) -> axum::extract::ws::Utf8Bytes {
+    serde_json::to_string(msg).unwrap_or_default().into()
 }
 
 // --- course scoping --------------------------------------------------------

@@ -91,6 +91,12 @@
     .time .sep { color: #4d5560; margin: 0 5px; }
 
     .empty { margin: auto; color: #6e7681; padding: 40px; text-align: center; }
+    #toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column;
+      gap: 8px; z-index: 1000; }
+    .toast { background: #1f6feb; color: #fff; padding: 10px 14px; border-radius: 8px;
+      font-size: .85rem; box-shadow: 0 4px 14px rgba(0,0,0,.45); max-width: 320px;
+      opacity: 0; transform: translateY(8px); transition: opacity .25s, transform .25s; }
+    .toast.show { opacity: 1; transform: translateY(0); }
 
     /* ---- Terminal dock (extra panes) ---- */
     #dock {
@@ -129,6 +135,7 @@
     <div id="board"><div class="empty">Loading…</div></div>
     <div id="dock"></div>
   </div>
+  <div id="toasts"></div>
 
   <script>
     const TERM_THEME = { background: '#0d1117', foreground: '#e6edf3', cursor: '#e6edf3' };
@@ -217,8 +224,33 @@
       sel.addEventListener('change', () => {
         currentCourse = sel.value;
         [...openPanes.keys()].forEach(closeTerminal); // terminals belong to a course
+        connectMessages();
         refresh();
       });
+      connectMessages();
+    }
+
+    // ---- live messages (WebSocket) ----
+    let msgSocket = null;
+    function connectMessages() {
+      if (msgSocket) { try { msgSocket.close(); } catch (_) {} msgSocket = null; }
+      if (!currentCourse) return;
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws?course=${encodeURIComponent(currentCourse)}`);
+      msgSocket = ws;
+      ws.onmessage = (ev) => {
+        try { const m = JSON.parse(ev.data); if (m && m.body) toast(`📣 ${m.body}`); } catch (_) {}
+      };
+      ws.onclose = () => { if (msgSocket === ws) { msgSocket = null; setTimeout(connectMessages, 5000); } };
+    }
+    function toast(text) {
+      const c = document.getElementById('toasts');
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = text;
+      c.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 5000);
     }
 
     async function refresh() {
