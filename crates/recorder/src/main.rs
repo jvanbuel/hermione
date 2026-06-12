@@ -13,9 +13,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use clap::Parser;
 use hermione_proto::v1::{
-    ingest_client::IngestClient,
-    ingest_event::Event,
-    IngestEvent, Resize, SessionEnd, SessionStart, StreamKind, TerminalChunk,
+    ingest_client::IngestClient, ingest_event::Event, IngestEvent, Resize, SessionEnd,
+    SessionStart, StreamKind, TerminalChunk,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
@@ -27,7 +26,11 @@ use tonic::Request;
 #[command(name = "hermione", version, about)]
 struct Args {
     /// Backend gRPC endpoint.
-    #[arg(long, env = "HERMIONE_BACKEND", default_value = "http://127.0.0.1:50051")]
+    #[arg(
+        long,
+        env = "HERMIONE_BACKEND",
+        default_value = "http://127.0.0.1:50051"
+    )]
     backend: String,
 
     /// Student identifier (defaults to $USER).
@@ -322,7 +325,9 @@ mod tests {
     fn detects_common_password_prompts() {
         assert!(looks_like_password_prompt(b"[sudo] password for alice: "));
         assert!(looks_like_password_prompt(b"Password:"));
-        assert!(looks_like_password_prompt(b"Enter passphrase for key '/id_rsa': "));
+        assert!(looks_like_password_prompt(
+            b"Enter passphrase for key '/id_rsa': "
+        ));
         assert!(looks_like_password_prompt(b"alice@host's password: "));
     }
 

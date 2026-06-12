@@ -19,9 +19,8 @@
     "HERMIONE_STUDENT": "${localEnv:USER}"
   },
 
-  // Install the `hermione` recorder binary into the container. Point this at
-  // however you distribute the binary for your course.
-  "postCreateCommand": "curl -fsSL https://hermione.example.edu/install.sh | sh",
+  // Install the `hermione` recorder binary into the container.
+  "postCreateCommand": "curl -fsSL https://raw.githubusercontent.com/jvanbuel/hermione/main/scripts/install-recorder.sh | sh",
 
   "customizations": {
     "vscode": {

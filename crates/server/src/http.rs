@@ -61,10 +61,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
-        .route("/api/students/activity", get(crate::files::students_activity))
+        .route(
+            "/api/students/activity",
+            get(crate::files::students_activity),
+        )
         .route("/api/overview", get(crate::files::overview))
-        .route("/api/analytics/time-per-file", get(crate::files::time_per_file))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_teacher));
+        .route(
+            "/api/analytics/time-per-file",
+            get(crate::files::time_per_file),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_teacher,
+        ));
 
     // Provisioning API, guarded by the super-admin secret.
     let admin = Router::new()
@@ -80,7 +89,10 @@ pub fn router(state: AppState) -> Router {
     // determines the tenant the data lands in.
     let ingest = Router::new()
         .route("/api/file-events", post(crate::files::ingest))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_ingest));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_ingest,
+        ));
 
     public
         .merge(protected)
@@ -207,7 +219,11 @@ async fn require_super_admin(
 
 /// Gate for agent ingest: resolves the course enrollment token (which tenant
 /// the data belongs to) and injects it as a `CourseCtx`.
-async fn require_ingest(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+async fn require_ingest(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let token = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -281,7 +297,9 @@ async fn authorized_session(
         AuthCtx::Admin(admin_id) if tenancy::is_member(&state.db, admin_id, course_id).await => {
             Ok(session)
         }
-        AuthCtx::Admin(_) => Err((StatusCode::FORBIDDEN, "not a member of this course").into_response()),
+        AuthCtx::Admin(_) => {
+            Err((StatusCode::FORBIDDEN, "not a member of this course").into_response())
+        }
     }
 }
 
@@ -295,7 +313,10 @@ struct CourseDto {
 }
 
 /// Courses the caller may see (all of them in open dev mode).
-async fn list_courses(State(state): State<AppState>, Extension(ctx): Extension<AuthCtx>) -> Response {
+async fn list_courses(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+) -> Response {
     let courses = match ctx {
         AuthCtx::OpenDev => tenancy::all_courses(&state.db).await,
         AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id).await,
@@ -512,10 +533,9 @@ fn sse_from_row(row: &terminal_events::Model) -> Event {
         stream: row.stream.clone(),
         offset_ms: row.offset_ms,
         data: row.data.clone(),
-        text: row
-            .text
-            .clone()
-            .unwrap_or_else(|| crate::text::plain(&BASE64.decode(row.data.as_bytes()).unwrap_or_default())),
+        text: row.text.clone().unwrap_or_else(|| {
+            crate::text::plain(&BASE64.decode(row.data.as_bytes()).unwrap_or_default())
+        }),
     };
     json_event(&dto)
 }
@@ -574,5 +594,12 @@ async fn transcript(
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
-    ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }

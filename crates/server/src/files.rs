@@ -12,9 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use hermione_entity::{file_events, sessions};
-use sea_orm::{
-    ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
-};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
@@ -213,9 +211,11 @@ pub async fn time_per_file(
         }
         total += gap;
 
-        let entry = per_file_secs
-            .entry(cur.path.clone())
-            .or_insert((cur.relative_path.clone(), cur.exercise.clone(), 0));
+        let entry = per_file_secs.entry(cur.path.clone()).or_insert((
+            cur.relative_path.clone(),
+            cur.exercise.clone(),
+            0,
+        ));
         entry.2 += gap;
 
         if let Some(ex) = &cur.exercise {
@@ -376,7 +376,10 @@ pub async fn overview(
 
         students.push(OverviewStudent {
             student: student.clone(),
-            file: last.relative_path.clone().or_else(|| Some(last.path.clone())),
+            file: last
+                .relative_path
+                .clone()
+                .or_else(|| Some(last.path.clone())),
             language: last.language.clone(),
             exercise: current_exercise,
             last_seen_unix_ms: last.at.timestamp_millis(),

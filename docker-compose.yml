@@ -15,5 +15,21 @@ services:
       timeout: 3s
       retries: 15
 
+  # The backend. `docker compose up` brings up the whole stack.
+  # Uncomment to run the server in a container; for local dev you can instead
+  # run `cargo run -p hermione-server` against the postgres above.
+  server:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HERMIONE_DATABASE_URL: postgres://hermione:hermione@postgres:5432/hermione
+      # Set to enable the provisioning API (create courses/admins).
+      HERMIONE_ADMIN_TOKEN: ${HERMIONE_ADMIN_TOKEN:-}
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+
 volumes:
   hermione_pgdata:

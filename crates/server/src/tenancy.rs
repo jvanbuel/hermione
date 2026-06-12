@@ -53,11 +53,7 @@ pub async fn create_admin(
 }
 
 /// Returns the admin id if the credentials are valid.
-pub async fn verify_login(
-    db: &DatabaseConnection,
-    username: &str,
-    password: &str,
-) -> Option<Uuid> {
+pub async fn verify_login(db: &DatabaseConnection, username: &str, password: &str) -> Option<Uuid> {
     let admin = admins::Entity::find()
         .filter(admins::Column::Username.eq(username))
         .one(db)

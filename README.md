@@ -214,6 +214,32 @@ sensitive.
 
 ---
 
+## Deployment
+
+The three components ship independently:
+
+- **Backend** — a container image (built by the `Dockerfile`; the web viewer is
+  embedded in the binary). Run the whole stack with `docker compose up` (Postgres
+  + server), or pull `ghcr.io/jvanbuel/hermione`. Migrations run on startup.
+- **Recorder** — a single static-ish binary. Install with:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/jvanbuel/hermione/main/scripts/install-recorder.sh | sh
+  ```
+
+  (downloads a prebuilt binary for the host, or builds from source with cargo).
+- **VSCode extension** — packaged as a `.vsix` (`cd vscode-extension && npm run
+  package`), installable via `code --install-extension` or published to a
+  marketplace.
+
+CI (`.github/workflows/ci.yml`) runs fmt/clippy/test and compiles the extension.
+Tagging `v*` triggers `release.yml`, which builds the recorder binaries (x86_64 +
+aarch64 Linux), packages the `.vsix`, and builds/pushes the server image — the
+artifacts the [`examples/course-template`](examples/course-template) devcontainer
+consumes.
+
+---
+
 ## Development
 
 ```bash

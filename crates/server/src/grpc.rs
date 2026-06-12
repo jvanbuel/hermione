@@ -6,11 +6,9 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures::{Stream, StreamExt};
 use hermione_entity::{sessions, terminal_events};
 use hermione_proto::v1::{
-    ingest_event::Event,
-    ingest_server::Ingest,
-    viewer_server::Viewer,
-    IngestEvent, IngestSummary, ListSessionsRequest, ListSessionsResponse, SessionInfo,
-    StreamKind, TerminalChunk, WatchRequest,
+    ingest_event::Event, ingest_server::Ingest, viewer_server::Viewer, IngestEvent, IngestSummary,
+    ListSessionsRequest, ListSessionsResponse, SessionInfo, StreamKind, TerminalChunk,
+    WatchRequest,
 };
 use sea_orm::{
     ActiveValue::{Set, Unchanged},
@@ -56,7 +54,11 @@ impl Ingest for IngestService {
                 Some(course) => course.id,
                 None => return Err(Status::unauthenticated("invalid enrollment token")),
             },
-            None if self.state.open_dev.load(std::sync::atomic::Ordering::Relaxed) => {
+            None if self
+                .state
+                .open_dev
+                .load(std::sync::atomic::Ordering::Relaxed) =>
+            {
                 crate::tenancy::DEFAULT_COURSE_ID
             }
             None => return Err(Status::unauthenticated("enrollment token required")),
