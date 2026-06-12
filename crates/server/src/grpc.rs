@@ -70,6 +70,7 @@ impl Ingest for IngestService {
         let mut session_id: Option<Uuid> = None;
         let mut bcast: Option<broadcast::Sender<TerminalChunk>> = None;
         let mut seq: i64 = 0;
+        let mut error_count: i32 = 0;
         let mut ended = false;
 
         // Terminal chunks arrive at high frequency, so we buffer them and write
@@ -99,6 +100,7 @@ impl Ingest for IngestService {
                                 started_at: Set(chrono::Utc::now().into()),
                                 ended_at: Set(None),
                                 exit_code: Set(None),
+                                error_count: Set(0),
                             };
                             sessions::Entity::insert(model)
                                 .exec(db)
@@ -112,13 +114,26 @@ impl Ingest for IngestService {
                         Some(Event::Chunk(chunk)) => {
                             let Some(id) = session_id else { continue };
                             let kind = stream_label(chunk.stream);
+                            let text = crate::text::plain(&chunk.data);
+
+                            // Flag error-like output to power struggle detection.
+                            if kind == "stdout" && crate::text::looks_like_error(&text) {
+                                error_count += 1;
+                                let m = sessions::ActiveModel {
+                                    id: Unchanged(id),
+                                    error_count: Set(error_count),
+                                    ..Default::default()
+                                };
+                                let _ = sessions::Entity::update(m).exec(db).await;
+                            }
+
                             buffer.push(terminal_events::ActiveModel {
                                 session_id: Set(id),
                                 seq: Set(seq),
                                 offset_ms: Set(chunk.offset_ms),
                                 stream: Set(kind.to_string()),
                                 data: Set(BASE64.encode(&chunk.data)),
-                                text: Set(Some(crate::text::plain(&chunk.data))),
+                                text: Set(Some(text)),
                                 created_at: Set(chrono::Utc::now().into()),
                                 ..Default::default()
                             });

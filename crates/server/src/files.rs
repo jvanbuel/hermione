@@ -278,6 +278,66 @@ struct OverviewStudent {
     /// Latest terminal session for this student, if any.
     terminal_session_id: Option<String>,
     terminal_status: Option<String>,
+    /// Struggle assessment: "ok", "watch", or "help".
+    struggle: String,
+    /// Human-readable reasons behind the struggle level.
+    struggle_reasons: Vec<String>,
+    /// Error-like outputs across the student's recent sessions.
+    errors: i32,
+    /// Recent sessions that exited non-zero.
+    failed_runs: i32,
+}
+
+/// Time-on-exercise thresholds (seconds) that contribute to struggle level.
+const WATCH_SECS: i64 = 10 * 60;
+const HELP_SECS: i64 = 25 * 60;
+
+/// Per-student error/failure tallies from recent terminal sessions.
+#[derive(Default, Clone, Copy)]
+struct Signals {
+    errors: i32,
+    failed_runs: i32,
+}
+
+fn struggle_rank(level: &str) -> u8 {
+    match level {
+        "help" => 2,
+        "watch" => 1,
+        _ => 0,
+    }
+}
+
+/// Combines signals into a struggle level and the reasons for it.
+fn assess(sig: Signals, seconds_on_exercise: i64) -> (String, Vec<String>) {
+    let mut reasons = Vec::new();
+    if sig.errors > 0 {
+        reasons.push(format!(
+            "{} error{} in recent runs",
+            sig.errors,
+            if sig.errors == 1 { "" } else { "s" }
+        ));
+    }
+    if sig.failed_runs > 0 {
+        reasons.push(format!(
+            "{} failed run{}",
+            sig.failed_runs,
+            if sig.failed_runs == 1 { "" } else { "s" }
+        ));
+    }
+    if seconds_on_exercise >= WATCH_SECS {
+        reasons.push(format!("{} min on this exercise", seconds_on_exercise / 60));
+    }
+
+    let help = sig.errors >= 3 || sig.failed_runs >= 2 || seconds_on_exercise >= HELP_SECS;
+    let watch = sig.errors >= 1 || sig.failed_runs >= 1 || seconds_on_exercise >= WATCH_SECS;
+    let level = if help {
+        "help"
+    } else if watch {
+        "watch"
+    } else {
+        "ok"
+    };
+    (level.to_string(), reasons)
 }
 
 #[derive(Serialize)]
@@ -315,9 +375,12 @@ pub async fn overview(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    // Latest terminal session per student (within this course).
+    // Latest terminal session per student (within this course), plus struggle
+    // signals (errors / failed runs) from each student's recent sessions.
     let mut terminals: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
+    let mut signals: std::collections::HashMap<String, Signals> = std::collections::HashMap::new();
+    let recent = recent_cutoff();
     match sessions::Entity::find()
         .filter(sessions::Column::CourseId.eq(course_id))
         .order_by_desc(sessions::Column::StartedAt)
@@ -328,7 +391,14 @@ pub async fn overview(
             for s in rows {
                 terminals
                     .entry(s.student.clone())
-                    .or_insert((s.id.to_string(), s.status));
+                    .or_insert((s.id.to_string(), s.status.clone()));
+                if s.started_at >= recent {
+                    let sig = signals.entry(s.student.clone()).or_default();
+                    sig.errors += s.error_count;
+                    if matches!(s.exit_code, Some(code) if code != 0) {
+                        sig.failed_runs += 1;
+                    }
+                }
             }
         }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -373,6 +443,8 @@ pub async fn overview(
             "idle"
         };
         let terminal = terminals.get(&student);
+        let sig = signals.get(&student).copied().unwrap_or_default();
+        let (struggle, struggle_reasons) = assess(sig, seconds_on_exercise);
 
         students.push(OverviewStudent {
             student: student.clone(),
@@ -388,6 +460,10 @@ pub async fn overview(
             started_exercise_unix_ms: started_exercise,
             terminal_session_id: terminal.map(|t| t.0.clone()),
             terminal_status: terminal.map(|t| t.1.clone()),
+            struggle,
+            struggle_reasons,
+            errors: sig.errors,
+            failed_runs: sig.failed_runs,
         });
     }
 
@@ -405,7 +481,12 @@ pub async fn overview(
     let exercises: Vec<ExerciseGroup> = groups
         .into_iter()
         .map(|(exercise, mut students)| {
-            students.sort_by(|a, b| b.seconds_on_exercise.cmp(&a.seconds_on_exercise));
+            // Struggling students float to the top, then by time-on-exercise.
+            students.sort_by(|a, b| {
+                struggle_rank(&b.struggle)
+                    .cmp(&struggle_rank(&a.struggle))
+                    .then(b.seconds_on_exercise.cmp(&a.seconds_on_exercise))
+            });
             ExerciseGroup { exercise, students }
         })
         .collect();

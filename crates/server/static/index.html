@@ -61,6 +61,14 @@
     }
     .card:hover { background: #1f242c; border-color: #30363d; }
     .card.open { border-color: #1f6feb; }
+    .card.struggle-help { border-left: 3px solid #f85149; }
+    .card.struggle-watch { border-left: 3px solid #d29922; }
+    .pill { font-size: .62rem; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+      vertical-align: middle; font-weight: 600; }
+    .pill.help { background: #b62324; color: #fff; }
+    .pill.watch { background: #9e6a03; color: #fff; }
+    .who .reason { font-size: .72rem; color: #e3a008; margin-top: 2px; }
+    #alert { font-size: .8rem; color: #f85149; font-weight: 600; }
 
     .avatar {
       position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
@@ -112,6 +120,7 @@
     <span style="font-size:1.1rem">🔮</span>
     <h1>Hermione</h1>
     <select id="course" title="Course"></select>
+    <span id="alert"></span>
     <span class="hint">Click a student to open their terminal · panes tile side by side</span>
     <button id="logout" title="Sign out">Sign out</button>
   </header>
@@ -163,13 +172,20 @@
     // ---- board rendering ----
     function studentCard(s) {
       const isOpen = openPanes.has(s.student);
+      const struggleClass = s.struggle === 'help' ? 'struggle-help'
+                          : s.struggle === 'watch' ? 'struggle-watch' : '';
+      const pill = s.struggle === 'help' ? '<span class="pill help">needs help</span>'
+                 : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '';
+      const reason = (s.struggleReasons && s.struggleReasons.length)
+                   ? `<div class="reason">⚠ ${s.struggleReasons.join(' · ')}</div>` : '';
       return `
-        <div class="card ${isOpen ? 'open' : ''}" data-student="${encodeURIComponent(s.student)}"
+        <div class="card ${isOpen ? 'open' : ''} ${struggleClass}" data-student="${encodeURIComponent(s.student)}"
              data-session="${s.terminalSessionId || ''}" data-exercise="${s.exercise || ''}">
           ${avatarHtml(s.student, s.status)}
           <div class="who">
-            <div class="name">${s.student}</div>
+            <div class="name">${s.student}${pill}</div>
             <div class="file">${s.file || '—'}</div>
+            ${reason}
             <div class="time">
               <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
               <span class="sep">·</span><span style="color:#7d8590">${timeAgo(s.lastSeenUnixMs)}</span>
@@ -213,8 +229,12 @@
         data = await res.json();
       } catch (_) { return; }
 
+      const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
+      const needHelp = allStudents.filter(s => s.struggle === 'help').length;
+      document.getElementById('alert').textContent = needHelp ? `🔴 ${needHelp} need help` : '';
+
       const board = document.getElementById('board');
-      const total = data.exercises.reduce((n, g) => n + g.students.length, 0) + data.noExercise.length;
+      const total = allStudents.length;
       if (total === 0) {
         board.innerHTML = '<div class="empty">No student activity yet.<br>Start the recorder and the VSCode extension.</div>';
         return;

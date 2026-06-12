@@ -121,9 +121,11 @@ Recorder options:
 
 ### 4. Watch live
 
-Open **http://localhost:8080** in a browser. Pick a session from the sidebar to
-watch it live; ended sessions replay their full history. The **Students · open
-files** panel shows what each student currently has open in their editor.
+Open **http://localhost:8080**. The board groups students by the exercise
+they're on, with time-on-task; click an avatar to open their terminal (multiple
+tile side by side). Students who look stuck — errors or failed runs in their
+terminal, or a long time on one exercise — are flagged **needs help** and sorted
+to the top, with a count in the header.
 
 ### 5. (Optional) Report editor activity
 
@@ -265,10 +267,11 @@ live per-student activity and time-on-task analytics, surfaced in the viewer.
 Planned next:
 
 - [x] Multi-tenancy: courses, admin accounts + membership, per-course enrollment.
+- [x] Struggle detection: flag students with errors/failed runs/time-stuck.
 - [ ] First-class exercise model (assignments table; teacher-side mapping UI).
 - [ ] Correlate terminal sessions with editor activity per student/exercise.
 - [x] Authentication: admin login + per-course enrollment tokens.
-- [ ] Richer offline analytics: replay timeline, struggle detection.
+- [ ] Richer offline analytics: replay timeline.
 - [ ] Render stdin keystrokes distinctly in the viewer (e.g. input highlighting).
 
 [xterm.js]: https://xtermjs.org/

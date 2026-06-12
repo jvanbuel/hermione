@@ -20,6 +20,8 @@ pub struct Model {
     pub started_at: DateTimeWithTimeZone,
     pub ended_at: Option<DateTimeWithTimeZone>,
     pub exit_code: Option<i32>,
+    /// Number of error-like outputs detected during the session.
+    pub error_count: i32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
