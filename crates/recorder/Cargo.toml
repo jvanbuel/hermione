@@ -1,0 +1,22 @@
+[package]
+name = "hermione-recorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hermione"
+path = "src/main.rs"
+
+[dependencies]
+hermione-proto.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+prost.workspace = true
+portable-pty.workspace = true
+crossterm.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

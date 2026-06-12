@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermione — Live Terminals</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100vh; display: grid; grid-template-columns: 300px 1fr;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      background: #1e1e1e; color: #e6e6e6;
+    }
+    aside { border-right: 1px solid #333; background: #252526; overflow-y: auto; }
+    aside h1 { font-size: 1.05rem; margin: 0; padding: 16px; border-bottom: 1px solid #333; }
+    aside h1 .glyph { margin-right: 6px; }
+    .session {
+      padding: 12px 16px; border-bottom: 1px solid #2d2d2d; cursor: pointer;
+    }
+    .session:hover { background: #2a2d2e; }
+    .session.active { background: #094771; }
+    .session .student { font-weight: 600; }
+    .session .cmd { color: #9aa0a6; font-size: .8rem; font-family: monospace; }
+    .session .meta { font-size: .72rem; margin-top: 4px; }
+    .badge { padding: 1px 6px; border-radius: 8px; font-size: .68rem; }
+    .badge.active { background: #1f6f3f; }
+    .badge.ended { background: #5a3a3a; }
+    main { display: flex; flex-direction: column; min-width: 0; }
+    header { padding: 10px 16px; border-bottom: 1px solid #333; font-size: .9rem; color: #9aa0a6; }
+    #term { flex: 1; padding: 8px; min-height: 0; }
+    .empty { margin: auto; color: #777; }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1><span class="glyph">🔮</span>Hermione</h1>
+    <div id="sessions"></div>
+  </aside>
+  <main>
+    <header id="status">Select a session to watch.</header>
+    <div id="term"></div>
+  </main>
+
+  <script>
+    const term = new Terminal({ convertEol: false, fontFamily: 'monospace', fontSize: 13, scrollback: 10000 });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(document.getElementById('term'));
+    fit.fit();
+    window.addEventListener('resize', () => fit.fit());
+
+    let evtSource = null;
+    let activeId = null;
+
+    function b64ToBytes(b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+
+    function watch(id) {
+      if (evtSource) evtSource.close();
+      activeId = id;
+      term.reset();
+      document.querySelectorAll('.session').forEach(el =>
+        el.classList.toggle('active', el.dataset.id === id));
+      document.getElementById('status').textContent = `Watching ${id}`;
+
+      evtSource = new EventSource(`/api/sessions/${id}/stream?history=true`);
+      evtSource.onmessage = (e) => {
+        const chunk = JSON.parse(e.data);
+        // Render only what the program wrote; typed stdin is usually echoed
+        // back by the program, so showing it too would duplicate keystrokes.
+        if (chunk.stream === 'stdout') {
+          term.write(b64ToBytes(chunk.data));
+        }
+      };
+      evtSource.onerror = () => {
+        document.getElementById('status').textContent = `Disconnected from ${id} (retrying…)`;
+      };
+    }
+
+    function timeAgo(ms) {
+      const s = Math.round((Date.now() - ms) / 1000);
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.round(s / 60)}m ago`;
+      return `${Math.round(s / 3600)}h ago`;
+    }
+
+    async function refresh() {
+      let sessions = [];
+      try {
+        sessions = await (await fetch('/api/sessions')).json();
+      } catch (_) { return; }
+      const container = document.getElementById('sessions');
+      if (sessions.length === 0) {
+        container.innerHTML = '<div class="empty" style="padding:16px">No sessions yet.</div>';
+        return;
+      }
+      container.innerHTML = sessions.map(s => `
+        <div class="session ${s.id === activeId ? 'active' : ''}" data-id="${s.id}">
+          <div class="student">${s.student}</div>
+          <div class="cmd">${s.command}</div>
+          <div class="meta">
+            <span class="badge ${s.status}">${s.status}</span>
+            &nbsp;${timeAgo(s.started_at_unix_ms)}
+            ${s.exit_code != null ? `&nbsp;· exit ${s.exit_code}` : ''}
+          </div>
+        </div>`).join('');
+      container.querySelectorAll('.session').forEach(el =>
+        el.addEventListener('click', () => watch(el.dataset.id)));
+    }
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

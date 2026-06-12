@@ -1,0 +1,43 @@
+//! Shared application state and the live fan-out hub.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use hermione_proto::v1::TerminalChunk;
+use sea_orm::DatabaseConnection;
+use tokio::sync::{broadcast, RwLock};
+use uuid::Uuid;
+
+/// Per-session broadcast channels used to fan out live terminal activity to
+/// any number of observers (gRPC watchers and SSE web clients).
+#[derive(Clone, Default)]
+pub struct Hub {
+    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<TerminalChunk>>>>,
+}
+
+impl Hub {
+    /// Returns the broadcast sender for a session, creating it if necessary.
+    pub async fn channel(&self, id: Uuid) -> broadcast::Sender<TerminalChunk> {
+        let mut map = self.channels.write().await;
+        map.entry(id)
+            .or_insert_with(|| broadcast::channel(4096).0)
+            .clone()
+    }
+
+    /// Subscribes to live chunks for a session.
+    pub async fn subscribe(&self, id: Uuid) -> broadcast::Receiver<TerminalChunk> {
+        self.channel(id).await.subscribe()
+    }
+
+    /// Drops the channel once a session has ended and no longer needs fan-out.
+    pub async fn remove(&self, id: Uuid) {
+        self.channels.write().await.remove(&id);
+    }
+}
+
+/// State shared across the gRPC and HTTP servers.
+#[derive(Clone)]
+pub struct AppState {
+    pub db: DatabaseConnection,
+    pub hub: Hub,
+}

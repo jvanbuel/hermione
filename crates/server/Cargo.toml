@@ -1,0 +1,37 @@
+[package]
+name = "hermione-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hermione-server"
+path = "src/main.rs"
+
+[dependencies]
+hermione-proto.workspace = true
+hermione-entity.workspace = true
+hermione-migration.workspace = true
+
+tokio.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+
+tonic.workspace = true
+prost.workspace = true
+
+axum.workspace = true
+tower-http.workspace = true
+
+sea-orm.workspace = true
+
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+base64.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

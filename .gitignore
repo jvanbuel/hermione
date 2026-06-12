@@ -1,11 +1,12 @@
-hermione
-
-# Added by cargo
-
+# Rust
 /target
+
+# Node (future VSCode extension / web frontends)
 node_modules
 dist
 build
 out
-.DS_Store
 *.vsix
+
+# OS
+.DS_Store
