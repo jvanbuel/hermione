@@ -47,9 +47,11 @@ A Rust workspace with five crates:
   a sequence of `IngestEvent`s (`SessionStart`, `TerminalChunk`, `Resize`,
   `SessionEnd`) to the backend. A typed contract with built-in backpressure.
 - **Storage: everything in Postgres (SeaORM).** Sessions live in `sessions`;
-  raw terminal activity is append-only in `terminal_events`. Raw bytes (which
-  include ANSI escapes and may not be valid UTF-8) are stored base64-encoded in
-  a `TEXT` column, so any byte stream round-trips safely.
+  raw terminal activity is append-only in `terminal_events`. Each event keeps
+  **both** forms of the bytes: the verbatim raw bytes (ANSI escapes and all,
+  which may not be valid UTF-8) base64-encoded in `data` for faithful replay,
+  and an ANSI-stripped, lossy-UTF8 plain-text version in `text` that is
+  readable and searchable for offline analysis.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -124,7 +126,11 @@ watch it live; ended sessions replay their full history.
 - `GET /` — the bundled xterm.js web viewer.
 - `GET /api/sessions` — JSON list of sessions.
 - `GET /api/sessions/{id}/stream?history=true` — SSE stream of terminal chunks
-  (`{ stream, offset_ms, data }`, where `data` is base64).
+  (`{ stream, offset_ms, data, text }`, where `data` is verbatim base64 bytes
+  and `text` is the ANSI-stripped plain text).
+- `GET /api/sessions/{id}/transcript?stream=stdout` — the ANSI-stripped plain
+  text transcript of a session as `text/plain` (`stream` = `stdout` (default),
+  `stdin`, or `all`).
 
 ---
 

@@ -78,6 +78,7 @@ impl Ingest for IngestService {
                         offset_ms: Set(chunk.offset_ms),
                         stream: Set(kind.to_string()),
                         data: Set(BASE64.encode(&chunk.data)),
+                        text: Set(Some(crate::text::plain(&chunk.data))),
                         created_at: Set(chrono::Utc::now().into()),
                         ..Default::default()
                     };

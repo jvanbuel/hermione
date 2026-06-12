@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
+        .route("/api/sessions/{id}/transcript", get(transcript))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -90,8 +91,10 @@ struct StreamQuery {
 struct ChunkDto {
     stream: String,
     offset_ms: i64,
-    /// base64-encoded raw terminal bytes.
+    /// base64-encoded raw terminal bytes (verbatim, with ANSI escapes).
     data: String,
+    /// ANSI-stripped plain text of the same bytes.
+    text: String,
 }
 
 async fn stream_session(
@@ -134,6 +137,7 @@ async fn stream_session(
                         },
                         offset_ms: chunk.offset_ms,
                         data: BASE64.encode(&chunk.data),
+                        text: crate::text::plain(&chunk.data),
                     };
                     yield Ok(json_event(&dto));
                 }
@@ -153,6 +157,10 @@ fn sse_from_row(row: &terminal_events::Model) -> Event {
         stream: row.stream.clone(),
         offset_ms: row.offset_ms,
         data: row.data.clone(),
+        text: row
+            .text
+            .clone()
+            .unwrap_or_else(|| crate::text::plain(&BASE64.decode(row.data.as_bytes()).unwrap_or_default())),
     };
     json_event(&dto)
 }
@@ -160,4 +168,49 @@ fn sse_from_row(row: &terminal_events::Model) -> Event {
 fn json_event(dto: &ChunkDto) -> Event {
     // serde_json::to_string only fails on non-string map keys, not here.
     Event::default().data(serde_json::to_string(dto).unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct TranscriptQuery {
+    /// "stdout" (default), "stdin", or "all".
+    stream: Option<String>,
+}
+
+/// Returns the ANSI-stripped plain-text transcript of a session, in order.
+async fn transcript(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<TranscriptQuery>,
+) -> axum::response::Response {
+    let id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid session id").into_response(),
+    };
+
+    let mut find = terminal_events::Entity::find()
+        .filter(terminal_events::Column::SessionId.eq(id))
+        .order_by_asc(terminal_events::Column::Seq);
+
+    match query.stream.as_deref() {
+        Some("stdin") => find = find.filter(terminal_events::Column::Stream.eq("stdin")),
+        Some("all") => {}
+        // Default to stdout: what the student actually saw.
+        _ => find = find.filter(terminal_events::Column::Stream.eq("stdout")),
+    }
+
+    match find.all(&state.db).await {
+        Ok(rows) => {
+            let body: String = rows
+                .iter()
+                .map(|r| {
+                    r.text.clone().unwrap_or_else(|| {
+                        crate::text::plain(&BASE64.decode(r.data.as_bytes()).unwrap_or_default())
+                    })
+                })
+                .collect();
+            ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
+                .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }

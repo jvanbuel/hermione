@@ -33,5 +33,6 @@ serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 base64.workspace = true
+strip-ansi-escapes.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

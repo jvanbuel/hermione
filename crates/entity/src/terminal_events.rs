@@ -18,8 +18,11 @@ pub struct Model {
     pub offset_ms: i64,
     /// "stdout" or "stdin".
     pub stream: String,
-    /// Base64-encoded raw terminal bytes.
+    /// Base64-encoded raw terminal bytes (verbatim, including ANSI escapes).
     pub data: String,
+    /// ANSI-stripped, lossy-UTF8 plain text — readable and searchable for
+    /// offline analysis. `None` only for legacy rows written before this column.
+    pub text: Option<String>,
     pub created_at: DateTimeWithTimeZone,
 }
 

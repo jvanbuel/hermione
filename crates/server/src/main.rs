@@ -4,6 +4,7 @@
 mod grpc;
 mod http;
 mod state;
+mod text;
 
 use anyhow::Context;
 use clap::Parser;
