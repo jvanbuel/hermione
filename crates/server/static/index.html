@@ -3,75 +3,145 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hermione — Live Terminals</title>
+  <title>Hermione — Class Overview</title>
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
     body {
-      margin: 0; height: 100vh; display: grid; grid-template-columns: 300px 1fr;
+      display: flex; flex-direction: column;
       font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-      background: #1e1e1e; color: #e6e6e6;
+      background: #0d1117; color: #e6edf3;
     }
-    aside { border-right: 1px solid #333; background: #252526; overflow-y: auto; }
-    aside h1 { font-size: 1.05rem; margin: 0; padding: 16px; border-bottom: 1px solid #333; }
-    aside h1 .glyph { margin-right: 6px; }
-    .section-title {
-      padding: 10px 16px 4px; font-size: .7rem; text-transform: uppercase;
-      letter-spacing: .06em; color: #6b7177;
+
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 18px; border-bottom: 1px solid #21262d; background: #161b22;
+      flex: 0 0 auto;
     }
-    .student {
-      padding: 10px 16px; border-bottom: 1px solid #2d2d2d;
-      display: flex; flex-direction: column; gap: 2px;
+    header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header .hint { margin-left: auto; font-size: .78rem; color: #7d8590; }
+
+    #content { flex: 1 1 auto; display: flex; min-height: 0; }
+
+    /* ---- Overview board (main pane) ---- */
+    #board {
+      flex: 1 1 0; min-width: 0; overflow-x: auto;
+      display: flex; gap: 16px; padding: 16px; align-items: flex-start;
     }
-    .student .name { font-weight: 600; }
-    .student .file { color: #9aa0a6; font-size: .8rem; font-family: monospace; word-break: break-all; }
-    .student .meta { font-size: .72rem; margin-top: 2px; }
-    .badge.exercise { background: #3a3a5a; }
-    .badge.idle { background: #4a4a4a; }
-    .session {
-      padding: 12px 16px; border-bottom: 1px solid #2d2d2d; cursor: pointer;
+    .column {
+      flex: 0 0 260px; background: #161b22; border: 1px solid #21262d;
+      border-radius: 10px; max-height: 100%; display: flex; flex-direction: column;
     }
-    .session:hover { background: #2a2d2e; }
-    .session.active { background: #094771; }
-    .session .student { font-weight: 600; }
-    .session .cmd { color: #9aa0a6; font-size: .8rem; font-family: monospace; }
-    .session .meta { font-size: .72rem; margin-top: 4px; }
-    .badge { padding: 1px 6px; border-radius: 8px; font-size: .68rem; }
-    .badge.active { background: #1f6f3f; }
-    .badge.ended { background: #5a3a3a; }
-    main { display: flex; flex-direction: column; min-width: 0; }
-    header { padding: 10px 16px; border-bottom: 1px solid #333; font-size: .9rem; color: #9aa0a6; }
-    #term { flex: 1; padding: 8px; min-height: 0; }
-    .empty { margin: auto; color: #777; }
+    .column > h2 {
+      font-size: .82rem; margin: 0; padding: 12px 14px; border-bottom: 1px solid #21262d;
+      display: flex; align-items: center; gap: 8px; font-weight: 600;
+    }
+    .column.unassigned > h2 { color: #7d8590; }
+    .count { margin-left: auto; font-size: .72rem; color: #7d8590;
+      background: #21262d; padding: 1px 8px; border-radius: 10px; }
+    .cards { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+
+    .card {
+      display: flex; align-items: center; gap: 10px; padding: 8px;
+      border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+      transition: background .1s, border-color .1s;
+    }
+    .card:hover { background: #1f242c; border-color: #30363d; }
+    .card.open { border-color: #1f6feb; }
+
+    .avatar {
+      position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
+      display: grid; place-items: center; font-size: .8rem; font-weight: 700; color: #fff;
+      user-select: none;
+    }
+    .avatar .dot {
+      position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px;
+      border-radius: 50%; border: 2px solid #161b22;
+    }
+    .dot.active { background: #2ea043; }
+    .dot.idle { background: #6e7681; }
+
+    .who { min-width: 0; flex: 1; }
+    .who .name { font-weight: 600; font-size: .9rem; }
+    .who .file { color: #7d8590; font-size: .76rem; font-family: ui-monospace, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .who .time { font-size: .76rem; margin-top: 2px; }
+    .time .clock { color: #d29922; font-variant-numeric: tabular-nums; }
+    .time .sep { color: #4d5560; margin: 0 5px; }
+
+    .empty { margin: auto; color: #6e7681; padding: 40px; text-align: center; }
+
+    /* ---- Terminal dock (extra panes) ---- */
+    #dock {
+      flex: 1.5 1 0; min-width: 0; border-left: 1px solid #21262d;
+      display: none; grid-auto-rows: 1fr; gap: 1px; background: #21262d;
+    }
+    #dock.active { display: grid; }
+    .pane { background: #0d1117; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .pane > .pane-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px; background: #161b22; border-bottom: 1px solid #21262d; font-size: .82rem;
+    }
+    .pane-head .ex { color: #7d8590; font-size: .74rem; }
+    .pane-head .badge { font-size: .68rem; padding: 1px 6px; border-radius: 8px; background: #30363d; }
+    .pane-head .badge.active { background: #1f6f3f; }
+    .pane-head .close {
+      margin-left: auto; cursor: pointer; color: #7d8590; border: none; background: none;
+      font-size: 1rem; line-height: 1; padding: 2px 6px; border-radius: 5px;
+    }
+    .pane-head .close:hover { background: #30363d; color: #e6edf3; }
+    .pane > .term { flex: 1 1 auto; min-height: 0; padding: 6px 8px; }
+    .pane .note { margin: auto; color: #6e7681; font-size: .85rem; padding: 24px; text-align: center; }
   </style>
 </head>
 <body>
-  <aside>
-    <h1><span class="glyph">🔮</span>Hermione</h1>
-    <div class="section-title">Students · open files</div>
-    <div id="students"></div>
-    <div class="section-title">Terminal sessions</div>
-    <div id="sessions"></div>
-  </aside>
-  <main>
-    <header id="status">Select a session to watch.</header>
-    <div id="term"></div>
-  </main>
+  <header>
+    <span style="font-size:1.1rem">🔮</span>
+    <h1>Hermione</h1>
+    <span class="hint">Click a student to open their terminal · panes tile side by side</span>
+  </header>
+  <div id="content">
+    <div id="board"><div class="empty">Loading…</div></div>
+    <div id="dock"></div>
+  </div>
 
   <script>
-    const term = new Terminal({ convertEol: false, fontFamily: 'monospace', fontSize: 13, scrollback: 10000 });
-    const fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(document.getElementById('term'));
-    fit.fit();
-    window.addEventListener('resize', () => fit.fit());
+    const TERM_THEME = { background: '#0d1117', foreground: '#e6edf3', cursor: '#e6edf3' };
+    const openPanes = new Map(); // student -> { term, fit, es, el }
 
-    let evtSource = null;
-    let activeId = null;
-
+    // ---- helpers ----
+    function hashHue(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+      return h;
+    }
+    function initials(name) {
+      const parts = name.split(/[\s._-]+/).filter(Boolean);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+      return name.slice(0, 2).toUpperCase();
+    }
+    function avatarHtml(name, status, extraClass = '') {
+      const hue = hashHue(name);
+      return `<div class="avatar ${extraClass}" style="background:hsl(${hue},48%,45%)">
+        ${initials(name)}<span class="dot ${status}"></span></div>`;
+    }
+    function fmtDuration(secs) {
+      if (secs < 60) return `${secs}s`;
+      const m = Math.floor(secs / 60), s = secs % 60;
+      if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+      const h = Math.floor(m / 60);
+      return `${h}h ${String(m % 60).padStart(2, '0')}m`;
+    }
+    function timeAgo(ms) {
+      const s = Math.round((Date.now() - ms) / 1000);
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.round(s / 60)}m ago`;
+      return `${Math.round(s / 3600)}h ago`;
+    }
     function b64ToBytes(b64) {
       const bin = atob(b64);
       const bytes = new Uint8Array(bin.length);
@@ -79,89 +149,135 @@
       return bytes;
     }
 
-    function watch(id) {
-      if (evtSource) evtSource.close();
-      activeId = id;
-      term.reset();
-      document.querySelectorAll('.session').forEach(el =>
-        el.classList.toggle('active', el.dataset.id === id));
-      document.getElementById('status').textContent = `Watching ${id}`;
-
-      evtSource = new EventSource(`/api/sessions/${id}/stream?history=true`);
-      evtSource.onmessage = (e) => {
-        const chunk = JSON.parse(e.data);
-        // Render only what the program wrote; typed stdin is usually echoed
-        // back by the program, so showing it too would duplicate keystrokes.
-        if (chunk.stream === 'stdout') {
-          term.write(b64ToBytes(chunk.data));
-        }
-      };
-      evtSource.onerror = () => {
-        document.getElementById('status').textContent = `Disconnected from ${id} (retrying…)`;
-      };
+    // ---- board rendering ----
+    function studentCard(s) {
+      const isOpen = openPanes.has(s.student);
+      return `
+        <div class="card ${isOpen ? 'open' : ''}" data-student="${encodeURIComponent(s.student)}"
+             data-session="${s.terminalSessionId || ''}" data-exercise="${s.exercise || ''}">
+          ${avatarHtml(s.student, s.status)}
+          <div class="who">
+            <div class="name">${s.student}</div>
+            <div class="file">${s.file || '—'}</div>
+            <div class="time">
+              <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
+              <span class="sep">·</span><span style="color:#7d8590">${timeAgo(s.lastSeenUnixMs)}</span>
+            </div>
+          </div>
+        </div>`;
     }
-
-    function timeAgo(ms) {
-      const s = Math.round((Date.now() - ms) / 1000);
-      if (s < 60) return `${s}s ago`;
-      if (s < 3600) return `${Math.round(s / 60)}m ago`;
-      return `${Math.round(s / 3600)}h ago`;
+    function column(title, students, cls = '') {
+      return `
+        <div class="column ${cls}">
+          <h2>${title}<span class="count">${students.length}</span></h2>
+          <div class="cards">${students.map(studentCard).join('')}</div>
+        </div>`;
     }
 
     async function refresh() {
-      let sessions = [];
-      try {
-        sessions = await (await fetch('/api/sessions')).json();
-      } catch (_) { return; }
-      const container = document.getElementById('sessions');
-      if (sessions.length === 0) {
-        container.innerHTML = '<div class="empty" style="padding:16px">No sessions yet.</div>';
+      let data;
+      try { data = await (await fetch('/api/overview')).json(); }
+      catch (_) { return; }
+
+      const board = document.getElementById('board');
+      const total = data.exercises.reduce((n, g) => n + g.students.length, 0) + data.noExercise.length;
+      if (total === 0) {
+        board.innerHTML = '<div class="empty">No student activity yet.<br>Start the recorder and the VSCode extension.</div>';
         return;
       }
-      container.innerHTML = sessions.map(s => `
-        <div class="session ${s.id === activeId ? 'active' : ''}" data-id="${s.id}">
-          <div class="student">${s.student}</div>
-          <div class="cmd">${s.command}</div>
-          <div class="meta">
-            <span class="badge ${s.status}">${s.status}</span>
-            &nbsp;${timeAgo(s.started_at_unix_ms)}
-            ${s.exit_code != null ? `&nbsp;· exit ${s.exit_code}` : ''}
-          </div>
-        </div>`).join('');
-      container.querySelectorAll('.session').forEach(el =>
-        el.addEventListener('click', () => watch(el.dataset.id)));
+      let html = data.exercises.map(g => column(`📘 ${g.exercise}`, g.students)).join('');
+      if (data.noExercise.length) html += column('No exercise', data.noExercise, 'unassigned');
+      board.innerHTML = html;
+
+      board.querySelectorAll('.card').forEach(el => {
+        el.addEventListener('click', () => {
+          const student = decodeURIComponent(el.dataset.student);
+          openTerminal(student, el.dataset.session || null, el.dataset.exercise || null);
+        });
+      });
     }
 
-    async function refreshStudents() {
-      let students = [];
-      try {
-        students = await (await fetch('/api/students/activity')).json();
-      } catch (_) { return; }
-      const container = document.getElementById('students');
-      if (students.length === 0) {
-        container.innerHTML = '<div class="empty" style="padding:12px 16px;color:#777">No file activity yet.</div>';
-        return;
+    // ---- terminal panes ----
+    function openTerminal(student, sessionId, exercise) {
+      if (openPanes.has(student)) { flashPane(student); return; }
+
+      const dock = document.getElementById('dock');
+      const pane = document.createElement('div');
+      pane.className = 'pane';
+      pane.innerHTML = `
+        <div class="pane-head">
+          ${avatarHtml(student, 'active')}
+          <span><b>${student}</b> ${exercise ? `<span class="ex">· ${exercise}</span>` : ''}</span>
+          <button class="close" title="Close">✕</button>
+        </div>
+        <div class="term"></div>`;
+      dock.appendChild(pane);
+      dock.classList.add('active');
+      pane.querySelector('.close').addEventListener('click', () => closeTerminal(student));
+
+      const body = pane.querySelector('.term');
+      let term = null, fit = null, es = null;
+
+      if (!sessionId) {
+        body.innerHTML = `<div class="note">No terminal session recorded for <b>${student}</b> yet.</div>`;
+      } else {
+        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 12,
+          scrollback: 10000, theme: TERM_THEME, convertEol: false });
+        fit = new FitAddon.FitAddon();
+        term.loadAddon(fit);
+        term.open(body);
+        setTimeout(() => { try { fit.fit(); } catch (_) {} }, 0);
+
+        es = new EventSource(`/api/sessions/${sessionId}/stream?history=true`);
+        es.onmessage = (e) => {
+          const chunk = JSON.parse(e.data);
+          if (chunk.stream === 'stdout') term.write(b64ToBytes(chunk.data));
+        };
       }
-      container.innerHTML = students.map(s => {
-        const file = s.relativePath || (s.path || '').split('/').pop() || '—';
-        const stale = Date.now() - s.atUnixMs > 60000;
-        return `
-          <div class="student">
-            <div class="name">${s.student}</div>
-            <div class="file">${file}</div>
-            <div class="meta">
-              ${s.exercise ? `<span class="badge exercise">${s.exercise}</span>&nbsp;` : ''}
-              <span class="badge ${stale ? 'idle' : 'active'}">${stale ? 'idle' : 'active'}</span>
-              &nbsp;${timeAgo(s.atUnixMs)}
-            </div>
-          </div>`;
-      }).join('');
+
+      openPanes.set(student, { term, fit, es, el: pane });
+      relayout();
+      markOpenCards();
     }
+
+    function closeTerminal(student) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      if (p.es) p.es.close();
+      if (p.term) p.term.dispose();
+      p.el.remove();
+      openPanes.delete(student);
+      if (openPanes.size === 0) document.getElementById('dock').classList.remove('active');
+      relayout();
+      markOpenCards();
+    }
+
+    function flashPane(student) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      p.el.style.outline = '2px solid #1f6feb';
+      setTimeout(() => { p.el.style.outline = ''; }, 600);
+    }
+
+    function markOpenCards() {
+      document.querySelectorAll('.card').forEach(el => {
+        el.classList.toggle('open', openPanes.has(decodeURIComponent(el.dataset.student)));
+      });
+    }
+
+    // Lay terminal panes out in a near-square grid and refit.
+    function relayout() {
+      const dock = document.getElementById('dock');
+      const n = openPanes.size;
+      const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+      dock.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      setTimeout(() => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }), 30);
+    }
+
+    window.addEventListener('resize', () => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }));
 
     refresh();
-    refreshStudents();
     setInterval(refresh, 3000);
-    setInterval(refreshStudents, 3000);
   </script>
 </body>
 </html>

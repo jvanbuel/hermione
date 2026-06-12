@@ -11,7 +11,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use hermione_entity::file_events;
+use hermione_entity::{file_events, sessions};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder,
 };
@@ -22,6 +22,9 @@ use crate::state::AppState;
 /// Gaps longer than this (seconds) between consecutive events are treated as
 /// the student being away, and not counted as time-on-task.
 const IDLE_GAP_SECS: i64 = 120;
+
+/// A student last seen within this many seconds is considered "active".
+const ACTIVE_WINDOW_SECS: i64 = 90;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,4 +222,153 @@ fn unix_ms_to_dt(ms: i64) -> sea_orm::prelude::DateTimeWithTimeZone {
     DateTime::<Utc>::from_timestamp_millis(ms)
         .unwrap_or_else(Utc::now)
         .into()
+}
+
+// ---------------------------------------------------------------------------
+// Overview: students grouped by the exercise they're currently working on,
+// with time-on-task and a link to their terminal — everything the dashboard's
+// main board needs, in one call.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverviewStudent {
+    student: String,
+    file: Option<String>,
+    language: Option<String>,
+    exercise: Option<String>,
+    last_seen_unix_ms: i64,
+    /// "active" if seen recently, else "idle".
+    status: String,
+    /// Accumulated time-on-task for the current exercise (seconds).
+    seconds_on_exercise: i64,
+    /// When the student first touched the current exercise.
+    started_exercise_unix_ms: Option<i64>,
+    /// Latest terminal session for this student, if any.
+    terminal_session_id: Option<String>,
+    terminal_status: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExerciseGroup {
+    exercise: String,
+    students: Vec<OverviewStudent>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Overview {
+    exercises: Vec<ExerciseGroup>,
+    /// Students whose current file maps to no exercise.
+    no_exercise: Vec<OverviewStudent>,
+}
+
+pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
+    let events = match file_events::Entity::find()
+        .order_by_asc(file_events::Column::At)
+        .all(&state.db)
+        .await
+    {
+        Ok(e) => e,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Latest terminal session per student.
+    let mut terminals: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    match sessions::Entity::find()
+        .order_by_desc(sessions::Column::StartedAt)
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => {
+            for s in rows {
+                terminals
+                    .entry(s.student.clone())
+                    .or_insert((s.id.to_string(), s.status));
+            }
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+
+    // Bucket events per student, preserving chronological order.
+    use std::collections::HashMap;
+    let mut per_student: HashMap<String, Vec<file_events::Model>> = HashMap::new();
+    for ev in events {
+        per_student.entry(ev.student.clone()).or_default().push(ev);
+    }
+
+    let now = Utc::now().timestamp();
+    let mut students: Vec<OverviewStudent> = Vec::new();
+
+    for (student, evs) in per_student {
+        let Some(last) = evs.last() else { continue };
+        let current_exercise = last.exercise.clone();
+
+        // Accumulated active time on the current exercise, and when it started.
+        let mut seconds_on_exercise = 0i64;
+        let mut started_exercise: Option<i64> = None;
+        for ev in &evs {
+            if ev.exercise == current_exercise {
+                let t = ev.at.timestamp_millis();
+                started_exercise = Some(started_exercise.map_or(t, |s| s.min(t)));
+            }
+        }
+        for pair in evs.windows(2) {
+            let (cur, next) = (&pair[0], &pair[1]);
+            if cur.kind == "close" || cur.exercise != current_exercise {
+                continue;
+            }
+            let gap = (next.at.timestamp() - cur.at.timestamp()).clamp(0, IDLE_GAP_SECS);
+            seconds_on_exercise += gap;
+        }
+
+        let last_seen = last.at.timestamp();
+        let status = if now - last_seen <= ACTIVE_WINDOW_SECS {
+            "active"
+        } else {
+            "idle"
+        };
+        let terminal = terminals.get(&student);
+
+        students.push(OverviewStudent {
+            student: student.clone(),
+            file: last.relative_path.clone().or_else(|| Some(last.path.clone())),
+            language: last.language.clone(),
+            exercise: current_exercise,
+            last_seen_unix_ms: last.at.timestamp_millis(),
+            status: status.to_string(),
+            seconds_on_exercise,
+            started_exercise_unix_ms: started_exercise,
+            terminal_session_id: terminal.map(|t| t.0.clone()),
+            terminal_status: terminal.map(|t| t.1.clone()),
+        });
+    }
+
+    // Group by current exercise.
+    let mut groups: std::collections::BTreeMap<String, Vec<OverviewStudent>> =
+        std::collections::BTreeMap::new();
+    let mut no_exercise: Vec<OverviewStudent> = Vec::new();
+    for s in students {
+        match &s.exercise {
+            Some(ex) => groups.entry(ex.clone()).or_default().push(s),
+            None => no_exercise.push(s),
+        }
+    }
+
+    let exercises: Vec<ExerciseGroup> = groups
+        .into_iter()
+        .map(|(exercise, mut students)| {
+            students.sort_by(|a, b| b.seconds_on_exercise.cmp(&a.seconds_on_exercise));
+            ExerciseGroup { exercise, students }
+        })
+        .collect();
+    no_exercise.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+
+    Json(Overview {
+        exercises,
+        no_exercise,
+    })
+    .into_response()
 }

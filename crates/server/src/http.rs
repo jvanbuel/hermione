@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/transcript", get(transcript))
         .route("/api/file-events", post(crate::files::ingest))
         .route("/api/students/activity", get(crate::files::students_activity))
+        .route("/api/overview", get(crate::files::overview))
         .route("/api/analytics/time-per-file", get(crate::files::time_per_file))
         .layer(CorsLayer::permissive())
         .with_state(state)
