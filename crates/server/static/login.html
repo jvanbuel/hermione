@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermione — Sign in</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid; place-items: center; background: #0d1117; color: #e6edf3;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    .card {
+      width: 320px; background: #161b22; border: 1px solid #21262d; border-radius: 12px;
+      padding: 28px; text-align: center;
+    }
+    .glyph { font-size: 2rem; }
+    h1 { font-size: 1.2rem; margin: 8px 0 4px; }
+    p { color: #7d8590; font-size: .85rem; margin: 0 0 20px; }
+    input {
+      width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #30363d;
+      background: #0d1117; color: #e6edf3; font-size: .95rem; margin-bottom: 12px;
+    }
+    button {
+      width: 100%; padding: 10px; border: none; border-radius: 8px; cursor: pointer;
+      background: #238636; color: #fff; font-size: .95rem; font-weight: 600;
+    }
+    button:hover { background: #2ea043; }
+    .error { color: #f85149; font-size: .82rem; min-height: 1.1em; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <form class="card" id="form">
+    <div class="glyph">🔮</div>
+    <h1>Hermione</h1>
+    <p>Teacher sign in</p>
+    <input id="password" type="password" placeholder="Password" autofocus autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+    <div class="error" id="error"></div>
+  </form>
+  <script>
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('password').value;
+      const error = document.getElementById('error');
+      error.textContent = '';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        if (res.ok) { window.location.href = '/'; }
+        else { error.textContent = 'Incorrect password.'; }
+      } catch (_) { error.textContent = 'Could not reach the server.'; }
+    });
+  </script>
+</body>
+</html>

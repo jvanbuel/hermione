@@ -110,11 +110,13 @@ hermione --student alice -- python3 exercise.py
 
 Recorder options:
 
-| Flag           | Env var              | Default                     |
-|----------------|----------------------|-----------------------------|
-| `--backend`    | `HERMIONE_BACKEND`   | `http://127.0.0.1:50051`    |
-| `--student`    | `HERMIONE_STUDENT`   | `$USER`                     |
-| `--offline`    | —                    | off (record locally only)   |
+| Flag              | Env var              | Default                     |
+|-------------------|----------------------|-----------------------------|
+| `--backend`       | `HERMIONE_BACKEND`   | `http://127.0.0.1:50051`    |
+| `--student`       | `HERMIONE_STUDENT`   | `$USER`                     |
+| `--token`         | `HERMIONE_TOKEN`     | none (required if the backend sets `HERMIONE_INGEST_TOKEN`) |
+| `--capture-input` | —                    | off — keystrokes are not recorded (see Security & privacy) |
+| `--offline`       | —                    | off (record locally only)   |
 
 ### 4. Watch live
 
@@ -161,6 +163,36 @@ cd vscode-extension && npm install && npm run compile
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
 
+The teacher routes require a session cookie (obtained via `POST /api/login`);
+`POST /api/file-events` requires the agent bearer token. See below.
+
+---
+
+## Security & privacy
+
+Hermione records keystrokes and exposes live student terminals, so treat it as
+sensitive. Two independent credentials gate access:
+
+| Concern                       | Configure on the server          | Present from the client                          |
+|-------------------------------|----------------------------------|--------------------------------------------------|
+| Teacher dashboard + viewer/analytics APIs | `HERMIONE_TEACHER_PASSWORD` | log in at `/login` (sets a session cookie)       |
+| Agents pushing data (recorder, extension) | `HERMIONE_INGEST_TOKEN`     | recorder `--token` / `HERMIONE_TOKEN`; extension `hermione.token` |
+
+```bash
+HERMIONE_TEACHER_PASSWORD=change-me \
+HERMIONE_INGEST_TOKEN=$(openssl rand -hex 16) \
+cargo run -p hermione-server
+```
+
+- **Dev convenience:** if either variable is unset, that check is disabled and
+  the server logs a loud warning. Always set both before exposing the server.
+- **Keystrokes are not recorded by default.** The recorder streams terminal
+  output but not stdin, so passwords and other typed secrets are never stored.
+  `--capture-input` opts in to keystroke capture for richer analysis; even then,
+  input during no-echo password prompts is redacted.
+- **TLS:** terminate TLS at a reverse proxy in front of the HTTP and gRPC ports,
+  and add the `Secure` attribute to the session cookie there.
+
 ---
 
 ## Development
@@ -187,9 +219,10 @@ live per-student activity and time-on-task analytics, surfaced in the viewer.
 
 Planned next:
 
+- [ ] Multi-tenancy: scope everything to a course; per-course enrollment.
 - [ ] First-class exercise model (assignments table; teacher-side mapping UI).
 - [ ] Correlate terminal sessions with editor activity per student/exercise.
-- [ ] Authentication and per-class access control for teachers.
+- [x] Authentication: teacher login + shared agent token (per-class access is next).
 - [ ] Richer offline analytics: replay timeline, struggle detection.
 - [ ] Render stdin keystrokes distinctly in the viewer (e.g. input highlighting).
 

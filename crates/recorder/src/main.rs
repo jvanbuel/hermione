@@ -6,6 +6,8 @@
 //! Hermione backend over gRPC, both for live observation and long-term storage.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -18,6 +20,7 @@ use hermione_proto::v1::{
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request;
 
 /// Transparent terminal recorder that streams to the Hermione backend.
 #[derive(Parser, Debug)]
@@ -34,6 +37,15 @@ struct Args {
     /// Record locally without sending anything to a backend.
     #[arg(long)]
     offline: bool,
+
+    /// Bearer token to authenticate with the backend.
+    #[arg(long, env = "HERMIONE_TOKEN")]
+    token: Option<String>,
+
+    /// Also capture keystrokes (stdin). Off by default for privacy. Even when
+    /// enabled, input during no-echo password prompts is redacted.
+    #[arg(long)]
+    capture_input: bool,
 
     /// Command to record (defaults to $SHELL, or /bin/bash). Pass after `--`.
     #[arg(trailing_var_arg = true)]
@@ -103,13 +115,20 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::channel::<IngestEvent>(2048);
     let stream = ReceiverStream::new(rx);
 
+    let token = args.token.clone();
     let backend_task = if args.offline {
         drop(stream);
         None
     } else {
         match IngestClient::connect(args.backend.clone()).await {
             Ok(mut client) => Some(tokio::spawn(async move {
-                if let Err(e) = client.stream_session(stream).await {
+                let mut request = Request::new(stream);
+                if let Some(token) = &token {
+                    if let Ok(value) = format!("Bearer {token}").parse() {
+                        request.metadata_mut().insert("authorization", value);
+                    }
+                }
+                if let Err(e) = client.stream_session(request).await {
                     eprintln!("\r\nhermione: ingest stream ended with error: {e}");
                 }
             })),
@@ -154,8 +173,14 @@ async fn main() -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let _raw_guard = RawModeGuard;
 
+    // Set when the program appears to be prompting for a password, so we can
+    // redact the keystrokes that follow.
+    let redacting = Arc::new(AtomicBool::new(false));
+    let capture_input = args.capture_input;
+
     // PTY output -> real stdout (+ tee to backend).
     let tx_out = tx.clone();
+    let redact_out = redacting.clone();
     let out_thread = std::thread::spawn(move || {
         let mut stdout = std::io::stdout();
         let mut buf = [0u8; 8192];
@@ -167,14 +192,20 @@ async fn main() -> Result<()> {
                         break;
                     }
                     let _ = stdout.flush();
+                    if capture_input && looks_like_password_prompt(&buf[..n]) {
+                        redact_out.store(true, Ordering::Relaxed);
+                    }
                     let _ = tx_out.try_send(chunk(StreamKind::Stdout, &buf[..n], &start));
                 }
             }
         }
     });
 
-    // Real stdin -> PTY input (+ tee to backend).
+    // Real stdin -> PTY input. By default keystrokes are NOT teed to the backend
+    // (so passwords and other sensitive input are never recorded); --capture-input
+    // opts in, and even then no-echo password prompts are redacted.
     let tx_in = tx.clone();
+    let redact_in = redacting.clone();
     let _in_thread = std::thread::spawn(move || {
         let mut stdin = std::io::stdin();
         let mut buf = [0u8; 4096];
@@ -182,11 +213,19 @@ async fn main() -> Result<()> {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    // Always forward to the child so the terminal works normally.
                     if writer.write_all(&buf[..n]).is_err() {
                         break;
                     }
                     let _ = writer.flush();
-                    let _ = tx_in.try_send(chunk(StreamKind::Stdin, &buf[..n], &start));
+
+                    if capture_input && !redact_in.load(Ordering::Relaxed) {
+                        let _ = tx_in.try_send(chunk(StreamKind::Stdin, &buf[..n], &start));
+                    }
+                    // A newline ends the (redacted) password entry.
+                    if buf[..n].iter().any(|&b| b == b'\r' || b == b'\n') {
+                        redact_in.store(false, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -258,6 +297,13 @@ fn chunk(stream: StreamKind, data: &[u8], start: &Instant) -> IngestEvent {
     }
 }
 
+/// Heuristic: does this terminal output look like a password/passphrase prompt?
+/// Used to redact the keystrokes that follow when input capture is enabled.
+fn looks_like_password_prompt(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    text.contains("password") || text.contains("passphrase")
+}
+
 /// Resolves the program and arguments to record, defaulting to the user's shell.
 fn resolve_command(command: &[String]) -> (String, Vec<String>) {
     if let Some((prog, rest)) = command.split_first() {
@@ -265,5 +311,25 @@ fn resolve_command(command: &[String]) -> (String, Vec<String>) {
     } else {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         (shell, Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_password_prompt;
+
+    #[test]
+    fn detects_common_password_prompts() {
+        assert!(looks_like_password_prompt(b"[sudo] password for alice: "));
+        assert!(looks_like_password_prompt(b"Password:"));
+        assert!(looks_like_password_prompt(b"Enter passphrase for key '/id_rsa': "));
+        assert!(looks_like_password_prompt(b"alice@host's password: "));
+    }
+
+    #[test]
+    fn ignores_ordinary_output() {
+        assert!(!looks_like_password_prompt(b"$ ls -la"));
+        assert!(!looks_like_password_prompt(b"compiling project..."));
+        assert!(!looks_like_password_prompt(b""));
     }
 }

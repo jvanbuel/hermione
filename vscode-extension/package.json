@@ -43,6 +43,11 @@
           "default": "",
           "description": "Student identifier. Defaults to $HERMIONE_STUDENT or the OS username."
         },
+        "hermione.token": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token to authenticate with the Hermione backend. Defaults to $HERMIONE_TOKEN."
+        },
         "hermione.heartbeatSeconds": {
           "type": "number",
           "default": 15,

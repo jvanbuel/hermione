@@ -24,6 +24,7 @@ class Reporter {
     private student = '';
     private serverUrl = '';
     private heartbeatSeconds = 15;
+    private token = '';
 
     private exercises = new ExerciseMap();
     private queue: FileEvent[] = [];
@@ -97,6 +98,7 @@ class Reporter {
             process.env.HERMIONE_STUDENT ||
             os.userInfo().username ||
             'unknown';
+        this.token = cfg.get<string>('token') || process.env.HERMIONE_TOKEN || '';
     }
 
     private restartHeartbeat(): void {
@@ -166,9 +168,13 @@ class Reporter {
         const batch = this.queue;
         this.queue = [];
         try {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (this.token) {
+                headers['Authorization'] = `Bearer ${this.token}`;
+            }
             const res = await fetch(`${this.serverUrl}/api/file-events`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify(batch),
             });
             if (!res.ok) {

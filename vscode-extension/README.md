@@ -35,6 +35,7 @@ disrupts the editor.
 |------------------------------|--------------------------|--------------------------------------------------|
 | `hermione.serverUrl`         | `http://localhost:8080`  | Hermione backend HTTP base URL                   |
 | `hermione.student`           | `""`                     | Student id (falls back to `$HERMIONE_STUDENT` / OS username) |
+| `hermione.token`             | `""`                     | Bearer token (falls back to `$HERMIONE_TOKEN`); required if the backend sets `HERMIONE_INGEST_TOKEN` |
 | `hermione.heartbeatSeconds`  | `15`                     | How often to confirm the current file is active  |
 | `hermione.enabled`           | `true`                   | Start reporting automatically                    |
 

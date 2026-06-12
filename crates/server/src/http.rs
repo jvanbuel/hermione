@@ -5,20 +5,19 @@ use std::convert::Infallible;
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse,
+        Html, IntoResponse, Redirect, Response,
     },
     routing::{get, post},
     Json, Router,
 };
+use axum::extract::Request;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hermione_entity::{sessions, terminal_events};
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
-
-/// Rows read per page when replaying session history.
-const HISTORY_PAGE: u64 = 500;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
@@ -26,19 +25,44 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// Rows read per page when replaying session history.
+const HISTORY_PAGE: u64 = 500;
+/// Name of the teacher session cookie.
+const SESSION_COOKIE: &str = "hermione_session";
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/", get(index))
+    // Public routes: login + vendored static assets (not sensitive).
+    let public = Router::new()
+        .route("/login", get(login_page))
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/healthz", get(|| async { "ok" }))
         .route("/vendor/xterm.js", get(xterm_js))
         .route("/vendor/xterm.css", get(xterm_css))
-        .route("/vendor/addon-fit.js", get(addon_fit_js))
+        .route("/vendor/addon-fit.js", get(addon_fit_js));
+
+    // Teacher-only routes: the dashboard and everything that exposes student data.
+    let protected = Router::new()
+        .route("/", get(index))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
-        .route("/api/file-events", post(crate::files::ingest))
         .route("/api/students/activity", get(crate::files::students_activity))
         .route("/api/overview", get(crate::files::overview))
         .route("/api/analytics/time-per-file", get(crate::files::time_per_file))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_teacher));
+
+    // Agent ingest: authenticated with the shared bearer token instead.
+    let ingest = Router::new()
+        .route("/api/file-events", post(crate::files::ingest))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_ingest_token,
+        ));
+
+    public
+        .merge(protected)
+        .merge(ingest)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -72,6 +96,84 @@ fn js(body: &'static str) -> impl IntoResponse {
         )],
         body,
     )
+}
+
+// --- authentication --------------------------------------------------------
+
+async fn login_page() -> Html<&'static str> {
+    Html(include_str!("../static/login.html"))
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    password: String,
+}
+
+async fn login(
+    State(state): State<AppState>,
+    Json(body): Json<LoginRequest>,
+) -> Response {
+    match state.auth.login(&body.password).await {
+        Some(token) => {
+            let cookie = format!(
+                "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
+            );
+            ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
+        }
+        None => (StatusCode::UNAUTHORIZED, "invalid password").into_response(),
+    }
+}
+
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(token) = session_cookie(&headers) {
+        state.auth.logout(&token).await;
+    }
+    let cleared = format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    ([(header::SET_COOKIE, cleared)], StatusCode::NO_CONTENT).into_response()
+}
+
+/// Gate for teacher-only routes. Redirects browsers to /login, returns 401 to
+/// API clients.
+async fn require_teacher(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let token = session_cookie(request.headers());
+    if state.auth.validate(token.as_deref()).await {
+        return next.run(request).await;
+    }
+    if request.uri().path().starts_with("/api/") {
+        (StatusCode::UNAUTHORIZED, "login required").into_response()
+    } else {
+        Redirect::to("/login").into_response()
+    }
+}
+
+/// Gate for agent ingest: requires the shared bearer token (when configured).
+async fn require_ingest_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected) = state.ingest_token.as_deref() else {
+        return next.run(request).await; // check disabled
+    };
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    if presented == Some(expected) {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "invalid or missing token").into_response()
+    }
+}
+
+/// Extracts the session token from the Cookie header.
+fn session_cookie(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookies.split(';').find_map(|c| {
+        let (k, v) = c.trim().split_once('=')?;
+        (k == SESSION_COOKIE).then(|| v.to_string())
+    })
 }
 
 #[derive(Serialize)]

@@ -1,6 +1,7 @@
 //! Hermione backend: a gRPC ingest/viewer server plus an HTTP/SSE web viewer,
 //! persisting every terminal session to Postgres.
 
+mod auth;
 mod files;
 mod grpc;
 mod http;
@@ -12,8 +13,9 @@ use clap::Parser;
 use hermione_migration::{Migrator, MigratorTrait};
 use hermione_proto::v1::{ingest_server::IngestServer, viewer_server::ViewerServer};
 use sea_orm::Database;
-use tonic::transport::Server;
+use tonic::{transport::Server, Request, Status};
 
+use crate::auth::Auth;
 use crate::grpc::{IngestService, ViewerService};
 use crate::state::{AppState, Hub};
 
@@ -35,6 +37,15 @@ struct Config {
     /// Address for the HTTP/SSE web viewer.
     #[arg(long, env = "HERMIONE_HTTP_ADDR", default_value = "0.0.0.0:8080")]
     http_addr: String,
+
+    /// Teacher dashboard password. If unset, the dashboard is UNAUTHENTICATED.
+    #[arg(long, env = "HERMIONE_TEACHER_PASSWORD")]
+    teacher_password: Option<String>,
+
+    /// Shared bearer token recorders/the extension must present. If unset,
+    /// ingest is UNAUTHENTICATED.
+    #[arg(long, env = "HERMIONE_INGEST_TOKEN")]
+    ingest_token: Option<String>,
 }
 
 #[tokio::main]
@@ -55,9 +66,24 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running database migrations")?;
 
+    if config.teacher_password.is_none() {
+        tracing::warn!(
+            "HERMIONE_TEACHER_PASSWORD is unset — the dashboard is UNAUTHENTICATED. \
+             Set it before exposing this server."
+        );
+    }
+    if config.ingest_token.is_none() {
+        tracing::warn!(
+            "HERMIONE_INGEST_TOKEN is unset — anyone can push sessions/activity. \
+             Set it before exposing this server."
+        );
+    }
+
     let state = AppState {
         db,
         hub: Hub::default(),
+        auth: Auth::new(config.teacher_password.clone()),
+        ingest_token: config.ingest_token.clone(),
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;
@@ -66,14 +92,40 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%grpc_addr, %http_addr, "hermione backend starting");
 
-    // gRPC server (recorders + native viewers).
+    // gRPC server (recorders + native viewers). An interceptor enforces the
+    // shared bearer token on every call when one is configured.
     let grpc_state = state.clone();
+    let grpc_token = config.ingest_token.clone();
+    let interceptor = move |req: Request<()>| -> Result<Request<()>, Status> {
+        match &grpc_token {
+            None => Ok(req),
+            Some(expected) => {
+                let ok = req
+                    .metadata()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|h| h.strip_prefix("Bearer "))
+                    == Some(expected.as_str());
+                if ok {
+                    Ok(req)
+                } else {
+                    Err(Status::unauthenticated("invalid or missing token"))
+                }
+            }
+        }
+    };
     let grpc = tokio::spawn(async move {
         Server::builder()
-            .add_service(IngestServer::new(IngestService {
-                state: grpc_state.clone(),
-            }))
-            .add_service(ViewerServer::new(ViewerService { state: grpc_state }))
+            .add_service(IngestServer::with_interceptor(
+                IngestService {
+                    state: grpc_state.clone(),
+                },
+                interceptor.clone(),
+            ))
+            .add_service(ViewerServer::with_interceptor(
+                ViewerService { state: grpc_state },
+                interceptor,
+            ))
             .serve(grpc_addr)
             .await
             .context("gRPC server failed")

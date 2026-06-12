@@ -8,6 +8,8 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
+use crate::auth::Auth;
+
 /// Per-session broadcast channels used to fan out live terminal activity to
 /// any number of observers (gRPC watchers and SSE web clients).
 #[derive(Clone, Default)]
@@ -40,4 +42,8 @@ impl Hub {
 pub struct AppState {
     pub db: DatabaseConnection,
     pub hub: Hub,
+    pub auth: Auth,
+    /// Shared bearer token agents (recorders, extension) must present to push
+    /// data over HTTP. `None` disables the check (dev mode).
+    pub ingest_token: Option<String>,
 }
