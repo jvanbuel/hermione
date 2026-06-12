@@ -26,6 +26,9 @@ use crate::state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/vendor/xterm.js", get(xterm_js))
+        .route("/vendor/xterm.css", get(xterm_css))
+        .route("/vendor/addon-fit.js", get(addon_fit_js))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
@@ -38,6 +41,33 @@ pub fn router(state: AppState) -> Router {
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
+}
+
+// xterm.js assets are vendored (no external CDN) so the viewer works offline
+// and in locked-down networks.
+async fn xterm_js() -> impl IntoResponse {
+    js(include_str!("../static/vendor/xterm.js"))
+}
+
+async fn addon_fit_js() -> impl IntoResponse {
+    js(include_str!("../static/vendor/addon-fit.js"))
+}
+
+async fn xterm_css() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../static/vendor/xterm.css"),
+    )
+}
+
+fn js(body: &'static str) -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        body,
+    )
 }
 
 #[derive(Serialize)]
