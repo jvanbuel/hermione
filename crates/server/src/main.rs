@@ -1,6 +1,7 @@
 //! Hermione backend: a gRPC ingest/viewer server plus an HTTP/SSE web viewer,
 //! persisting every terminal session to Postgres.
 
+mod files;
 mod grpc;
 mod http;
 mod state;

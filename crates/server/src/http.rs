@@ -10,7 +10,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse,
     },
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -29,6 +29,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
+        .route("/api/file-events", post(crate::files::ingest))
+        .route("/api/students/activity", get(crate::files::students_activity))
+        .route("/api/analytics/time-per-file", get(crate::files::time_per_file))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

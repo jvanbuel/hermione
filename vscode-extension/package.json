@@ -1,0 +1,70 @@
+{
+  "name": "hermione-vscode",
+  "displayName": "Hermione",
+  "description": "Reports the student's active file and exercise to the Hermione backend for live intervention and time-on-task analysis.",
+  "version": "0.1.0",
+  "publisher": "hermione",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hermione.start",
+        "title": "Hermione: Start Reporting"
+      },
+      {
+        "command": "hermione.stop",
+        "title": "Hermione: Stop Reporting"
+      },
+      {
+        "command": "hermione.setStudent",
+        "title": "Hermione: Set Student Identifier"
+      }
+    ],
+    "configuration": {
+      "title": "Hermione",
+      "properties": {
+        "hermione.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "Base URL of the Hermione backend HTTP server."
+        },
+        "hermione.student": {
+          "type": "string",
+          "default": "",
+          "description": "Student identifier. Defaults to $HERMIONE_STUDENT or the OS username."
+        },
+        "hermione.heartbeatSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "description": "How often to report that the current file is still active (seconds)."
+        },
+        "hermione.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to report file activity on startup."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

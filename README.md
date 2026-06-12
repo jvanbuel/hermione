@@ -40,6 +40,7 @@ A Rust workspace with five crates:
 | `crates/server`       | `hermione-server` — tonic gRPC ingest/viewer + Axum HTTP/SSE web viewer  |
 | `crates/entity`       | SeaORM entities for the Postgres schema                                  |
 | `crates/migration`    | SeaORM migrations (runs automatically on server start)                   |
+| `vscode-extension`    | VSCode extension reporting the student's active file + exercise          |
 
 ### Key design decisions
 
@@ -52,6 +53,10 @@ A Rust workspace with five crates:
   which may not be valid UTF-8) base64-encoded in `data` for faithful replay,
   and an ANSI-stripped, lossy-UTF8 plain-text version in `text` that is
   readable and searchable for offline analysis.
+- **Editor activity: HTTP/JSON, not gRPC.** The VSCode extension is a Node
+  process, so it reports file-focus and heartbeat events as plain JSON to the
+  Axum server (`POST /api/file-events`). Far less machinery than gRPC in a
+  TypeScript extension, and it still lands in the same Postgres.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -109,7 +114,20 @@ Recorder options:
 ### 4. Watch live
 
 Open **http://localhost:8080** in a browser. Pick a session from the sidebar to
-watch it live; ended sessions replay their full history.
+watch it live; ended sessions replay their full history. The **Students · open
+files** panel shows what each student currently has open in their editor.
+
+### 5. (Optional) Report editor activity
+
+Install the VSCode extension (`vscode-extension/`) on the student's machine to
+report their active file and exercise. See
+[`vscode-extension/README.md`](vscode-extension/README.md) for setup and the
+`.hermione.json` exercise-mapping format.
+
+```bash
+cd vscode-extension && npm install && npm run compile
+# then press F5 in VSCode to launch an Extension Development Host
+```
 
 ---
 
@@ -131,6 +149,12 @@ watch it live; ended sessions replay their full history.
 - `GET /api/sessions/{id}/transcript?stream=stdout` — the ANSI-stripped plain
   text transcript of a session as `text/plain` (`stream` = `stdout` (default),
   `stdin`, or `all`).
+- `POST /api/file-events` — batch of editor file-activity events (used by the
+  VSCode extension).
+- `GET /api/students/activity` — the latest file activity per student (what each
+  student has open right now).
+- `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
+  file and per exercise for one student.
 
 ---
 
@@ -149,16 +173,19 @@ used automatically if one isn't on `PATH`.
 
 ## Roadmap
 
-Milestone 1 (this repo) delivers the terminal pipeline end-to-end: transparent
-recorder → gRPC ingest → Postgres → live web view.
+Milestone 1 delivers the terminal pipeline end-to-end: transparent recorder →
+gRPC ingest → Postgres → live web view.
+
+Milestone 2 (in progress) adds editor observability: the **VSCode extension**
+reports the student's active file and resolved exercise; the backend exposes
+live per-student activity and time-on-task analytics, surfaced in the viewer.
 
 Planned next:
 
-- [ ] **VSCode extension** — report the student's active file and map it onto an
-      exercise, both for live intervention and offline "time spent" analysis.
+- [ ] First-class exercise model (assignments table; teacher-side mapping UI).
+- [ ] Correlate terminal sessions with editor activity per student/exercise.
 - [ ] Authentication and per-class access control for teachers.
-- [ ] Exercise model: associate sessions/files with assignments.
-- [ ] Offline analytics: replay timeline, time-on-task, struggle detection.
+- [ ] Richer offline analytics: replay timeline, struggle detection.
 - [ ] Render stdin keystrokes distinctly in the viewer (e.g. input highlighting).
 
 [xterm.js]: https://xtermjs.org/

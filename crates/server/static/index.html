@@ -18,6 +18,19 @@
     aside { border-right: 1px solid #333; background: #252526; overflow-y: auto; }
     aside h1 { font-size: 1.05rem; margin: 0; padding: 16px; border-bottom: 1px solid #333; }
     aside h1 .glyph { margin-right: 6px; }
+    .section-title {
+      padding: 10px 16px 4px; font-size: .7rem; text-transform: uppercase;
+      letter-spacing: .06em; color: #6b7177;
+    }
+    .student {
+      padding: 10px 16px; border-bottom: 1px solid #2d2d2d;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .student .name { font-weight: 600; }
+    .student .file { color: #9aa0a6; font-size: .8rem; font-family: monospace; word-break: break-all; }
+    .student .meta { font-size: .72rem; margin-top: 2px; }
+    .badge.exercise { background: #3a3a5a; }
+    .badge.idle { background: #4a4a4a; }
     .session {
       padding: 12px 16px; border-bottom: 1px solid #2d2d2d; cursor: pointer;
     }
@@ -38,6 +51,9 @@
 <body>
   <aside>
     <h1><span class="glyph">🔮</span>Hermione</h1>
+    <div class="section-title">Students · open files</div>
+    <div id="students"></div>
+    <div class="section-title">Terminal sessions</div>
     <div id="sessions"></div>
   </aside>
   <main>
@@ -116,8 +132,36 @@
         el.addEventListener('click', () => watch(el.dataset.id)));
     }
 
+    async function refreshStudents() {
+      let students = [];
+      try {
+        students = await (await fetch('/api/students/activity')).json();
+      } catch (_) { return; }
+      const container = document.getElementById('students');
+      if (students.length === 0) {
+        container.innerHTML = '<div class="empty" style="padding:12px 16px;color:#777">No file activity yet.</div>';
+        return;
+      }
+      container.innerHTML = students.map(s => {
+        const file = s.relativePath || (s.path || '').split('/').pop() || '—';
+        const stale = Date.now() - s.atUnixMs > 60000;
+        return `
+          <div class="student">
+            <div class="name">${s.student}</div>
+            <div class="file">${file}</div>
+            <div class="meta">
+              ${s.exercise ? `<span class="badge exercise">${s.exercise}</span>&nbsp;` : ''}
+              <span class="badge ${stale ? 'idle' : 'active'}">${stale ? 'idle' : 'active'}</span>
+              &nbsp;${timeAgo(s.atUnixMs)}
+            </div>
+          </div>`;
+      }).join('');
+    }
+
     refresh();
+    refreshStudents();
     setInterval(refresh, 3000);
+    setInterval(refreshStudents, 3000);
   </script>
 </body>
 </html>
