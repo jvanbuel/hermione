@@ -23,7 +23,16 @@
       flex: 0 0 auto;
     }
     header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header select {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 4px 8px; font-size: .85rem;
+    }
     header .hint { margin-left: auto; font-size: .78rem; color: #7d8590; }
+    header button {
+      background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer;
+    }
+    header button:hover { background: #30363d; }
 
     #content { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -102,7 +111,9 @@
   <header>
     <span style="font-size:1.1rem">🔮</span>
     <h1>Hermione</h1>
+    <select id="course" title="Course"></select>
     <span class="hint">Click a student to open their terminal · panes tile side by side</span>
+    <button id="logout" title="Sign out">Sign out</button>
   </header>
   <div id="content">
     <div id="board"><div class="empty">Loading…</div></div>
@@ -174,10 +185,33 @@
         </div>`;
     }
 
+    let currentCourse = null;
+
+    async function loadCourses() {
+      let courses;
+      try {
+        const res = await fetch('/api/courses');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        courses = await res.json();
+      } catch (_) { return; }
+      const sel = document.getElementById('course');
+      sel.innerHTML = courses.map(c => `<option value="${c.slug}">${c.name}</option>`).join('');
+      currentCourse = courses[0]?.slug || null;
+      sel.addEventListener('change', () => {
+        currentCourse = sel.value;
+        [...openPanes.keys()].forEach(closeTerminal); // terminals belong to a course
+        refresh();
+      });
+    }
+
     async function refresh() {
+      if (!currentCourse) return;
       let data;
-      try { data = await (await fetch('/api/overview')).json(); }
-      catch (_) { return; }
+      try {
+        const res = await fetch(`/api/overview?course=${encodeURIComponent(currentCourse)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        data = await res.json();
+      } catch (_) { return; }
 
       const board = document.getElementById('board');
       const total = data.exercises.reduce((n, g) => n + g.students.length, 0) + data.noExercise.length;
@@ -276,8 +310,16 @@
 
     window.addEventListener('resize', () => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }));
 
-    refresh();
-    setInterval(refresh, 3000);
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+
+    (async () => {
+      await loadCourses();
+      await refresh();
+      setInterval(refresh, 3000);
+    })();
   </script>
 </body>
 </html>

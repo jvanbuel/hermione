@@ -1,0 +1,24 @@
+//! A course — the tenant boundary. All sessions and file activity belong to a
+//! course, and admins are granted access per course.
+
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "courses")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
+    #[sea_orm(unique)]
+    pub slug: String,
+    pub name: String,
+    /// Secret presented by recorders/the extension to enroll into this course.
+    #[sea_orm(unique)]
+    pub enrollment_token: String,
+    pub created_at: DateTimeWithTimeZone,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {}
+
+impl ActiveModelBehavior for ActiveModel {}

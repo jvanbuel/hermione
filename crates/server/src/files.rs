@@ -5,9 +5,9 @@
 //! (for live intervention) and time-on-task aggregates (for offline analysis).
 
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -17,6 +17,8 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AuthCtx;
+use crate::http::{resolve_course, CourseCtx, CourseQuery};
 use crate::state::AppState;
 
 /// Gaps longer than this (seconds) between consecutive events are treated as
@@ -48,9 +50,11 @@ pub struct FileEventIn {
     pub at_unix_ms: i64,
 }
 
-/// Accepts a batch of file events from the extension.
+/// Accepts a batch of file events from the extension. The course is determined
+/// by the enrollment token (resolved into `CourseCtx` by the ingest gate).
 pub async fn ingest(
     State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Json(events): Json<Vec<FileEventIn>>,
 ) -> impl IntoResponse {
     if events.is_empty() {
@@ -60,6 +64,7 @@ pub async fn ingest(
     let models: Vec<file_events::ActiveModel> = events
         .into_iter()
         .map(|e| file_events::ActiveModel {
+            course_id: Set(Some(course_id)),
             student: Set(e.student),
             workspace: Set(e.workspace),
             path: Set(e.path),
@@ -96,9 +101,18 @@ struct ActivityDto {
     at_unix_ms: i64,
 }
 
-/// Latest file activity per student — what each student has open right now.
-pub async fn students_activity(State(state): State<AppState>) -> impl IntoResponse {
+/// Latest file activity per student in a course — what each has open right now.
+pub async fn students_activity(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let rows = match file_events::Entity::find()
+        .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_desc(file_events::Column::At)
         .all(&state.db)
@@ -131,6 +145,7 @@ pub async fn students_activity(State(state): State<AppState>) -> impl IntoRespon
 #[derive(Deserialize)]
 pub struct AnalyticsQuery {
     student: String,
+    course: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -164,9 +179,15 @@ struct TimeReport {
 /// capping each gap at `IDLE_GAP_SECS` so idle time isn't over-counted.
 pub async fn time_per_file(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<AnalyticsQuery>,
-) -> impl IntoResponse {
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let rows = match file_events::Entity::find()
+        .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::Student.eq(&q.student))
         .order_by_asc(file_events::Column::At)
         .all(&state.db)
@@ -274,8 +295,17 @@ struct Overview {
     no_exercise: Vec<OverviewStudent>,
 }
 
-pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn overview(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let events = match file_events::Entity::find()
+        .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_asc(file_events::Column::At)
         .all(&state.db)
@@ -285,10 +315,11 @@ pub async fn overview(State(state): State<AppState>) -> impl IntoResponse {
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    // Latest terminal session per student.
+    // Latest terminal session per student (within this course).
     let mut terminals: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     match sessions::Entity::find()
+        .filter(sessions::Column::CourseId.eq(course_id))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
         .await

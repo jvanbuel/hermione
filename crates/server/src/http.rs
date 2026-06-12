@@ -4,7 +4,7 @@
 use std::convert::Infallible;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{
@@ -14,16 +14,28 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use axum::extract::Request;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hermione_entity::{sessions, terminal_events};
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
+use crate::auth::{constant_time_eq, AuthCtx};
 use crate::state::AppState;
+use crate::tenancy::{self, DEFAULT_COURSE_ID};
+
+/// A request's resolved course (tenant), injected by ingest auth.
+#[derive(Clone, Copy)]
+pub struct CourseCtx(pub Uuid);
+
+/// Common `?course=<slug>` selector for dashboard endpoints.
+#[derive(Deserialize)]
+pub struct CourseQuery {
+    pub course: Option<String>,
+}
 
 /// Rows read per page when replaying session history.
 const HISTORY_PAGE: u64 = 500;
@@ -41,9 +53,11 @@ pub fn router(state: AppState) -> Router {
         .route("/vendor/xterm.css", get(xterm_css))
         .route("/vendor/addon-fit.js", get(addon_fit_js));
 
-    // Teacher-only routes: the dashboard and everything that exposes student data.
+    // Teacher-only routes: the dashboard and everything that exposes student
+    // data, all scoped to a course the caller may access.
     let protected = Router::new()
         .route("/", get(index))
+        .route("/api/courses", get(list_courses))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
@@ -52,16 +66,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/analytics/time-per-file", get(crate::files::time_per_file))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_teacher));
 
-    // Agent ingest: authenticated with the shared bearer token instead.
-    let ingest = Router::new()
-        .route("/api/file-events", post(crate::files::ingest))
+    // Provisioning API, guarded by the super-admin secret.
+    let admin = Router::new()
+        .route("/api/admin/admins", post(create_admin_handler))
+        .route("/api/admin/courses", post(create_course_handler))
+        .route("/api/admin/memberships", post(grant_membership_handler))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_ingest_token,
+            require_super_admin,
         ));
+
+    // Agent ingest: authenticated by a course enrollment token, which also
+    // determines the tenant the data lands in.
+    let ingest = Router::new()
+        .route("/api/file-events", post(crate::files::ingest))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_ingest));
 
     public
         .merge(protected)
+        .merge(admin)
         .merge(ingest)
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -106,21 +129,20 @@ async fn login_page() -> Html<&'static str> {
 
 #[derive(Deserialize)]
 struct LoginRequest {
+    username: String,
     password: String,
 }
 
-async fn login(
-    State(state): State<AppState>,
-    Json(body): Json<LoginRequest>,
-) -> Response {
-    match state.auth.login(&body.password).await {
-        Some(token) => {
+async fn login(State(state): State<AppState>, Json(body): Json<LoginRequest>) -> Response {
+    match tenancy::verify_login(&state.db, &body.username, &body.password).await {
+        Some(admin_id) => {
+            let token = state.auth.create_session(admin_id).await;
             let cookie = format!(
                 "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
             );
             ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
         }
-        None => (StatusCode::UNAUTHORIZED, "invalid password").into_response(),
+        None => (StatusCode::UNAUTHORIZED, "invalid credentials").into_response(),
     }
 }
 
@@ -132,39 +154,78 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     ([(header::SET_COOKIE, cleared)], StatusCode::NO_CONTENT).into_response()
 }
 
-/// Gate for teacher-only routes. Redirects browsers to /login, returns 401 to
-/// API clients.
-async fn require_teacher(State(state): State<AppState>, request: Request, next: Next) -> Response {
+/// Gate for teacher-only routes. Injects an `AuthCtx`; redirects browsers to
+/// /login and returns 401 to API clients when unauthenticated.
+async fn require_teacher(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let token = session_cookie(request.headers());
-    if state.auth.validate(token.as_deref()).await {
-        return next.run(request).await;
-    }
-    if request.uri().path().starts_with("/api/") {
-        (StatusCode::UNAUTHORIZED, "login required").into_response()
+    let ctx = if let Some(admin_id) = state.auth.admin_for(token.as_deref()).await {
+        Some(AuthCtx::Admin(admin_id))
+    } else if state.open_dev.load(Ordering::Relaxed) {
+        Some(AuthCtx::OpenDev)
     } else {
-        Redirect::to("/login").into_response()
+        None
+    };
+
+    match ctx {
+        Some(ctx) => {
+            request.extensions_mut().insert(ctx);
+            next.run(request).await
+        }
+        None if request.uri().path().starts_with("/api/") => {
+            (StatusCode::UNAUTHORIZED, "login required").into_response()
+        }
+        None => Redirect::to("/login").into_response(),
     }
 }
 
-/// Gate for agent ingest: requires the shared bearer token (when configured).
-async fn require_ingest_token(
+/// Gate for the provisioning API: requires the super-admin secret.
+async fn require_super_admin(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(expected) = state.ingest_token.as_deref() else {
-        return next.run(request).await; // check disabled
+    let Some(expected) = state.admin_token.as_deref() else {
+        return (StatusCode::FORBIDDEN, "provisioning API disabled").into_response();
     };
-    let presented = request
+    let ok = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false);
+    if ok {
+        next.run(request).await
+    } else {
+        (StatusCode::UNAUTHORIZED, "invalid or missing admin token").into_response()
+    }
+}
+
+/// Gate for agent ingest: resolves the course enrollment token (which tenant
+/// the data belongs to) and injects it as a `CourseCtx`.
+async fn require_ingest(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let token = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
-    if presented == Some(expected) {
-        next.run(request).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "invalid or missing token").into_response()
-    }
+
+    let course_id = match token {
+        Some(token) => match tenancy::course_by_token(&state.db, token).await {
+            Some(course) => course.id,
+            None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),
+        },
+        // No token: only allowed in open dev mode, into the default course.
+        None if state.open_dev.load(Ordering::Relaxed) => DEFAULT_COURSE_ID,
+        None => return (StatusCode::UNAUTHORIZED, "enrollment token required").into_response(),
+    };
+
+    request.extensions_mut().insert(CourseCtx(course_id));
+    next.run(request).await
 }
 
 /// Extracts the session token from the Cookie header.
@@ -174,6 +235,148 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
         let (k, v) = c.trim().split_once('=')?;
         (k == SESSION_COOKIE).then(|| v.to_string())
     })
+}
+
+// --- course scoping --------------------------------------------------------
+
+/// Resolves the selected course (by slug, defaulting to "default") and checks
+/// the caller may access it. Returns the course id or an error response.
+pub async fn resolve_course(
+    state: &AppState,
+    ctx: AuthCtx,
+    slug: Option<String>,
+) -> Result<Uuid, Response> {
+    let slug = slug.unwrap_or_else(|| "default".to_string());
+    let Some(course) = tenancy::course_by_slug(&state.db, &slug).await else {
+        return Err((StatusCode::NOT_FOUND, "no such course").into_response());
+    };
+    match ctx {
+        AuthCtx::OpenDev => Ok(course.id),
+        AuthCtx::Admin(admin_id) => {
+            if tenancy::is_member(&state.db, admin_id, course.id).await {
+                Ok(course.id)
+            } else {
+                Err((StatusCode::FORBIDDEN, "not a member of this course").into_response())
+            }
+        }
+    }
+}
+
+/// Loads a session and checks the caller may access its course.
+async fn authorized_session(
+    state: &AppState,
+    ctx: AuthCtx,
+    session_id: Uuid,
+) -> Result<sessions::Model, Response> {
+    let Some(session) = sessions::Entity::find_by_id(session_id)
+        .one(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response())?
+    else {
+        return Err((StatusCode::NOT_FOUND, "no such session").into_response());
+    };
+    let course_id = session.course_id.unwrap_or(DEFAULT_COURSE_ID);
+    match ctx {
+        AuthCtx::OpenDev => Ok(session),
+        AuthCtx::Admin(admin_id) if tenancy::is_member(&state.db, admin_id, course_id).await => {
+            Ok(session)
+        }
+        AuthCtx::Admin(_) => Err((StatusCode::FORBIDDEN, "not a member of this course").into_response()),
+    }
+}
+
+// --- courses + provisioning ------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CourseDto {
+    slug: String,
+    name: String,
+}
+
+/// Courses the caller may see (all of them in open dev mode).
+async fn list_courses(State(state): State<AppState>, Extension(ctx): Extension<AuthCtx>) -> Response {
+    let courses = match ctx {
+        AuthCtx::OpenDev => tenancy::all_courses(&state.db).await,
+        AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id).await,
+    };
+    match courses {
+        Ok(rows) => {
+            let dtos: Vec<CourseDto> = rows
+                .into_iter()
+                .map(|c| CourseDto {
+                    slug: c.slug,
+                    name: c.name,
+                })
+                .collect();
+            Json(dtos).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateAdminRequest {
+    username: String,
+    password: String,
+}
+
+async fn create_admin_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateAdminRequest>,
+) -> Response {
+    match tenancy::create_admin(&state.db, &body.username, &body.password).await {
+        Ok(admin) => {
+            // First admin created: lock down the dashboard.
+            state.open_dev.store(false, Ordering::Relaxed);
+            Json(serde_json::json!({ "id": admin.id, "username": admin.username })).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateCourseRequest {
+    slug: String,
+    name: String,
+}
+
+async fn create_course_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateCourseRequest>,
+) -> Response {
+    match tenancy::create_course(&state.db, &body.slug, &body.name).await {
+        Ok(course) => Json(serde_json::json!({
+            "slug": course.slug,
+            "name": course.name,
+            "enrollmentToken": course.enrollment_token,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct GrantMembershipRequest {
+    username: String,
+    #[serde(rename = "courseSlug")]
+    course_slug: String,
+}
+
+async fn grant_membership_handler(
+    State(state): State<AppState>,
+    Json(body): Json<GrantMembershipRequest>,
+) -> Response {
+    let Some(admin_id) = tenancy::admin_by_username(&state.db, &body.username).await else {
+        return (StatusCode::NOT_FOUND, "no such admin").into_response();
+    };
+    let Some(course) = tenancy::course_by_slug(&state.db, &body.course_slug).await else {
+        return (StatusCode::NOT_FOUND, "no such course").into_response();
+    };
+    match tenancy::grant_membership(&state.db, admin_id, course.id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[derive(Serialize)]
@@ -205,8 +408,17 @@ impl From<sessions::Model> for SessionDto {
     }
 }
 
-async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_sessions(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     match sessions::Entity::find()
+        .filter(sessions::Column::CourseId.eq(course_id))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
         .await
@@ -238,6 +450,7 @@ struct ChunkDto {
 
 async fn stream_session(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     Query(query): Query<StreamQuery>,
 ) -> axum::response::Response {
@@ -245,6 +458,9 @@ async fn stream_session(
         Ok(id) => id,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid session id").into_response(),
     };
+    if let Err(resp) = authorized_session(&state, ctx, id).await {
+        return resp;
+    }
 
     let include_history = query.history.unwrap_or(true);
     let rx = state.hub.subscribe(id).await;
@@ -318,6 +534,7 @@ struct TranscriptQuery {
 /// Returns the ANSI-stripped plain-text transcript of a session, in order.
 async fn transcript(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     Query(query): Query<TranscriptQuery>,
 ) -> axum::response::Response {
@@ -325,6 +542,9 @@ async fn transcript(
         Ok(id) => id,
         Err(_) => return (StatusCode::BAD_REQUEST, "invalid session id").into_response(),
     };
+    if let Err(resp) = authorized_session(&state, ctx, id).await {
+        return resp;
+    }
 
     let mut find = terminal_events::Entity::find()
         .filter(terminal_events::Column::SessionId.eq(id))

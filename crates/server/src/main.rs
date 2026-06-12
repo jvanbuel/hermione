@@ -6,7 +6,11 @@ mod files;
 mod grpc;
 mod http;
 mod state;
+mod tenancy;
 mod text;
+
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
@@ -38,14 +42,10 @@ struct Config {
     #[arg(long, env = "HERMIONE_HTTP_ADDR", default_value = "0.0.0.0:8080")]
     http_addr: String,
 
-    /// Teacher dashboard password. If unset, the dashboard is UNAUTHENTICATED.
-    #[arg(long, env = "HERMIONE_TEACHER_PASSWORD")]
-    teacher_password: Option<String>,
-
-    /// Shared bearer token recorders/the extension must present. If unset,
-    /// ingest is UNAUTHENTICATED.
-    #[arg(long, env = "HERMIONE_INGEST_TOKEN")]
-    ingest_token: Option<String>,
+    /// Super-admin secret for the course/admin provisioning API. If unset, the
+    /// provisioning API is disabled.
+    #[arg(long, env = "HERMIONE_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 }
 
 #[tokio::main]
@@ -66,24 +66,26 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running database migrations")?;
 
-    if config.teacher_password.is_none() {
+    let has_admins = tenancy::count_admins(&db).await > 0;
+    if !has_admins {
         tracing::warn!(
-            "HERMIONE_TEACHER_PASSWORD is unset — the dashboard is UNAUTHENTICATED. \
-             Set it before exposing this server."
+            "No admin accounts exist — the dashboard is OPEN (scoped to the default \
+             course). Create an admin via the provisioning API to lock it down."
         );
     }
-    if config.ingest_token.is_none() {
+    if config.admin_token.is_none() {
         tracing::warn!(
-            "HERMIONE_INGEST_TOKEN is unset — anyone can push sessions/activity. \
-             Set it before exposing this server."
+            "HERMIONE_ADMIN_TOKEN is unset — the provisioning API is disabled, so no \
+             admins/courses can be created."
         );
     }
 
     let state = AppState {
         db,
         hub: Hub::default(),
-        auth: Auth::new(config.teacher_password.clone()),
-        ingest_token: config.ingest_token.clone(),
+        auth: Auth::new(),
+        admin_token: config.admin_token.clone(),
+        open_dev: Arc::new(AtomicBool::new(!has_admins)),
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;
@@ -92,12 +94,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%grpc_addr, %http_addr, "hermione backend starting");
 
-    // gRPC server (recorders + native viewers). An interceptor enforces the
-    // shared bearer token on every call when one is configured.
+    // gRPC server. Ingest authenticates per-course via the enrollment token in
+    // the handler; the Viewer API is guarded by the super-admin secret.
     let grpc_state = state.clone();
-    let grpc_token = config.ingest_token.clone();
-    let interceptor = move |req: Request<()>| -> Result<Request<()>, Status> {
-        match &grpc_token {
+    let admin_token = config.admin_token.clone();
+    // tonic interceptors must return Result<_, Status>; Status is large by design.
+    #[allow(clippy::result_large_err)]
+    let viewer_guard = move |req: Request<()>| -> Result<Request<()>, Status> {
+        match &admin_token {
             None => Ok(req),
             Some(expected) => {
                 let ok = req
@@ -105,7 +109,8 @@ async fn main() -> anyhow::Result<()> {
                     .get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .and_then(|h| h.strip_prefix("Bearer "))
-                    == Some(expected.as_str());
+                    .map(|t| auth::constant_time_eq(t.as_bytes(), expected.as_bytes()))
+                    .unwrap_or(false);
                 if ok {
                     Ok(req)
                 } else {
@@ -116,15 +121,12 @@ async fn main() -> anyhow::Result<()> {
     };
     let grpc = tokio::spawn(async move {
         Server::builder()
-            .add_service(IngestServer::with_interceptor(
-                IngestService {
-                    state: grpc_state.clone(),
-                },
-                interceptor.clone(),
-            ))
+            .add_service(IngestServer::new(IngestService {
+                state: grpc_state.clone(),
+            }))
             .add_service(ViewerServer::with_interceptor(
                 ViewerService { state: grpc_state },
-                interceptor,
+                viewer_guard,
             ))
             .serve(grpc_addr)
             .await

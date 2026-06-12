@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
+    /// Course (tenant) this session belongs to.
+    pub course_id: Option<Uuid>,
     pub student: String,
     pub command: String,
     pub hostname: Option<String>,

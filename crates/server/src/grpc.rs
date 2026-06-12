@@ -44,6 +44,24 @@ impl Ingest for IngestService {
         &self,
         request: Request<Streaming<IngestEvent>>,
     ) -> Result<Response<IngestSummary>, Status> {
+        // Authenticate by the course enrollment token (which also picks the tenant).
+        let token = request
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(|s| s.to_string());
+        let course_id = match token {
+            Some(token) => match crate::tenancy::course_by_token(&self.state.db, &token).await {
+                Some(course) => course.id,
+                None => return Err(Status::unauthenticated("invalid enrollment token")),
+            },
+            None if self.state.open_dev.load(std::sync::atomic::Ordering::Relaxed) => {
+                crate::tenancy::DEFAULT_COURSE_ID
+            }
+            None => return Err(Status::unauthenticated("enrollment token required")),
+        };
+
         let mut stream = request.into_inner();
         let db = &self.state.db;
 
@@ -69,6 +87,7 @@ impl Ingest for IngestService {
                             let id = Uuid::new_v4();
                             let model = sessions::ActiveModel {
                                 id: Set(id),
+                                course_id: Set(Some(course_id)),
                                 student: Set(start.student),
                                 command: Set(start.command),
                                 hostname: Set(non_empty(start.hostname)),

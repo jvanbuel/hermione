@@ -1,0 +1,7 @@
+{
+  "exercises": [
+    { "name": "lab1", "match": "lab1/**" },
+    { "name": "lab2", "match": "lab2/**" },
+    { "name": "final-project", "match": "project/**" }
+  ]
+}

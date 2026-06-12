@@ -36,13 +36,15 @@
     <div class="glyph">🔮</div>
     <h1>Hermione</h1>
     <p>Teacher sign in</p>
-    <input id="password" type="password" placeholder="Password" autofocus autocomplete="current-password" />
+    <input id="username" type="text" placeholder="Username" autofocus autocomplete="username" />
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
     <button type="submit">Sign in</button>
     <div class="error" id="error"></div>
   </form>
   <script>
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const username = document.getElementById('username').value;
       const password = document.getElementById('password').value;
       const error = document.getElementById('error');
       error.textContent = '';
@@ -50,7 +52,7 @@
         const res = await fetch('/api/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password }),
+          body: JSON.stringify({ username, password }),
         });
         if (res.ok) { window.location.href = '/'; }
         else { error.textContent = 'Incorrect password.'; }

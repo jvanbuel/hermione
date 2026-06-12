@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i64,
+    /// Course (tenant) this activity belongs to.
+    pub course_id: Option<Uuid>,
     pub student: String,
     /// Workspace/folder name the file belongs to.
     pub workspace: Option<String>,

@@ -1,6 +1,7 @@
 //! Shared application state and the live fan-out hub.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use hermione_proto::v1::TerminalChunk;
@@ -43,7 +44,9 @@ pub struct AppState {
     pub db: DatabaseConnection,
     pub hub: Hub,
     pub auth: Auth,
-    /// Shared bearer token agents (recorders, extension) must present to push
-    /// data over HTTP. `None` disables the check (dev mode).
-    pub ingest_token: Option<String>,
+    /// Super-admin secret for the provisioning API. `None` disables it.
+    pub admin_token: Option<String>,
+    /// True while no admin accounts exist: the dashboard is open and scoped to
+    /// the default course. Flips to false once the first admin is created.
+    pub open_dev: Arc<AtomicBool>,
 }

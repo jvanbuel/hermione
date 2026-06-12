@@ -91,6 +91,7 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--database-url`  | `HERMIONE_DATABASE_URL`  | `postgres://hermione:hermione@localhost:5432/hermione`|
 | `--grpc-addr`     | `HERMIONE_GRPC_ADDR`     | `0.0.0.0:50051`                                       |
 | `--http-addr`     | `HERMIONE_HTTP_ADDR`     | `0.0.0.0:8080`                                        |
+| `--admin-token`   | `HERMIONE_ADMIN_TOKEN`   | none — set it to enable the provisioning API          |
 
 ### 3. Record a session (on the student's machine)
 
@@ -114,7 +115,7 @@ Recorder options:
 |-------------------|----------------------|-----------------------------|
 | `--backend`       | `HERMIONE_BACKEND`   | `http://127.0.0.1:50051`    |
 | `--student`       | `HERMIONE_STUDENT`   | `$USER`                     |
-| `--token`         | `HERMIONE_TOKEN`     | none (required if the backend sets `HERMIONE_INGEST_TOKEN`) |
+| `--token`         | `HERMIONE_TOKEN`     | none — the course enrollment token (required unless in open dev mode) |
 | `--capture-input` | —                    | off — keystrokes are not recorded (see Security & privacy) |
 | `--offline`       | —                    | off (record locally only)   |
 
@@ -168,24 +169,42 @@ The teacher routes require a session cookie (obtained via `POST /api/login`);
 
 ---
 
+## Multi-tenancy (courses)
+
+Everything is scoped to a **course** (the tenant). Sessions and file activity
+belong to a course; admins are granted access per course; the dashboard only
+ever shows the selected course's data.
+
+- **Admin accounts + membership.** Named admin accounts log in at `/login`;
+  each may be granted access to one or more courses (the dashboard has a course
+  switcher). Passwords are Argon2-hashed.
+- **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
+  admins and grant membership.
+
+  ```bash
+  # returns the course's enrollment token
+  curl -X POST localhost:8080/api/admin/courses   -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"slug":"cs101","name":"CS 101"}'
+  curl -X POST localhost:8080/api/admin/admins    -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","password":"…"}'
+  curl -X POST localhost:8080/api/admin/memberships -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","courseSlug":"cs101"}'
+  ```
+- **Enrollment by token.** Each course has an enrollment token. The recorder
+  (`--token` / `HERMIONE_TOKEN`) and extension (`hermione.token`) present it;
+  the backend resolves which course the data belongs to. No global token.
+- **Devcontainer flow.** A teacher commits the course token + backend URL into a
+  devcontainer (see [`examples/course-template`](examples/course-template)); a
+  student just opens it and is connected, scoped to that course.
+- **Open dev mode.** Until the first admin exists, the dashboard is open and
+  scoped to a seeded `default` course, and untokened agents land there — so
+  local dev is frictionless. Creating an admin locks it down.
+
 ## Security & privacy
 
 Hermione records keystrokes and exposes live student terminals, so treat it as
-sensitive. Two independent credentials gate access:
+sensitive.
 
-| Concern                       | Configure on the server          | Present from the client                          |
-|-------------------------------|----------------------------------|--------------------------------------------------|
-| Teacher dashboard + viewer/analytics APIs | `HERMIONE_TEACHER_PASSWORD` | log in at `/login` (sets a session cookie)       |
-| Agents pushing data (recorder, extension) | `HERMIONE_INGEST_TOKEN`     | recorder `--token` / `HERMIONE_TOKEN`; extension `hermione.token` |
-
-```bash
-HERMIONE_TEACHER_PASSWORD=change-me \
-HERMIONE_INGEST_TOKEN=$(openssl rand -hex 16) \
-cargo run -p hermione-server
-```
-
-- **Dev convenience:** if either variable is unset, that check is disabled and
-  the server logs a loud warning. Always set both before exposing the server.
+- **Access control** is the multi-tenant model above: admin login for the
+  dashboard, per-course enrollment tokens for agents, `HERMIONE_ADMIN_TOKEN` for
+  provisioning.
 - **Keystrokes are not recorded by default.** The recorder streams terminal
   output but not stdin, so passwords and other typed secrets are never stored.
   `--capture-input` opts in to keystroke capture for richer analysis; even then,
@@ -219,10 +238,10 @@ live per-student activity and time-on-task analytics, surfaced in the viewer.
 
 Planned next:
 
-- [ ] Multi-tenancy: scope everything to a course; per-course enrollment.
+- [x] Multi-tenancy: courses, admin accounts + membership, per-course enrollment.
 - [ ] First-class exercise model (assignments table; teacher-side mapping UI).
 - [ ] Correlate terminal sessions with editor activity per student/exercise.
-- [x] Authentication: teacher login + shared agent token (per-class access is next).
+- [x] Authentication: admin login + per-course enrollment tokens.
 - [ ] Richer offline analytics: replay timeline, struggle detection.
 - [ ] Render stdin keystrokes distinctly in the viewer (e.g. input highlighting).
 

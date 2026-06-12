@@ -1,9 +1,9 @@
-//! Minimal teacher authentication: a shared password grants a session cookie.
+//! Teacher session management: a login issues an in-memory session token
+//! (delivered as a cookie) that maps back to an admin account.
 //!
-//! This is deliberately lightweight (single shared teacher password, in-memory
-//! session tokens) — enough to keep students' terminals private behind a login,
-//! without standing up a full identity system. Behind a TLS-terminating proxy
-//! in production; set the `Secure` cookie attribute there.
+//! Lightweight on purpose — sessions live in memory, so admins re-login after a
+//! restart. Run behind a TLS-terminating proxy and set the `Secure` cookie
+//! attribute there.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,53 +14,47 @@ use uuid::Uuid;
 /// How long a teacher session stays valid.
 const SESSION_TTL_SECS: i64 = 12 * 60 * 60;
 
-#[derive(Clone)]
+/// Who is making a request to a protected route.
+#[derive(Clone, Copy, Debug)]
+pub enum AuthCtx {
+    /// A logged-in admin (scoped to their course memberships).
+    Admin(Uuid),
+    /// No admins exist yet — open dev mode, full access to all courses.
+    OpenDev,
+}
+
+#[derive(Clone, Default)]
 pub struct Auth {
-    /// `None` disables teacher auth (dev mode).
-    password: Option<String>,
-    /// token -> unix expiry seconds.
-    sessions: Arc<RwLock<HashMap<String, i64>>>,
+    /// token -> (admin id, unix expiry seconds).
+    sessions: Arc<RwLock<HashMap<String, (Uuid, i64)>>>,
 }
 
 impl Auth {
-    pub fn new(password: Option<String>) -> Self {
-        Self {
-            password,
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Whether a login is required to view protected resources.
-    pub fn enabled(&self) -> bool {
-        self.password.is_some()
-    }
-
-    /// Verifies the password and, on success, returns a fresh session token.
-    pub async fn login(&self, password: &str) -> Option<String> {
-        let expected = self.password.as_deref()?;
-        if !constant_time_eq(password.as_bytes(), expected.as_bytes()) {
-            return None;
-        }
+    /// Creates a session for an admin and returns its token.
+    pub async fn create_session(&self, admin_id: Uuid) -> String {
         let token = Uuid::new_v4().to_string();
-        let expiry = now() + SESSION_TTL_SECS;
-        self.sessions.write().await.insert(token.clone(), expiry);
-        Some(token)
+        self.sessions
+            .write()
+            .await
+            .insert(token.clone(), (admin_id, now() + SESSION_TTL_SECS));
+        token
     }
 
-    /// True if auth is disabled, or the token is a live session.
-    pub async fn validate(&self, token: Option<&str>) -> bool {
-        if !self.enabled() {
-            return true;
-        }
-        let Some(token) = token else { return false };
+    /// Resolves a session token to its admin id, if still valid.
+    pub async fn admin_for(&self, token: Option<&str>) -> Option<Uuid> {
+        let token = token?;
         let mut sessions = self.sessions.write().await;
         match sessions.get(token) {
-            Some(&expiry) if expiry > now() => true,
+            Some(&(admin_id, expiry)) if expiry > now() => Some(admin_id),
             Some(_) => {
-                sessions.remove(token); // expired
-                false
+                sessions.remove(token);
+                None
             }
-            None => false,
+            None => None,
         }
     }
 
@@ -74,7 +68,7 @@ fn now() -> i64 {
 }
 
 /// Length-independent constant-time comparison to avoid timing leaks.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
