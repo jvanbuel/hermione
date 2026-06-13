@@ -34,6 +34,10 @@
       {
         "command": "hermione.setStudent",
         "title": "Hermione: Set Student Identifier"
+      },
+      {
+        "command": "hermione.askAssistant",
+        "title": "Hermione: Ask Assistant"
       }
     ],
     "configuration": {

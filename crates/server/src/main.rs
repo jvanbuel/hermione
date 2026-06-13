@@ -1,6 +1,7 @@
 //! Hermione backend: a gRPC ingest/viewer server plus an HTTP/SSE web viewer,
 //! persisting every terminal session to Postgres.
 
+mod assistant;
 mod auth;
 mod exercises;
 mod files;
@@ -52,6 +53,24 @@ struct Config {
     /// provisioning API is disabled.
     #[arg(long, env = "HERMIONE_ADMIN_TOKEN")]
     admin_token: Option<String>,
+
+    /// Anthropic API key for the AI teaching assistant (Managed Agents). If
+    /// unset, the assistant is disabled and courses are unaffected.
+    #[arg(long, env = "HERMIONE_ANTHROPIC_API_KEY")]
+    anthropic_api_key: Option<String>,
+
+    /// Default model for course assistants.
+    #[arg(
+        long,
+        env = "HERMIONE_ASSISTANT_MODEL",
+        default_value = "claude-opus-4-8"
+    )]
+    assistant_model: String,
+
+    /// Reuse a specific Managed Agents environment id instead of creating the
+    /// shared `hermione-assistant` one lazily.
+    #[arg(long, env = "HERMIONE_ASSISTANT_ENVIRONMENT_ID")]
+    assistant_environment_id: Option<String>,
 }
 
 #[tokio::main]
@@ -96,6 +115,21 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let assistant = assistant::Assistant::new(
+        config.anthropic_api_key.clone(),
+        config.assistant_environment_id.clone(),
+    );
+    if assistant.enabled() {
+        tracing::info!(
+            model = %config.assistant_model,
+            "AI teaching assistant is available (per-course opt-in via the dashboard)"
+        );
+    } else {
+        tracing::info!(
+            "AI teaching assistant is OFF — set HERMIONE_ANTHROPIC_API_KEY to enable it."
+        );
+    }
+
     let state = AppState {
         db,
         hub: Hub::default(),
@@ -104,6 +138,8 @@ async fn main() -> anyhow::Result<()> {
         identity,
         admin_token: config.admin_token.clone(),
         open_dev: Arc::new(AtomicBool::new(!has_admins)),
+        assistant,
+        assistant_default_model: config.assistant_model.clone(),
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;

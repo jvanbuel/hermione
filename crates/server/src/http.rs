@@ -94,6 +94,10 @@ pub fn router(state: AppState) -> Router {
             "/api/exercises",
             get(crate::exercises::list).post(crate::exercises::define),
         )
+        .route(
+            "/api/assistant",
+            get(crate::assistant::get_config).put(crate::assistant::put_config),
+        )
         .route("/api/messages", post(crate::messages::broadcast))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -116,6 +120,9 @@ pub fn router(state: AppState) -> Router {
     let ingest = Router::new()
         .route("/api/file-events", post(crate::files::ingest))
         .route("/api/inbox", get(crate::messages::inbox))
+        .route("/api/assistant/status", get(crate::assistant::status))
+        .route("/api/assistant/chat", post(crate::assistant::chat))
+        .route("/api/assistant/history", get(crate::assistant::history))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_ingest,

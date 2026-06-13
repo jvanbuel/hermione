@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import WebSocket from 'ws';
+import { registerAssistant } from './assistant';
 import { ExerciseMap } from './exercises';
 
 interface CourseConfig {
@@ -197,6 +198,69 @@ class Reporter {
             this.reconnectTimer = undefined;
             this.connectMessages();
         }, 5000);
+    }
+
+    // ---- AI assistant (chat panel) ----
+
+    private authHeaders(): Record<string, string> {
+        const h: Record<string, string> = {};
+        if (this.token) {
+            h['Authorization'] = `Bearer ${this.token}`;
+        }
+        if (this.identityToken) {
+            h['X-Hermione-Identity'] = this.identityToken;
+        }
+        return h;
+    }
+
+    /** Whether the course this workspace is enrolled in has the assistant on. */
+    async assistantStatus(): Promise<boolean> {
+        if (!this.serverUrl) {
+            await this.loadConfig();
+        }
+        await this.ensureIdentity(false);
+        try {
+            const res = await fetch(`${this.serverUrl}/api/assistant/status`, {
+                headers: this.authHeaders(),
+            });
+            if (!res.ok) {
+                return false;
+            }
+            const data = (await res.json()) as { enabled?: boolean };
+            return !!data.enabled;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /** This student's prior turns with the assistant. */
+    async assistantHistory(): Promise<{ role: string; body: string }[]> {
+        try {
+            const url = `${this.serverUrl}/api/assistant/history?student=${encodeURIComponent(this.student)}`;
+            const res = await fetch(url, { headers: this.authHeaders() });
+            return res.ok ? ((await res.json()) as { role: string; body: string }[]) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    /** Sends one question, grounded with the current file, and returns the reply. */
+    async assistantChat(message: string): Promise<string> {
+        await this.ensureIdentity(false);
+        const editor = vscode.window.activeTextEditor;
+        const onFile = editor && editor.document.uri.scheme === 'file';
+        const file = onFile ? vscode.workspace.asRelativePath(editor!.document.uri, false) : undefined;
+        const language = onFile ? editor!.document.languageId : undefined;
+        const res = await fetch(`${this.serverUrl}/api/assistant/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+            body: JSON.stringify({ message, student: this.student, file, language }),
+        });
+        if (!res.ok) {
+            throw new Error((await res.text()) || `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { reply: string };
+        return data.reply;
     }
 
     async setStudent(): Promise<void> {
@@ -443,6 +507,9 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('hermione.setStudent', () => reporter.setStudent()),
         { dispose: () => reporter.stop() },
     );
+
+    // The AI assistant chat panel (only opens when the course has it enabled).
+    registerAssistant(context, reporter);
 
     if (vscode.workspace.getConfiguration('hermione').get<boolean>('enabled', true)) {
         reporter.start();

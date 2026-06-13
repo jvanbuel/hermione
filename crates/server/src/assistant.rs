@@ -1,0 +1,818 @@
+//! AI teaching assistant, backed by Anthropic's Managed Agents.
+//!
+//! Hermione is a thin relay: each course with the assistant enabled maps to a
+//! persisted Agent (its `system` prompt, `skills`, and `mcp_servers` mirror the
+//! teacher's dashboard config), and each student's conversation maps to a
+//! Managed Agents session. The teacher configures and toggles the assistant per
+//! course; courses without it work exactly as before.
+//!
+//! The whole feature is gated on `HERMIONE_ANTHROPIC_API_KEY`. When it's unset,
+//! [`Assistant::enabled`] is false and every assistant route reports "disabled".
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{
+    extract::{Extension, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use chrono::Utc;
+use hermione_entity::{assistant_conversations, assistant_messages, course_assistants, courses};
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::RwLock;
+use uuid::Uuid;
+
+use crate::auth::AuthCtx;
+use crate::http::{resolve_course, CourseCtx, CourseQuery, VerifiedStudent};
+use crate::state::AppState;
+
+/// Anthropic API base. Overridable so a proxy/gateway can be slotted in.
+const API_BASE: &str = "https://api.anthropic.com";
+/// Beta header that enables the Managed Agents endpoints.
+const MANAGED_AGENTS_BETA: &str = "managed-agents-2026-04-01";
+/// Shared environment name; environment names are unique per organization.
+const ENVIRONMENT_NAME: &str = "hermione-assistant";
+
+/// How long a single chat turn may run before we give up polling.
+const TURN_TIMEOUT_SECS: u64 = 150;
+/// How often we poll the session's event list while a turn is in flight.
+const POLL_INTERVAL_MS: u64 = 1200;
+/// Max history turns returned to the chat panel.
+const HISTORY_LIMIT: u64 = 100;
+
+// --- configuration value types (stored as JSON text on course_assistants) ----
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRef {
+    /// "anthropic" (prebuilt, e.g. `xlsx`) or "custom" (a Skills API id).
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub skill_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct McpServer {
+    pub name: String,
+    pub url: String,
+}
+
+fn parse_json_list<T: for<'de> Deserialize<'de>>(s: &str) -> Vec<T> {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
+// --- the Managed Agents client ---------------------------------------------
+
+/// Handle to Anthropic's Managed Agents API. Cloneable; lives in [`AppState`].
+#[derive(Clone)]
+pub struct Assistant {
+    client: reqwest::Client,
+    api_key: Option<String>,
+    /// The shared cloud environment id, resolved lazily and cached.
+    environment_id: Arc<RwLock<Option<String>>>,
+}
+
+impl Assistant {
+    pub fn new(api_key: Option<String>, environment_id: Option<String>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        Self {
+            client,
+            api_key,
+            environment_id: Arc::new(RwLock::new(environment_id)),
+        }
+    }
+
+    /// True when an API key is configured, i.e. the assistant can run at all.
+    pub fn enabled(&self) -> bool {
+        self.api_key.is_some()
+    }
+
+    fn key(&self) -> Result<&str, String> {
+        self.api_key
+            .as_deref()
+            .ok_or_else(|| "assistant not configured (HERMIONE_ANTHROPIC_API_KEY unset)".to_string())
+    }
+
+    async fn api(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let key = self.key()?;
+        let mut req = self
+            .client
+            .request(method, format!("{API_BASE}{path}"))
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", MANAGED_AGENTS_BETA);
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("anthropic {status}: {text}"));
+        }
+        if text.is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|e| format!("bad response json: {e}"))
+    }
+
+    async fn get(&self, path: &str) -> Result<Value, String> {
+        self.api(reqwest::Method::GET, path, None).await
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.api(reqwest::Method::POST, path, Some(body)).await
+    }
+
+    /// Resolves the shared cloud environment, creating it if absent. Cached for
+    /// the process lifetime.
+    async fn ensure_environment(&self) -> Result<String, String> {
+        if let Some(id) = self.environment_id.read().await.clone() {
+            return Ok(id);
+        }
+        let mut guard = self.environment_id.write().await;
+        if let Some(id) = guard.clone() {
+            return Ok(id);
+        }
+        // Try to create; on a name conflict, look the existing one up.
+        let body = json!({
+            "name": ENVIRONMENT_NAME,
+            "config": { "type": "cloud", "networking": { "type": "unrestricted" } },
+        });
+        let id = match self.post("/v1/environments", body).await {
+            Ok(v) => v.get("id").and_then(|i| i.as_str()).map(String::from),
+            Err(e) if e.contains("409") => self.find_environment_by_name().await?,
+            Err(e) => return Err(e),
+        };
+        let id = id.ok_or_else(|| "environment create returned no id".to_string())?;
+        *guard = Some(id.clone());
+        Ok(id)
+    }
+
+    async fn find_environment_by_name(&self) -> Result<Option<String>, String> {
+        let list = self.get("/v1/environments").await?;
+        let id = list
+            .get("data")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+            .find(|e| e.get("name").and_then(|n| n.as_str()) == Some(ENVIRONMENT_NAME))
+            .and_then(|e| e.get("id").and_then(|i| i.as_str()))
+            .map(String::from);
+        Ok(id)
+    }
+
+    /// Creates or updates the course's Agent from its config, returning the
+    /// agent id and version.
+    async fn sync_agent(
+        &self,
+        existing_agent_id: Option<&str>,
+        course_name: &str,
+        model: &str,
+        system_prompt: &str,
+        skills: &[SkillRef],
+        mcp_servers: &[McpServer],
+    ) -> Result<(String, String), String> {
+        // Built-in toolset (bash/read/edit/web) plus one mcp_toolset per server,
+        // so declared MCP servers are actually reachable by the agent.
+        let mut tools = vec![json!({ "type": "agent_toolset_20260401" })];
+        for s in mcp_servers {
+            tools.push(json!({ "type": "mcp_toolset", "mcp_server_name": s.name }));
+        }
+
+        let mut body = json!({
+            "name": format!("Hermione TA — {course_name}"),
+            "model": model,
+            "tools": tools,
+        });
+        let obj = body.as_object_mut().unwrap();
+        if !system_prompt.trim().is_empty() {
+            obj.insert("system".into(), json!(system_prompt));
+        }
+        if !skills.is_empty() {
+            let skills_json: Vec<Value> = skills
+                .iter()
+                .map(|s| {
+                    let mut m = json!({ "type": s.kind, "skill_id": s.skill_id });
+                    if let Some(v) = &s.version {
+                        m.as_object_mut().unwrap().insert("version".into(), json!(v));
+                    }
+                    m
+                })
+                .collect();
+            obj.insert("skills".into(), json!(skills_json));
+        }
+        if !mcp_servers.is_empty() {
+            let servers: Vec<Value> = mcp_servers
+                .iter()
+                .map(|s| json!({ "type": "url", "name": s.name, "url": s.url }))
+                .collect();
+            obj.insert("mcp_servers".into(), json!(servers));
+        }
+
+        let path = match existing_agent_id {
+            Some(id) => format!("/v1/agents/{id}"), // update → new version
+            None => "/v1/agents".to_string(),
+        };
+        let resp = self.post(&path, body).await?;
+        let agent_id = existing_agent_id
+            .map(String::from)
+            .or_else(|| resp.get("id").and_then(|i| i.as_str()).map(String::from))
+            .ok_or_else(|| "agent sync returned no id".to_string())?;
+        let version = version_string(&resp);
+        Ok((agent_id, version))
+    }
+
+    /// Opens a fresh session bound to the given agent.
+    async fn open_session(&self, agent_id: &str) -> Result<String, String> {
+        let env = self.ensure_environment().await?;
+        let resp = self
+            .post(
+                "/v1/sessions",
+                json!({ "agent": agent_id, "environment_id": env }),
+            )
+            .await?;
+        resp.get("id")
+            .and_then(|i| i.as_str())
+            .map(String::from)
+            .ok_or_else(|| "session create returned no id".to_string())
+    }
+
+    /// Runs one chat turn: sends the student's message and polls the session's
+    /// events until it goes idle, accumulating the agent's reply text.
+    async fn run_turn(&self, session_id: &str, text: &str) -> Result<String, String> {
+        // Seed the seen-set with pre-existing events so we read only this turn's.
+        let mut seen = self.list_event_ids(session_id).await?;
+
+        self.post(
+            &format!("/v1/sessions/{session_id}/events"),
+            json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
+        )
+        .await?;
+
+        let mut reply = String::new();
+        let poll = async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
+                let events = self
+                    .get(&format!("/v1/sessions/{session_id}/events?limit=1000"))
+                    .await?;
+                let data = events.get("data").and_then(|d| d.as_array());
+                for ev in data.into_iter().flatten() {
+                    let id = ev.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if id.is_empty() || !seen.insert(id.to_string()) {
+                        continue;
+                    }
+                    match ev.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                        "agent.message" => {
+                            for block in ev.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+                                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                    if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
+                                        reply.push_str(t);
+                                    }
+                                }
+                            }
+                        }
+                        // Idle marks turn completion unless the agent is blocked
+                        // waiting on the client (which can't happen here — all
+                        // tools are server-side and auto-approved).
+                        "session.status_idle" => {
+                            let kind = ev
+                                .get("stop_reason")
+                                .and_then(|s| s.get("type"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("end_turn");
+                            if kind != "requires_action" {
+                                return Ok::<(), String>(());
+                            }
+                        }
+                        "session.status_terminated" => {
+                            return Err("session terminated".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(TURN_TIMEOUT_SECS), poll).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) if reply.is_empty() => return Err("assistant timed out".to_string()),
+            Err(_) => {}
+        }
+        let reply = reply.trim().to_string();
+        if reply.is_empty() {
+            Ok("(the assistant finished without a textual reply)".to_string())
+        } else {
+            Ok(reply)
+        }
+    }
+
+    async fn list_event_ids(&self, session_id: &str) -> Result<HashSet<String>, String> {
+        let events = self
+            .get(&format!("/v1/sessions/{session_id}/events?limit=1000"))
+            .await?;
+        Ok(events
+            .get("data")
+            .and_then(|d| d.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect())
+    }
+}
+
+fn version_string(resp: &Value) -> String {
+    match resp.get("version") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+// --- DTOs ------------------------------------------------------------------
+
+/// The teacher-facing config, returned by GET and accepted by PUT.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigDto {
+    pub enabled: bool,
+    pub model: String,
+    pub system_prompt: String,
+    pub skills: Vec<SkillRef>,
+    pub mcp_servers: Vec<McpServer>,
+    /// Whether the server has an API key at all (assistant feature available).
+    #[serde(default)]
+    pub available: bool,
+    /// Whether an Agent has been synced for this course.
+    #[serde(default)]
+    pub configured: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutConfig {
+    pub course: Option<String>,
+    pub enabled: bool,
+    pub model: Option<String>,
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<SkillRef>,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServer>,
+}
+
+// --- teacher handlers (dashboard) ------------------------------------------
+
+/// GET /api/assistant?course=… — the course's assistant config.
+pub async fn get_config(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let row = match course_assistants::Entity::find_by_id(course_id)
+        .one(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let dto = match row {
+        Some(m) => ConfigDto {
+            enabled: m.enabled,
+            model: m.model,
+            system_prompt: m.system_prompt,
+            skills: parse_json_list(&m.skills),
+            mcp_servers: parse_json_list(&m.mcp_servers),
+            available: state.assistant.enabled(),
+            configured: m.agent_id.is_some(),
+        },
+        None => ConfigDto {
+            enabled: false,
+            model: state.assistant_default_model.clone(),
+            system_prompt: String::new(),
+            skills: Vec::new(),
+            mcp_servers: Vec::new(),
+            available: state.assistant.enabled(),
+            configured: false,
+        },
+    };
+    Json(dto).into_response()
+}
+
+/// PUT /api/assistant — upsert the config; syncs the Anthropic Agent when enabled.
+pub async fn put_config(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<PutConfig>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, body.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    if body.enabled && !state.assistant.enabled() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "the assistant is not configured on this server (HERMIONE_ANTHROPIC_API_KEY is unset)",
+        )
+            .into_response();
+    }
+
+    let model = body
+        .model
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| state.assistant_default_model.clone());
+    let system_prompt = body.system_prompt.unwrap_or_default();
+
+    let existing = match course_assistants::Entity::find_by_id(course_id)
+        .one(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Sync (create/update) the Agent only when the assistant is enabled.
+    let (mut agent_id, mut agent_version, mut environment_id) = match &existing {
+        Some(m) => (m.agent_id.clone(), m.agent_version.clone(), m.environment_id.clone()),
+        None => (None, None, None),
+    };
+    if body.enabled {
+        let course_name = courses::Entity::find_by_id(course_id)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .map(|c| c.name)
+            .unwrap_or_else(|| "course".to_string());
+        match state
+            .assistant
+            .sync_agent(
+                agent_id.as_deref(),
+                &course_name,
+                &model,
+                &system_prompt,
+                &body.skills,
+                &body.mcp_servers,
+            )
+            .await
+        {
+            Ok((id, version)) => {
+                agent_id = Some(id);
+                agent_version = Some(version);
+                environment_id = state.assistant.environment_id.read().await.clone();
+            }
+            Err(e) => return (StatusCode::BAD_GATEWAY, format!("agent sync failed: {e}")).into_response(),
+        }
+    }
+
+    let skills_text = serde_json::to_string(&body.skills).unwrap_or_else(|_| "[]".into());
+    let mcp_text = serde_json::to_string(&body.mcp_servers).unwrap_or_else(|_| "[]".into());
+    let upsert = ActiveModelFrom {
+        course_id,
+        enabled: body.enabled,
+        model: model.clone(),
+        system_prompt: system_prompt.clone(),
+        skills: skills_text,
+        mcp_servers: mcp_text,
+        agent_id: agent_id.clone(),
+        agent_version,
+        environment_id,
+        existed: existing.is_some(),
+    };
+    if let Err(e) = upsert.save(&state.db).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+
+    Json(ConfigDto {
+        enabled: body.enabled,
+        model,
+        system_prompt,
+        skills: body.skills,
+        mcp_servers: body.mcp_servers,
+        available: state.assistant.enabled(),
+        configured: agent_id.is_some(),
+    })
+    .into_response()
+}
+
+/// Small helper to upsert a `course_assistants` row by primary key.
+struct ActiveModelFrom {
+    course_id: Uuid,
+    enabled: bool,
+    model: String,
+    system_prompt: String,
+    skills: String,
+    mcp_servers: String,
+    agent_id: Option<String>,
+    agent_version: Option<String>,
+    environment_id: Option<String>,
+    existed: bool,
+}
+
+impl ActiveModelFrom {
+    async fn save(self, db: &sea_orm::DatabaseConnection) -> Result<(), String> {
+        let active = course_assistants::ActiveModel {
+            course_id: Set(self.course_id),
+            enabled: Set(self.enabled),
+            model: Set(self.model),
+            system_prompt: Set(self.system_prompt),
+            skills: Set(self.skills),
+            mcp_servers: Set(self.mcp_servers),
+            agent_id: Set(self.agent_id),
+            agent_version: Set(self.agent_version),
+            environment_id: Set(self.environment_id),
+            updated_at: Set(Utc::now().into()),
+        };
+        let res = if self.existed {
+            course_assistants::Entity::update(active).exec(db).await.map(|_| ())
+        } else {
+            course_assistants::Entity::insert(active).exec(db).await.map(|_| ())
+        };
+        res.map_err(|e| e.to_string())
+    }
+}
+
+// --- student handlers (extension, enrollment-token-scoped) ------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatusDto {
+    enabled: bool,
+}
+
+/// GET /api/assistant/status — whether the assistant is live for this course,
+/// so the extension can show or hide its chat panel.
+pub async fn status(
+    State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+) -> Response {
+    let enabled = state.assistant.enabled() && assistant_live(&state, course_id).await;
+    Json(StatusDto { enabled }).into_response()
+}
+
+/// True when the course has an enabled, agent-synced assistant.
+async fn assistant_live(state: &AppState, course_id: Uuid) -> bool {
+    matches!(
+        course_assistants::Entity::find_by_id(course_id).one(&state.db).await,
+        Ok(Some(m)) if m.enabled && m.agent_id.is_some()
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRequest {
+    pub message: String,
+    pub student: Option<String>,
+    /// Optional editor context to ground the answer.
+    pub file: Option<String>,
+    pub language: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatReply {
+    reply: String,
+}
+
+/// POST /api/assistant/chat — one turn with the course assistant.
+pub async fn chat(
+    State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
+    Json(body): Json<ChatRequest>,
+) -> Response {
+    let message = body.message.trim().to_string();
+    if message.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty message").into_response();
+    }
+    // A verified identity (when enforced) wins over the self-asserted one.
+    let student = verified
+        .or(body.student)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(student) = student else {
+        return (StatusCode::BAD_REQUEST, "missing student").into_response();
+    };
+
+    let Some(assistant_row) = (match course_assistants::Entity::find_by_id(course_id)
+        .one(&state.db)
+        .await
+    {
+        Ok(row) => row,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }) else {
+        return (StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response();
+    };
+    if !assistant_row.enabled || assistant_row.agent_id.is_none() || !state.assistant.enabled() {
+        return (StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response();
+    }
+    let agent_id = assistant_row.agent_id.unwrap();
+
+    // Find or create this student's conversation.
+    let conversation = match find_or_create_conversation(&state, course_id, &student).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    // Persist the student's question.
+    if let Err(e) = insert_message(&state, conversation.id, "student", &message).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+
+    // Ground the turn with light editor context, if provided.
+    let prompt = match (&body.file, &body.language) {
+        (Some(f), Some(l)) if !f.is_empty() => {
+            format!("[Student is editing `{f}` ({l})]\n\n{message}")
+        }
+        (Some(f), _) if !f.is_empty() => format!("[Student is editing `{f}`]\n\n{message}"),
+        _ => message.clone(),
+    };
+
+    // Ensure a session, then run the turn — re-opening once if it was lost.
+    let reply = match run_with_session(&state, &conversation, &agent_id, &prompt).await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_GATEWAY, format!("assistant error: {e}")).into_response(),
+    };
+
+    if let Err(e) = insert_message(&state, conversation.id, "assistant", &reply).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+
+    Json(ChatReply { reply }).into_response()
+}
+
+/// Runs a turn, transparently opening a session (or re-opening a stale one).
+async fn run_with_session(
+    state: &AppState,
+    conversation: &assistant_conversations::Model,
+    agent_id: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let mut session_id = match &conversation.session_id {
+        Some(s) => s.clone(),
+        None => {
+            let s = state.assistant.open_session(agent_id).await?;
+            set_session(state, conversation.id, &s).await?;
+            s
+        }
+    };
+
+    match state.assistant.run_turn(&session_id, prompt).await {
+        Ok(reply) => Ok(reply),
+        // The session may have terminated/expired — open a fresh one and retry.
+        Err(_) => {
+            session_id = state.assistant.open_session(agent_id).await?;
+            set_session(state, conversation.id, &session_id).await?;
+            state.assistant.run_turn(&session_id, prompt).await
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMessage {
+    role: String,
+    body: String,
+    created_at_unix_ms: i64,
+}
+
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    student: Option<String>,
+}
+
+/// GET /api/assistant/history?student=… — this student's prior turns.
+pub async fn history(
+    State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
+    Query(q): Query<HistoryQuery>,
+) -> Response {
+    let student = verified
+        .or(q.student)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let Some(student) = student else {
+        return Json(Vec::<HistoryMessage>::new()).into_response();
+    };
+
+    let conversation = match assistant_conversations::Entity::find()
+        .filter(assistant_conversations::Column::CourseId.eq(course_id))
+        .filter(assistant_conversations::Column::Student.eq(&student))
+        .one(&state.db)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let Some(conversation) = conversation else {
+        return Json(Vec::<HistoryMessage>::new()).into_response();
+    };
+
+    match assistant_messages::Entity::find()
+        .filter(assistant_messages::Column::ConversationId.eq(conversation.id))
+        .order_by_asc(assistant_messages::Column::Id)
+        .limit(HISTORY_LIMIT)
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => {
+            let out: Vec<HistoryMessage> = rows
+                .into_iter()
+                .map(|m| HistoryMessage {
+                    role: m.role,
+                    body: m.body,
+                    created_at_unix_ms: m.created_at.timestamp_millis(),
+                })
+                .collect();
+            Json(out).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+// --- conversation persistence ----------------------------------------------
+
+async fn find_or_create_conversation(
+    state: &AppState,
+    course_id: Uuid,
+    student: &str,
+) -> Result<assistant_conversations::Model, String> {
+    if let Some(c) = assistant_conversations::Entity::find()
+        .filter(assistant_conversations::Column::CourseId.eq(course_id))
+        .filter(assistant_conversations::Column::Student.eq(student))
+        .one(&state.db)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(c);
+    }
+    let now = Utc::now();
+    let model = assistant_conversations::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        course_id: Set(course_id),
+        student: Set(student.to_string()),
+        session_id: Set(None),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    };
+    assistant_conversations::Entity::insert(model)
+        .exec_with_returning(&state.db)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn set_session(state: &AppState, conversation_id: Uuid, session_id: &str) -> Result<(), String> {
+    let model = assistant_conversations::ActiveModel {
+        id: Set(conversation_id),
+        session_id: Set(Some(session_id.to_string())),
+        updated_at: Set(Utc::now().into()),
+        ..Default::default()
+    };
+    assistant_conversations::Entity::update(model)
+        .exec(&state.db)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+async fn insert_message(
+    state: &AppState,
+    conversation_id: Uuid,
+    role: &str,
+    body: &str,
+) -> Result<(), String> {
+    let model = assistant_messages::ActiveModel {
+        conversation_id: Set(conversation_id),
+        role: Set(role.to_string()),
+        body: Set(body.to_string()),
+        created_at: Set(Utc::now().into()),
+        ..Default::default()
+    };
+    assistant_messages::Entity::insert(model)
+        .exec(&state.db)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

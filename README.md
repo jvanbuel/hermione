@@ -92,6 +92,8 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--grpc-addr`     | `HERMIONE_GRPC_ADDR`     | `0.0.0.0:50051`                                       |
 | `--http-addr`     | `HERMIONE_HTTP_ADDR`     | `0.0.0.0:8080`                                        |
 | `--admin-token`   | `HERMIONE_ADMIN_TOKEN`   | none — set it to enable the provisioning API          |
+| `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
+| `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
 
 ### 3. Record a session (on the student's machine)
 
@@ -315,6 +317,10 @@ Planned next:
 - [x] Student identity: env-derived attribution (default) or verified OIDC/GitHub
       (GitHub, Google, any OIDC provider) — server-trusted, enforced when configured.
 - [x] Authentication: admin login + per-course enrollment tokens.
+- [x] AI teaching assistant: per-course, teacher-enabled, configured with a system
+      prompt + agent skills/MCP (Anthropic Managed Agents). Students chat from a
+      VSCode panel; courses without it are unaffected. Set
+      `HERMIONE_ANTHROPIC_API_KEY` to enable.
 - [ ] Two-way chat (student → teacher) on the existing WebSocket channel.
 - [ ] Richer offline analytics: replay timeline.
 

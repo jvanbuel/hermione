@@ -87,4 +87,8 @@ pub struct AppState {
     /// True while no admin accounts exist: the dashboard is open and scoped to
     /// the default course. Flips to false once the first admin is created.
     pub open_dev: Arc<AtomicBool>,
+    /// AI teaching assistant (Anthropic Managed Agents). Inert without a key.
+    pub assistant: crate::assistant::Assistant,
+    /// Default model for newly configured course assistants.
+    pub assistant_default_model: String,
 }
