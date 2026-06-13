@@ -125,12 +125,13 @@
     .card.struggle-help { border-left-color: var(--red); }
     .card.struggle-watch { border-left-color: var(--amber); }
     .pill { font-size: var(--fs-xs); padding: 1px 7px; border-radius: 8px; margin-left: 6px;
-      vertical-align: middle; font-weight: 600; }
+      font-weight: 600; flex: none; }
     .pill.help { background: var(--help-bg); color: #fff; }
     .pill.watch { background: var(--watch-bg); color: #fff; }
     .who .reason { font-size: var(--fs-sm); color: var(--amber); margin-top: 2px;
-      display: flex; align-items: center; gap: 4px; }
-    .who .prov { font-size: var(--fs-xs); color: var(--fg-subtle); margin-top: 1px; }
+      display: flex; align-items: flex-start; gap: 4px; }
+    .who .prov { font-size: var(--fs-xs); color: var(--fg-subtle); margin-top: 1px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .avatar {
       position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
@@ -146,7 +147,8 @@
     .dot.idle { background: var(--surface); border: 2px solid var(--fg-subtle); }
 
     .who { min-width: 0; flex: 1; }
-    .who .name { font-weight: 600; font-size: var(--fs-base); }
+    .who .name { font-weight: 600; font-size: var(--fs-base); display: flex; align-items: center; min-width: 0; }
+    .who .name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .who .file { color: var(--fg-muted); font-size: var(--fs-sm); font-family: ui-monospace, monospace;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .who .time { font-size: var(--fs-sm); margin-top: 2px; color: var(--fg-muted); }
@@ -328,7 +330,7 @@
       return `
         ${avatarHtml(s.student, s.status)}
         <div class="who">
-          <div class="name">${esc(s.student)}${pill}</div>
+          <div class="name"><span class="nm">${esc(s.student)}</span>${pill}</div>
           <div class="file">${esc(s.file || '—')}</div>
           ${prov}
           ${reason}
