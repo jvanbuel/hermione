@@ -6,6 +6,7 @@ mod exercises;
 mod files;
 mod grpc;
 mod http;
+mod identity;
 mod messages;
 mod state;
 mod tenancy;
@@ -85,11 +86,22 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let identity = identity::Identity::from_env();
+    if identity.enforced() {
+        tracing::info!("verified student identity is ENFORCED (OIDC/GitHub configured)");
+    } else {
+        tracing::warn!(
+            "verified student identity is OFF — `student` is self-asserted. Set \
+             HERMIONE_IDENTITY_SECRET and HERMIONE_OIDC_PROVIDERS to enforce it."
+        );
+    }
+
     let state = AppState {
         db,
         hub: Hub::default(),
         msg_hub: crate::state::MsgHub::default(),
         auth: Auth::new(),
+        identity,
         admin_token: config.admin_token.clone(),
         open_dev: Arc::new(AtomicBool::new(!has_admins)),
     };

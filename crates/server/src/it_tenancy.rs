@@ -53,6 +53,10 @@ fn ensure_schema() {
 /// Builds app state with authentication enforced (an admin exists, so not open
 /// dev) and a known super-admin token. Each test gets its own connection pool.
 async fn app() -> (AppState, Router) {
+    app_with_identity(crate::identity::Identity::disabled()).await
+}
+
+async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Router) {
     ensure_schema();
     let state = AppState {
         db: Database::connect(test_url())
@@ -61,6 +65,7 @@ async fn app() -> (AppState, Router) {
         hub: Hub::default(),
         msg_hub: MsgHub::default(),
         auth: Auth::new(),
+        identity,
         admin_token: Some("admintok".to_string()),
         open_dev: Arc::new(AtomicBool::new(false)),
     };
@@ -371,5 +376,91 @@ async fn defined_exercises_drive_overview_order() {
     assert_eq!(
         three["stats"]["total"], 0,
         "defined-but-empty exercise shown"
+    );
+}
+
+#[tokio::test]
+async fn enforced_identity_required_and_trusted() {
+    use crate::identity::{Identity, Provider, ProviderKind};
+    let provider = Provider {
+        name: "github".into(),
+        kind: ProviderKind::Github,
+        issuer: None,
+        client_id: "client".into(),
+        client_secret: None,
+        scopes: None,
+    };
+    let identity = Identity::for_test("identity-secret", vec![provider]);
+    let hermione_token = identity
+        .issue("github:trusted")
+        .expect("issue identity token");
+
+    let (state, app) = app_with_identity(identity).await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("idc{s}"), "ID")
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("ida{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let event = |student: &str| {
+        format!(r#"[{{"student":"{student}","path":"/a.py","kind":"focus","atUnixMs":{now}}}]"#)
+    };
+
+    // Without a verified identity token, ingest is rejected.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(event("self-claimed")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // With a valid token, the trusted identity overrides the self-asserted one.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header("x-hermione-identity", &hermione_token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(event("self-claimed")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let cookie = login(&app, &format!("ida{s}"), "pw").await.unwrap();
+    let resp = get_with_cookie(
+        &app,
+        &format!("/api/students/activity?course=idc{s}"),
+        &cookie,
+    )
+    .await;
+    let body = body_string(resp).await;
+    assert!(
+        body.contains("github:trusted"),
+        "trusted identity stored: {body}"
+    );
+    assert!(
+        !body.contains("self-claimed"),
+        "self-asserted name ignored: {body}"
     );
 }

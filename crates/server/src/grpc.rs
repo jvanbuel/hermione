@@ -64,6 +64,17 @@ impl Ingest for IngestService {
             None => return Err(Status::unauthenticated("enrollment token required")),
         };
 
+        // Verified student identity (Hermione identity token), enforced when OIDC
+        // is configured. When present it replaces the self-asserted student.
+        let verified_student = request
+            .metadata()
+            .get("x-hermione-identity")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|t| self.state.identity.verify(t));
+        if self.state.identity.enforced() && verified_student.is_none() {
+            return Err(Status::unauthenticated("verified identity required"));
+        }
+
         let mut stream = request.into_inner();
         let db = &self.state.db;
 
@@ -91,7 +102,7 @@ impl Ingest for IngestService {
                             let model = sessions::ActiveModel {
                                 id: Set(id),
                                 course_id: Set(Some(course_id)),
-                                student: Set(start.student),
+                                student: Set(verified_student.clone().unwrap_or(start.student)),
                                 command: Set(start.command),
                                 hostname: Set(non_empty(start.hostname)),
                                 cols: Set(start.cols as i32),

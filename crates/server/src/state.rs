@@ -80,6 +80,8 @@ pub struct AppState {
     pub hub: Hub,
     pub msg_hub: MsgHub,
     pub auth: Auth,
+    /// Verified student identity (OIDC / GitHub → Hermione identity token).
+    pub identity: crate::identity::Identity,
     /// Super-admin secret for the provisioning API. `None` disables it.
     pub admin_token: Option<String>,
     /// True while no admin accounts exist: the dashboard is open and scoped to

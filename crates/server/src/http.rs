@@ -35,6 +35,11 @@ use crate::tenancy::{self, DEFAULT_COURSE_ID};
 #[derive(Clone, Copy)]
 pub struct CourseCtx(pub Uuid);
 
+/// The verified student id for an ingest request (from a Hermione identity
+/// token). `None` when identity verification is not enforced.
+#[derive(Clone)]
+pub struct VerifiedStudent(pub Option<String>);
+
 /// Common `?course=<slug>` selector for dashboard endpoints.
 #[derive(Deserialize)]
 pub struct CourseQuery {
@@ -53,6 +58,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
+        // Student identity: authenticate with an IdP, get a Hermione token.
+        .route("/api/auth/exchange", post(auth_exchange))
+        .route("/api/auth/device/start", post(auth_device_start))
+        .route("/api/auth/device/poll", post(auth_device_poll))
         // The message stream authenticates itself (enrollment token or cookie).
         .route("/ws", get(ws_handler))
         .route("/vendor/xterm.js", get(xterm_js))
@@ -253,8 +262,100 @@ async fn require_ingest(
         None => return (StatusCode::UNAUTHORIZED, "enrollment token required").into_response(),
     };
 
+    // Verified student identity (Hermione identity token), enforced when OIDC is
+    // configured. When enforced, the trusted student replaces any self-asserted one.
+    let verified = request
+        .headers()
+        .get("x-hermione-identity")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|t| state.identity.verify(t));
+    if state.identity.enforced() && verified.is_none() {
+        return (StatusCode::UNAUTHORIZED, "verified identity required").into_response();
+    }
+
     request.extensions_mut().insert(CourseCtx(course_id));
+    request.extensions_mut().insert(VerifiedStudent(verified));
     next.run(request).await
+}
+
+// --- student identity (OIDC / GitHub) --------------------------------------
+
+#[derive(Deserialize)]
+struct ExchangeRequest {
+    provider: String,
+    token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityResponse {
+    identity_token: String,
+    student: String,
+    expires_in: i64,
+}
+
+/// Exchanges a verified IdP credential for a Hermione identity token.
+async fn auth_exchange(
+    State(state): State<AppState>,
+    Json(req): Json<ExchangeRequest>,
+) -> Response {
+    match state.identity.verify_idp(&req.provider, &req.token).await {
+        Ok(student) => issue_identity(&state, student),
+        Err(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeviceStartRequest {
+    provider: String,
+}
+
+/// Begins the device-authorization flow for a CLI client.
+async fn auth_device_start(
+    State(state): State<AppState>,
+    Json(req): Json<DeviceStartRequest>,
+) -> Response {
+    match state.identity.device_start(&req.provider).await {
+        Ok(start) => Json(start).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DevicePollRequest {
+    provider: String,
+    device_code: String,
+}
+
+/// Polls a pending device-flow authorization; returns a token once approved.
+async fn auth_device_poll(
+    State(state): State<AppState>,
+    Json(req): Json<DevicePollRequest>,
+) -> Response {
+    match state
+        .identity
+        .device_poll(&req.provider, &req.device_code)
+        .await
+    {
+        Ok(crate::identity::DevicePoll::Pending) => {
+            Json(serde_json::json!({ "status": "pending" })).into_response()
+        }
+        Ok(crate::identity::DevicePoll::Done(student)) => issue_identity(&state, student),
+        Err(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
+    }
+}
+
+fn issue_identity(state: &AppState, student: String) -> Response {
+    match state.identity.issue(&student) {
+        Some(identity_token) => Json(IdentityResponse {
+            identity_token,
+            student,
+            expires_in: crate::identity::TOKEN_TTL_SECS,
+        })
+        .into_response(),
+        None => (StatusCode::SERVICE_UNAVAILABLE, "identity not configured").into_response(),
+    }
 }
 
 /// Extracts the session token from the Cookie header.

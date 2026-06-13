@@ -16,7 +16,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
-use crate::http::{resolve_course, CourseCtx, CourseQuery};
+use crate::http::{resolve_course, CourseCtx, CourseQuery, VerifiedStudent};
 use crate::state::AppState;
 
 /// Gaps longer than this (seconds) between consecutive events are treated as
@@ -55,6 +55,7 @@ pub struct FileEventIn {
 pub async fn ingest(
     State(state): State<AppState>,
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(events): Json<Vec<FileEventIn>>,
 ) -> impl IntoResponse {
     if events.is_empty() {
@@ -65,7 +66,8 @@ pub async fn ingest(
         .into_iter()
         .map(|e| file_events::ActiveModel {
             course_id: Set(Some(course_id)),
-            student: Set(e.student),
+            // A verified identity (when enforced) overrides the self-asserted one.
+            student: Set(verified.clone().unwrap_or(e.student)),
             workspace: Set(e.workspace),
             path: Set(e.path),
             relative_path: Set(e.relative_path),
