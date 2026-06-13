@@ -11,6 +11,7 @@ mod m20240101_000006_session_error_count;
 mod m20240101_000007_create_messages;
 mod m20240101_000008_create_exercises;
 mod m20240101_000009_file_event_provenance;
+mod m20240101_000010_index_sessions_course_started;
 
 pub struct Migrator;
 
@@ -27,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000007_create_messages::Migration),
             Box::new(m20240101_000008_create_exercises::Migration),
             Box::new(m20240101_000009_file_event_provenance::Migration),
+            Box::new(m20240101_000010_index_sessions_course_started::Migration),
         ]
     }
 }

@@ -421,6 +421,25 @@ fn verify_id_token(
     let kid = header.kid.ok_or("token missing kid")?;
     let jwk = jwks.find(&kid).ok_or("no matching JWK for token kid")?;
     let key = DecodingKey::from_jwk(jwk).map_err(|e| e.to_string())?;
+    // The token is verified against the IdP's *public* JWKS, so only asymmetric
+    // signature algorithms are ever legitimate. Reject HMAC/`none` up front
+    // rather than trusting the token's own `alg` header — otherwise an attacker
+    // could forge an HS256 token signed with the public key as the HMAC secret
+    // (the classic JWT algorithm-confusion attack).
+    if !matches!(
+        header.alg,
+        Algorithm::RS256
+            | Algorithm::RS384
+            | Algorithm::RS512
+            | Algorithm::PS256
+            | Algorithm::PS384
+            | Algorithm::PS512
+            | Algorithm::ES256
+            | Algorithm::ES384
+            | Algorithm::EdDSA
+    ) {
+        return Err("unsupported ID token signature algorithm".to_string());
+    }
     let mut validation = Validation::new(header.alg);
     validation.set_issuer(&[issuer]);
     validation.set_audience(&[client_id]);

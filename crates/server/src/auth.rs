@@ -47,15 +47,24 @@ impl Auth {
     /// Resolves a session token to its admin id, if still valid.
     pub async fn admin_for(&self, token: Option<&str>) -> Option<Uuid> {
         let token = token?;
-        let mut sessions = self.sessions.write().await;
-        match sessions.get(token) {
-            Some(&(admin_id, expiry)) if expiry > now() => Some(admin_id),
-            Some(_) => {
-                sessions.remove(token);
-                None
+        // Fast path: a valid session only needs a read lock, so concurrent
+        // authenticated requests (e.g. dashboard polling) don't serialize on the
+        // session map.
+        {
+            let sessions = self.sessions.read().await;
+            match sessions.get(token) {
+                Some(&(admin_id, expiry)) if expiry > now() => return Some(admin_id),
+                Some(_) => {} // expired — fall through to evict under a write lock
+                None => return None,
             }
-            None => None,
         }
+        // Slow path: the entry was expired; remove it (re-checking in case it was
+        // replaced in the gap — session tokens are unique, so this is just safe).
+        let mut sessions = self.sessions.write().await;
+        if matches!(sessions.get(token), Some(&(_, expiry)) if expiry <= now()) {
+            sessions.remove(token);
+        }
+        None
     }
 
     pub async fn logout(&self, token: &str) {

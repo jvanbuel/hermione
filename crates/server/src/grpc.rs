@@ -82,6 +82,8 @@ impl Ingest for IngestService {
         let mut bcast: Option<broadcast::Sender<TerminalChunk>> = None;
         let mut seq: i64 = 0;
         let mut error_count: i32 = 0;
+        // Last error_count written to the DB, so we only persist when it changes.
+        let mut persisted_error_count: i32 = 0;
         let mut ended = false;
 
         // Terminal chunks arrive at high frequency, so we buffer them and write
@@ -128,14 +130,11 @@ impl Ingest for IngestService {
                             let text = crate::text::plain(&chunk.data);
 
                             // Flag error-like output to power struggle detection.
+                            // The running count is kept in memory and persisted on
+                            // the flush cadence below — not per chunk — so a burst
+                            // of error output can't spam the DB with updates.
                             if kind == "stdout" && crate::text::looks_like_error(&text) {
                                 error_count += 1;
-                                let m = sessions::ActiveModel {
-                                    id: Unchanged(id),
-                                    error_count: Set(error_count),
-                                    ..Default::default()
-                                };
-                                let _ = sessions::Entity::update(m).exec(db).await;
                             }
 
                             buffer.push(terminal_events::ActiveModel {
@@ -173,6 +172,7 @@ impl Ingest for IngestService {
                         Some(Event::End(end)) => {
                             if let Some(id) = session_id {
                                 flush(db, &mut buffer).await?;
+                                persist_error_count(db, id, error_count, &mut persisted_error_count).await;
                                 finalize(db, id, Some(end.exit_code)).await;
                                 ended = true;
                             }
@@ -184,6 +184,9 @@ impl Ingest for IngestService {
 
                 _ = flush_tick.tick() => {
                     flush(db, &mut buffer).await?;
+                    if let Some(id) = session_id {
+                        persist_error_count(db, id, error_count, &mut persisted_error_count).await;
+                    }
                 }
             }
         }
@@ -192,6 +195,7 @@ impl Ingest for IngestService {
         flush(db, &mut buffer).await?;
 
         if let Some(id) = session_id {
+            persist_error_count(db, id, error_count, &mut persisted_error_count).await;
             if !ended {
                 finalize(db, id, None).await;
             }
@@ -283,6 +287,28 @@ async fn flush(
         .await
         .map_err(internal)?;
     Ok(())
+}
+
+/// Persists the running error count for a session, but only when it has changed
+/// since the last write. Called on the flush cadence (and at end) rather than
+/// per error chunk, so the DB sees at most one update per flush interval.
+async fn persist_error_count(
+    db: &DatabaseConnection,
+    id: Uuid,
+    error_count: i32,
+    persisted: &mut i32,
+) {
+    if error_count == *persisted {
+        return;
+    }
+    let model = sessions::ActiveModel {
+        id: Unchanged(id),
+        error_count: Set(error_count),
+        ..Default::default()
+    };
+    if sessions::Entity::update(model).exec(db).await.is_ok() {
+        *persisted = error_count;
+    }
 }
 
 async fn finalize(db: &DatabaseConnection, id: Uuid, exit_code: Option<i32>) {

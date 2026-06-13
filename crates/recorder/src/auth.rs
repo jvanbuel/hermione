@@ -155,13 +155,36 @@ fn load_cache() -> Option<Cached> {
 }
 
 fn save_cache(cached: &Cached) {
-    if let Some(path) = cache_path() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    let Some(path) = cache_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(json) = serde_json::to_vec(cached) else {
+        return;
+    };
+
+    // This file holds a bearer identity token, so keep it private to the user —
+    // important on shared machines / devcontainers. Create it 0600 so the token
+    // is never briefly world-readable.
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            // .mode() only applies on creation; tighten an existing file too.
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+            let _ = f.write_all(&json);
         }
-        if let Ok(json) = serde_json::to_vec(cached) {
-            let _ = std::fs::write(path, json);
-        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::write(&path, json);
     }
 }
 

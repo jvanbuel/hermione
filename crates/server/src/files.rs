@@ -437,9 +437,13 @@ pub async fn overview(
     let mut terminals: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut signals: std::collections::HashMap<String, Signals> = std::collections::HashMap::new();
+    // Only the recent window (the same one used for file events above), so the
+    // scan stays bounded as session history grows — and the dashboard is a live
+    // view of the current teaching session anyway.
     let recent = recent_cutoff();
     match sessions::Entity::find()
         .filter(sessions::Column::CourseId.eq(course_id))
+        .filter(sessions::Column::StartedAt.gt(recent))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
         .await
@@ -449,12 +453,10 @@ pub async fn overview(
                 terminals
                     .entry(s.student.clone())
                     .or_insert((s.id.to_string(), s.status.clone()));
-                if s.started_at >= recent {
-                    let sig = signals.entry(s.student.clone()).or_default();
-                    sig.errors += s.error_count;
-                    if matches!(s.exit_code, Some(code) if code != 0) {
-                        sig.failed_runs += 1;
-                    }
+                let sig = signals.entry(s.student.clone()).or_default();
+                sig.errors += s.error_count;
+                if matches!(s.exit_code, Some(code) if code != 0) {
+                    sig.failed_runs += 1;
                 }
             }
         }
