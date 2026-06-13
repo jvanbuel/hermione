@@ -96,6 +96,44 @@
   }
 }
 
+/* Chalkboard — a deliberately themed slate-green "blackboard" with warm chalk
+ * text. Opt-in only (data-theme="board"); it is never auto-selected by the OS
+ * preference. Semantic hues stay dark enough that white-on-colour pills,
+ * toasts and primary buttons keep their contrast — the chalk character comes
+ * from the slate surfaces, warm off-white text, dusty muted tones and the
+ * faint chalk-dust texture applied to <body> below. */
+:root[data-theme="board"] {
+  color-scheme: dark;
+
+  --bg: #243831;
+  --surface: #2b4239;
+  --surface-2: #355046;
+  --border: #4d6358;
+  --border-subtle: #36493f;
+
+  --fg: #eef1e6;
+  --fg-muted: #b4c0ad;
+  --fg-subtle: #93a08e;
+
+  --accent: #3f7cbb;
+  --brand: #e9d27a;
+  --green: #4caf63;
+  --green-emphasis: #67c97e;
+  --red: #ef8e8e;
+  --amber: #e6c163;
+  --help-bg: #b62324;
+  --watch-bg: #9e6a03;
+}
+/* Chalk-dust grain + a soft top-of-board glow. Higher specificity than the
+ * per-page `body { background: var(--bg) }`, so it layers a texture over it. */
+:root[data-theme="board"] body {
+  background-image:
+    radial-gradient(120% 80% at 50% -20%, rgba(255,255,255,.06), transparent 55%),
+    radial-gradient(90% 60% at 85% 115%, rgba(255,255,255,.04), transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  background-attachment: fixed;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 
