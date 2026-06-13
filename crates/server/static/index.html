@@ -57,6 +57,12 @@
       display: inline-flex; align-items: center; gap: 6px;
     }
     header button:hover { background: var(--border); }
+    header a.nav {
+      background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+    }
+    header a.nav:hover { background: var(--border); }
     /* Icon-only theme toggle: square, no text. */
     #theme-toggle { padding: 5px; }
     #theme-toggle .ico { width: 16px; height: 16px; }
@@ -202,6 +208,10 @@
     <span id="freshness" class="freshness">Connecting…</span>
     <span id="hint" class="hint">Click a student to open their terminal</span>
     <button id="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"></button>
+    <a class="nav" href="/analytics" title="Time-on-task analytics">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 13.5h12v1.3H1V2h1.3v11.5zM5 11V7h1.6v4H5zm3-6h1.6v6H8V5zm3 2.5h1.6V11H11V7.5z"/></svg>
+      Analytics
+    </a>
     <button id="broadcast" type="button" title="Send a message to all students in this course">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 2.2 4.6 5.5H2.3A1.3 1.3 0 0 0 1 6.8v2.4a1.3 1.3 0 0 0 1.3 1.3h.6l1 3.2h2l-.9-3.2 6.5 3V2.2zM13.8 6a2 2 0 0 1 0 4V6z"/></svg>
       Broadcast

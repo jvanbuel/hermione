@@ -76,6 +76,7 @@ pub fn router(state: AppState) -> Router {
     // data, all scoped to a course the caller may access.
     let protected = Router::new()
         .route("/", get(index))
+        .route("/analytics", get(analytics_page))
         .route("/api/courses", get(list_courses))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
@@ -164,6 +165,10 @@ fn serve_asset(path: &str) -> Response {
 
 async fn index() -> Response {
     serve_asset("index.html")
+}
+
+async fn analytics_page() -> Response {
+    serve_asset("analytics.html")
 }
 
 async fn tokens_css() -> Response {
