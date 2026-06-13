@@ -5,6 +5,8 @@
 //! session feels completely native. In parallel it tees every byte to the
 //! Hermione backend over gRPC, both for live observation and long-term storage.
 
+mod auth;
+
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -45,6 +47,15 @@ struct Args {
     #[arg(long, env = "HERMIONE_TOKEN")]
     token: Option<String>,
 
+    /// HTTP base URL for student sign-in (OIDC/GitHub). When set, the recorder
+    /// obtains a verified identity token before recording.
+    #[arg(long, env = "HERMIONE_AUTH_URL")]
+    auth_url: Option<String>,
+
+    /// Identity provider to sign in with (matches a server-configured provider).
+    #[arg(long, env = "HERMIONE_AUTH_PROVIDER", default_value = "github")]
+    auth_provider: String,
+
     /// Also capture keystrokes (stdin). Off by default for privacy. Even when
     /// enabled, input during no-echo password prompts is redacted.
     #[arg(long)]
@@ -68,7 +79,21 @@ impl Drop for RawModeGuard {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let student = resolve_student(args.student.as_deref());
+    // When sign-in is configured, get a verified identity token; the verified,
+    // namespaced student (e.g. "github:alice") becomes the identity.
+    let (identity_token, mut student) = match &args.auth_url {
+        Some(url) => match auth::obtain(url, &args.auth_provider).await {
+            Ok(id) => (Some(id.token), id.student),
+            Err(e) => {
+                eprintln!("hermione: sign-in failed: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => (None, String::new()),
+    };
+    if student.is_empty() {
+        student = resolve_student(args.student.as_deref());
+    }
     let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
     let (prog, prog_args) = resolve_command(&args.command);
@@ -125,6 +150,11 @@ async fn main() -> Result<()> {
                 if let Some(token) = &token {
                     if let Ok(value) = format!("Bearer {token}").parse() {
                         request.metadata_mut().insert("authorization", value);
+                    }
+                }
+                if let Some(identity) = &identity_token {
+                    if let Ok(value) = identity.parse() {
+                        request.metadata_mut().insert("x-hermione-identity", value);
                     }
                 }
                 if let Err(e) = client.stream_session(request).await {

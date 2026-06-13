@@ -14,10 +14,13 @@
     // The course enrollment token (from POST /api/admin/courses). This is what
     // makes the data land in *this* course; both the recorder and the extension
     // read it.
-    "HERMIONE_TOKEN": "REPLACE_WITH_COURSE_ENROLLMENT_TOKEN"
-    // Student identity is derived from the environment — no login. In GitHub
-    // Codespaces, $GITHUB_USER is set to the authenticated user (trustworthy).
-    // The `identity` field in ../.hermione.json selects the source.
+    "HERMIONE_TOKEN": "REPLACE_WITH_COURSE_ENROLLMENT_TOKEN",
+    // HTTP base URL for student sign-in. Set this (and configure OIDC providers
+    // on the server) to require *verified* identity: the recorder uses the
+    // Codespaces GitHub token or the device flow, the extension uses VSCode's
+    // GitHub sign-in. Omit it to fall back to env-derived attribution (the
+    // `identity` field in ../.hermione.json then selects the source).
+    "HERMIONE_AUTH_URL": "https://hermione.example.edu"
   },
 
   // Install the `hermione` recorder binary into the container.

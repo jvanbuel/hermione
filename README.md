@@ -116,6 +116,8 @@ Recorder options:
 | `--backend`       | `HERMIONE_BACKEND`   | `http://127.0.0.1:50051`    |
 | `--student`       | `HERMIONE_STUDENT`   | `$USER`                     |
 | `--token`         | `HERMIONE_TOKEN`     | none — the course enrollment token (required unless in open dev mode) |
+| `--auth-url`      | `HERMIONE_AUTH_URL`  | none — HTTP base URL for student sign-in; set to use verified identity |
+| `--auth-provider` | `HERMIONE_AUTH_PROVIDER` | `github` — which configured IdP to sign in with |
 | `--capture-input` | —                    | off — keystrokes are not recorded (see Security & privacy) |
 | `--offline`       | —                    | off (record locally only)   |
 
@@ -208,6 +210,37 @@ ever shows the selected course's data.
   scoped to a seeded `default` course, and untokened agents land there — so
   local dev is frictionless. Creating an admin locks it down.
 
+## Verified student identity
+
+By default `student` is derived from the environment (attribution, not auth).
+Configure OIDC to make it **server-trusted** — students authenticate with an IdP
+and the backend issues a short-lived Hermione identity token that agents present
+with each ingest.
+
+```bash
+HERMIONE_IDENTITY_SECRET=$(openssl rand -hex 32) \
+HERMIONE_OIDC_PROVIDERS='[
+  {"name":"github","kind":"github","clientId":"<gh-oauth-app-client-id>"},
+  {"name":"google","kind":"oidc","issuer":"https://accounts.google.com","clientId":"<google-client-id>"}
+]' \
+cargo run -p hermione-server
+```
+
+- **GitHub** is verified via the GitHub API; **Google and any OIDC provider** via
+  discovery + JWKS. Add more by listing them (issuer + clientId).
+- Once configured, identity is **enforced**: ingest without a valid identity token
+  is rejected, and the verified student (e.g. `github:alice`) overrides any
+  self-asserted name.
+- **Agents:** the **extension** uses VSCode's GitHub sign-in (silent in
+  Codespaces) and exchanges it at `POST /api/auth/exchange`. The **recorder**
+  (`--auth-url`) uses the same exchange in Codespaces (the platform
+  `GITHUB_TOKEN`) or the OAuth **device flow** (`/api/auth/device/*`) otherwise,
+  caching the token between sessions.
+
+> Endpoints: `POST /api/auth/exchange`, `POST /api/auth/device/{start,poll}`.
+> The interactive browser/device logins require real IdP credentials and aren't
+> exercised by the test suite (the token issuance/verification + enforcement are).
+
 ## Security & privacy
 
 Hermione records keystrokes and exposes live student terminals, so treat it as
@@ -279,10 +312,9 @@ Planned next:
 - [x] Struggle detection: flag students with errors/failed runs/time-stuck.
 - [x] First-class exercise model: defined exercises (title + order) with stats.
 - [x] Broadcast messages (teacher → students) over WebSocket.
-- [x] Environment-derived student identity (no login). See trust model in
-      [`examples/course-template`](examples/course-template).
+- [x] Student identity: env-derived attribution (default) or verified OIDC/GitHub
+      (GitHub, Google, any OIDC provider) — server-trusted, enforced when configured.
 - [x] Authentication: admin login + per-course enrollment tokens.
-- [ ] Stronger student identity for grading (per-student tokens / OIDC).
 - [ ] Two-way chat (student → teacher) on the existing WebSocket channel.
 - [ ] Richer offline analytics: replay timeline.
 

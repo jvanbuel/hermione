@@ -8,16 +8,22 @@ interface CourseConfig {
     backend?: string;
     token?: string;
     identity?: string;
+    authProvider?: string;
 }
 
-/** Reads `backend`/`token`/`identity` from the workspace's `.hermione.json`. */
+/** Reads the course config from the workspace's `.hermione.json`. */
 async function readCourseConfig(): Promise<CourseConfig> {
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
         try {
             const uri = vscode.Uri.joinPath(folder.uri, '.hermione.json');
             const bytes = await vscode.workspace.fs.readFile(uri);
             const cfg = JSON.parse(Buffer.from(bytes).toString('utf8'));
-            return { backend: cfg.backend, token: cfg.token, identity: cfg.identity };
+            return {
+                backend: cfg.backend,
+                token: cfg.token,
+                identity: cfg.identity,
+                authProvider: cfg.authProvider,
+            };
         } catch (_) {
             // try the next folder
         }
@@ -49,6 +55,8 @@ class Reporter {
     private student = '';
     private studentSource = '';
     private repo = '';
+    private identityToken = '';
+    private authProvider = '';
     private serverUrl = '';
     private heartbeatSeconds = 15;
     private token = '';
@@ -221,6 +229,51 @@ class Reporter {
         this.student = id.value;
         this.studentSource = id.source;
         this.repo = this.resolveRepo();
+        this.authProvider = course.authProvider || 'github';
+        await this.ensureIdentity(false);
+    }
+
+    private identityKey(): string {
+        return `hermione.identity:${this.serverUrl}:${this.authProvider}`;
+    }
+
+    /**
+     * Obtains a Hermione identity token via VSCode's GitHub auth (silent in
+     * Codespaces) exchanged at the backend. Cached until expiry; `interactive`
+     * triggers a sign-in prompt when needed.
+     */
+    private async ensureIdentity(interactive: boolean): Promise<void> {
+        const cached = this.context.globalState.get<{ token: string; exp: number }>(this.identityKey());
+        if (cached && cached.exp > Date.now() / 1000 + 60) {
+            this.identityToken = cached.token;
+            return;
+        }
+        try {
+            const session = await vscode.authentication.getSession(
+                'github',
+                ['read:user'],
+                interactive ? { createIfNone: true } : { silent: true },
+            );
+            if (!session) {
+                return;
+            }
+            const res = await fetch(`${this.serverUrl}/api/auth/exchange`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: this.authProvider, token: session.accessToken }),
+            });
+            if (!res.ok) {
+                return;
+            }
+            const data = (await res.json()) as { identityToken: string; expiresIn: number };
+            this.identityToken = data.identityToken;
+            await this.context.globalState.update(this.identityKey(), {
+                token: data.identityToken,
+                exp: Math.floor(Date.now() / 1000) + (data.expiresIn || 28800),
+            });
+        } catch (_) {
+            // identity unavailable; ingest will 401 if the backend enforces it
+        }
     }
 
     /**
@@ -339,11 +392,19 @@ class Reporter {
             if (this.token) {
                 headers['Authorization'] = `Bearer ${this.token}`;
             }
+            if (this.identityToken) {
+                headers['X-Hermione-Identity'] = this.identityToken;
+            }
             const res = await fetch(`${this.serverUrl}/api/file-events`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(batch),
             });
+            if (res.status === 401) {
+                // Backend requires a verified identity — sign in, then retry.
+                await this.ensureIdentity(true);
+                throw new Error('identity required');
+            }
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status}`);
             }
