@@ -4,35 +4,54 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hermione — Class Overview</title>
+  <link rel="stylesheet" href="/tokens.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <style>
-    :root { color-scheme: dark; }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
     body {
       display: flex; flex-direction: column;
       font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-      background: #0d1117; color: #e6edf3;
+      font-size: var(--fs-base); line-height: 1.4;
+      font-variant-numeric: tabular-nums;
+      background: var(--bg); color: var(--fg);
+    }
+
+    .ico { width: 1em; height: 1em; vertical-align: -0.125em; flex: none; }
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
 
     header {
       display: flex; align-items: center; gap: 10px;
-      padding: 10px 18px; border-bottom: 1px solid #21262d; background: #161b22;
+      padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
       flex: 0 0 auto;
     }
-    header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header .logo-mark { width: 22px; height: 22px; color: var(--brand); flex: none; }
+    header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
     header select {
-      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
-      border-radius: 6px; padding: 4px 8px; font-size: .85rem;
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 8px; font-size: var(--fs-sm);
     }
-    header .hint { margin-left: auto; font-size: .78rem; color: #7d8590; }
+    header .spacer { margin-left: auto; }
+    .hint { font-size: var(--fs-sm); color: var(--fg-subtle); }
+    .freshness {
+      font-size: var(--fs-sm); color: var(--fg-subtle);
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .freshness.stale { color: var(--amber); }
+    .freshness.failed { color: var(--red); }
+    .freshness .fdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
     header button {
-      background: #21262d; color: #e6edf3; border: 1px solid #30363d;
-      border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer;
+      background: #21262d; color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
     }
-    header button:hover { background: #30363d; }
+    header button:hover { background: var(--border); }
+    #alert { font-size: var(--fs-sm); color: var(--red); font-weight: 600;
+      display: inline-flex; align-items: center; gap: 5px; }
+    #alert .alert-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
 
     #content { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -42,108 +61,162 @@
       display: flex; gap: 16px; padding: 16px; align-items: flex-start;
     }
     .column {
-      flex: 0 0 260px; background: #161b22; border: 1px solid #21262d;
+      flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
       border-radius: 10px; max-height: 100%; display: flex; flex-direction: column;
     }
     .column > h2 {
-      font-size: .82rem; margin: 0; padding: 12px 14px; border-bottom: 1px solid #21262d;
+      font-size: var(--fs-sm); margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle);
       display: flex; align-items: center; gap: 8px; font-weight: 600;
     }
-    .column.unassigned > h2 { color: #7d8590; }
-    .count { margin-left: auto; font-size: .72rem; color: #7d8590;
-      background: #21262d; padding: 1px 8px; border-radius: 10px; }
-    .summary { padding: 4px 14px 8px; font-size: .72rem; color: #7d8590;
-      border-bottom: 1px solid #21262d; }
-    .summary .warn { color: #f85149; }
+    .column > h2 .col-title { display: inline-flex; align-items: center; gap: 6px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .column.unassigned > h2 { color: var(--fg-muted); }
+    .count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-muted);
+      background: var(--border-subtle); padding: 1px 8px; border-radius: 10px; flex: none; }
+    .summary { padding: 6px 14px 8px; font-size: var(--fs-sm); color: var(--fg-muted);
+      border-bottom: 1px solid var(--border-subtle); }
+    .summary .warn { color: var(--red); }
+    .summary .muted { color: var(--fg-subtle); }
+    .spark { display: block; margin-top: 7px; width: 100%; height: 22px; overflow: visible; }
+    .spark .thr { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 2; }
     .cards { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 
+    /* Cards are real buttons: free keyboard operability + focus handling. */
     .card {
+      font: inherit; color: inherit; text-align: left; width: 100%;
       display: flex; align-items: center; gap: 10px; padding: 8px;
-      border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+      background: transparent; border-radius: 8px; cursor: pointer;
+      border: 1px solid transparent; border-left-width: 3px;
       transition: background .1s, border-color .1s;
     }
-    .card:hover { background: #1f242c; border-color: #30363d; }
-    .card.open { border-color: #1f6feb; }
-    .card.struggle-help { border-left: 3px solid #f85149; }
-    .card.struggle-watch { border-left: 3px solid #d29922; }
-    .pill { font-size: .62rem; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
-      vertical-align: middle; font-weight: 600; }
-    .pill.help { background: #b62324; color: #fff; }
-    .pill.watch { background: #9e6a03; color: #fff; }
-    .who .reason { font-size: .72rem; color: #e3a008; margin-top: 2px; }
-    .who .prov { font-size: .68rem; color: #6e7681; margin-top: 1px; }
-    #alert { font-size: .8rem; color: #f85149; font-weight: 600; }
+    .card:hover { background: var(--surface-2); border-color: var(--border); }
+    .card.open { border-color: var(--accent); }
+    .card.struggle-help { border-left-color: var(--red); }
+    .card.struggle-watch { border-left-color: var(--amber); }
+    .pill { font-size: var(--fs-xs); padding: 1px 7px; border-radius: 8px; margin-left: 6px;
+      font-weight: 600; flex: none; }
+    .pill.help { background: var(--help-bg); color: #fff; }
+    .pill.watch { background: var(--watch-bg); color: #fff; }
+    .who .reason { font-size: var(--fs-sm); color: var(--amber); margin-top: 2px;
+      display: flex; align-items: flex-start; gap: 4px; }
+    .who .prov { font-size: var(--fs-xs); color: var(--fg-subtle); margin-top: 1px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .avatar {
       position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
-      display: grid; place-items: center; font-size: .8rem; font-weight: 700; color: #fff;
+      display: grid; place-items: center; font-size: var(--fs-sm); font-weight: 700; color: #fff;
       user-select: none;
     }
+    /* Status differs by FILL, not just hue — readable when colour isn't. */
     .avatar .dot {
-      position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px;
-      border-radius: 50%; border: 2px solid #161b22;
+      position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px;
+      border-radius: 50%; box-sizing: border-box;
     }
-    .dot.active { background: #2ea043; }
-    .dot.idle { background: #6e7681; }
+    .dot.active { background: var(--green); border: 2px solid var(--surface); }
+    .dot.idle { background: var(--surface); border: 2px solid var(--fg-subtle); }
 
     .who { min-width: 0; flex: 1; }
-    .who .name { font-weight: 600; font-size: .9rem; }
-    .who .file { color: #7d8590; font-size: .76rem; font-family: ui-monospace, monospace;
+    .who .name { font-weight: 600; font-size: var(--fs-base); display: flex; align-items: center; min-width: 0; }
+    .who .name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .who .file { color: var(--fg-muted); font-size: var(--fs-sm); font-family: ui-monospace, monospace;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .who .time { font-size: .76rem; margin-top: 2px; }
-    .time .clock { color: #d29922; font-variant-numeric: tabular-nums; }
-    .time .sep { color: #4d5560; margin: 0 5px; }
+    .who .time { font-size: var(--fs-sm); margin-top: 2px; color: var(--fg-muted); }
+    .time .clock { color: var(--fg); display: inline-flex; align-items: center; gap: 4px; }
+    .time .sep { color: var(--border); margin: 0 5px; }
 
-    .empty { margin: auto; color: #6e7681; padding: 40px; text-align: center; }
+    .empty { margin: auto; color: var(--fg-muted); padding: 40px; text-align: center; }
+
     #toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column;
       gap: 8px; z-index: 1000; }
-    .toast { background: #1f6feb; color: #fff; padding: 10px 14px; border-radius: 8px;
-      font-size: .85rem; box-shadow: 0 4px 14px rgba(0,0,0,.45); max-width: 320px;
+    .toast { background: var(--accent); color: #fff; padding: 10px 14px; border-radius: 8px;
+      font-size: var(--fs-base); box-shadow: 0 4px 14px rgba(0,0,0,.45); max-width: 320px;
       opacity: 0; transform: translateY(8px); transition: opacity .25s, transform .25s; }
     .toast.show { opacity: 1; transform: translateY(0); }
 
+    /* ---- Resizable divider between board and terminal dock ---- */
+    #divider { flex: 0 0 6px; cursor: col-resize; background: var(--border-subtle); display: none; }
+    #divider.active { display: block; }
+    #divider:hover, #divider.dragging { background: var(--accent); }
+
     /* ---- Terminal dock (extra panes) ---- */
     #dock {
-      flex: 1.5 1 0; min-width: 0; border-left: 1px solid #21262d;
-      display: none; grid-auto-rows: 1fr; gap: 1px; background: #21262d;
+      flex: 1.5 1 0; min-width: 0;
+      display: none; grid-auto-rows: 1fr; gap: 1px; background: var(--border-subtle);
     }
     #dock.active { display: grid; }
-    .pane { background: #0d1117; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .pane { background: var(--bg); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
     .pane > .pane-head {
       flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-      padding: 7px 10px; background: #161b22; border-bottom: 1px solid #21262d; font-size: .82rem;
+      padding: 7px 10px; background: var(--surface); border-bottom: 1px solid var(--border-subtle);
+      font-size: var(--fs-sm);
     }
-    .pane-head .ex { color: #7d8590; font-size: .74rem; }
-    .pane-head .badge { font-size: .68rem; padding: 1px 6px; border-radius: 8px; background: #30363d; }
-    .pane-head .badge.active { background: #1f6f3f; }
+    .pane-head .ex { color: var(--fg-muted); font-size: var(--fs-sm); }
     .pane-head .close {
-      margin-left: auto; cursor: pointer; color: #7d8590; border: none; background: none;
-      font-size: 1rem; line-height: 1; padding: 2px 6px; border-radius: 5px;
+      margin-left: auto; cursor: pointer; color: var(--fg-muted); border: none; background: none;
+      font-size: var(--fs-lg); line-height: 1; padding: 2px 6px; border-radius: 5px;
     }
-    .pane-head .close:hover { background: #30363d; color: #e6edf3; }
+    .pane-head .close:hover { background: var(--border); color: var(--fg); }
     .pane > .term { flex: 1 1 auto; min-height: 0; padding: 6px 8px; }
-    .pane .note { margin: auto; color: #6e7681; font-size: .85rem; padding: 24px; text-align: center; }
+    .pane .note { margin: auto; color: var(--fg-muted); font-size: var(--fs-base); padding: 24px; text-align: center; }
+
+    /* ---- Broadcast composer (modal) ---- */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(1,4,9,.6);
+      display: grid; place-items: center; z-index: 2000; }
+    .modal { width: 440px; max-width: calc(100vw - 32px); background: var(--surface);
+      border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+    .modal h2 { margin: 0 0 4px; font-size: var(--fs-lg); }
+    .modal .sub { margin: 0 0 14px; color: var(--fg-muted); font-size: var(--fs-sm); }
+    .modal textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg);
+      color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+      font: inherit; font-size: var(--fs-base); }
+    .modal .row { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .modal .ct { margin-right: auto; color: var(--fg-subtle); font-size: var(--fs-sm); }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: #21262d; color: var(--fg); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+    .btn:hover { background: var(--border); }
+    .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
+    .btn.primary:hover { background: #3fb950; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
   </style>
 </head>
 <body>
   <header>
-    <span style="font-size:1.1rem">🔮</span>
+    <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 17.5h8l1.8 3.5H6.2z" fill="currentColor" opacity="0.55"/><circle cx="12" cy="9.5" r="7.5" fill="currentColor" opacity="0.15"/><circle cx="12" cy="9.5" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.6 7.2a4.4 4.4 0 0 1 3.2-2.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
     <h1>Hermione</h1>
+    <label class="visually-hidden" for="course">Course</label>
     <select id="course" title="Course"></select>
-    <span id="alert"></span>
-    <span class="hint">Click a student to open their terminal · panes tile side by side</span>
-    <button id="broadcast" title="Send a message to all students in this course">📣 Broadcast</button>
-    <button id="logout" title="Sign out">Sign out</button>
+    <span id="alert" aria-live="assertive"></span>
+    <span class="spacer"></span>
+    <span id="freshness" class="freshness">Connecting…</span>
+    <span id="hint" class="hint">Click a student to open their terminal</span>
+    <button id="broadcast" type="button" title="Send a message to all students in this course">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 2.2 4.6 5.5H2.3A1.3 1.3 0 0 0 1 6.8v2.4a1.3 1.3 0 0 0 1.3 1.3h.6l1 3.2h2l-.9-3.2 6.5 3V2.2zM13.8 6a2 2 0 0 1 0 4V6z"/></svg>
+      Broadcast
+    </button>
+    <button id="logout" type="button" title="Sign out">Sign out</button>
   </header>
   <div id="content">
     <div id="board"><div class="empty">Loading…</div></div>
+    <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize terminal panel"></div>
     <div id="dock"></div>
   </div>
-  <div id="toasts"></div>
+  <div id="toasts" role="status" aria-live="polite"></div>
 
   <script>
     const TERM_THEME = { background: '#0d1117', foreground: '#e6edf3', cursor: '#e6edf3' };
     const openPanes = new Map(); // student -> { term, fit, es, el }
+    // Struggle thresholds (seconds) — mirror the backend so the sparkline marks
+    // the same watch/help lines the server uses to flag students.
+    const WATCH_SECS = 10 * 60, HELP_SECS = 25 * 60;
+    const HINT_KEY = 'hermione.hintSeen';
+
+    const ICONS = {
+      book: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 1H13v11H4.5a1.5 1.5 0 0 0-1.5 1.5V2.5A1.5 1.5 0 0 1 4.5 1zM3 13.5A1.5 1.5 0 0 1 4.5 12H13v3H4.5A1.5 1.5 0 0 1 3 13.5z"/></svg>',
+      clock: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      warn: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.6 15 14H1L8 1.6zM7.3 6h1.4v3.6H7.3V6zm0 4.6h1.4V12.2H7.3v-1.6z"/></svg>',
+      close: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+    };
 
     // ---- helpers ----
     function hashHue(str) {
@@ -152,14 +225,16 @@
       return h;
     }
     function initials(name) {
-      const parts = name.split(/[\s._-]+/).filter(Boolean);
+      const parts = name.split(/[\s._:\-]+/).filter(Boolean);
       if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
       return name.slice(0, 2).toUpperCase();
     }
     function avatarHtml(name, status, extraClass = '') {
       const hue = hashHue(name);
-      return `<div class="avatar ${extraClass}" style="background:hsl(${hue},48%,45%)">
-        ${esc(initials(name))}<span class="dot ${status}"></span></div>`;
+      // Muted fill so per-student colour aids recognition without competing with
+      // the semantic red/amber struggle language.
+      return `<div class="avatar ${extraClass}" aria-hidden="true" style="background:hsl(${hue},26%,38%)">
+        ${esc(initials(name))}<span class="dot ${status}" title="${status}"></span></div>`;
     }
     function fmtDuration(secs) {
       if (secs < 60) return `${secs}s`;
@@ -188,49 +263,148 @@
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // Keyed, in-place reconciliation of a container's children, so the 3s
+    // refresh never wipes the DOM — scroll position, focus, and hover survive.
+    function reconcile(parent, items, keyOf, create, update) {
+      const byKey = new Map();
+      for (const n of Array.from(parent.children)) {
+        if (n.dataset && n.dataset.key != null) byKey.set(n.dataset.key, n);
+        else n.remove(); // drop non-keyed placeholders (e.g. the empty state)
+      }
+      const desired = items.map(item => {
+        const key = String(keyOf(item));
+        let n = byKey.get(key);
+        if (n) byKey.delete(key);
+        else { n = create(item); n.dataset.key = key; }
+        update(n, item);
+        return n;
+      });
+      for (const n of byKey.values()) n.remove();
+      desired.forEach((n, i) => {
+        if (parent.children[i] !== n) parent.insertBefore(n, parent.children[i] || null);
+      });
+    }
+
     // ---- board rendering ----
-    function studentCard(s) {
-      const isOpen = openPanes.has(s.student);
-      const struggleClass = s.struggle === 'help' ? 'struggle-help'
-                          : s.struggle === 'watch' ? 'struggle-watch' : '';
+    function cardInner(s) {
       const pill = s.struggle === 'help' ? '<span class="pill help">needs help</span>'
                  : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '';
       const reason = (s.struggleReasons && s.struggleReasons.length)
-                   ? `<div class="reason">⚠ ${esc(s.struggleReasons.join(' · '))}</div>` : '';
+        ? `<div class="reason">${ICONS.warn}<span>${esc(s.struggleReasons.join(' · '))}</span></div>` : '';
+      const prov = (s.studentSource || s.repo)
+        ? `<div class="prov" title="identity provenance">${esc(s.studentSource || '?')}${s.repo ? ` · ${esc(s.repo)}` : ''}</div>` : '';
       return `
-        <div class="card ${isOpen ? 'open' : ''} ${struggleClass}" data-student="${encodeURIComponent(s.student)}"
-             data-session="${esc(s.terminalSessionId || '')}" data-exercise="${esc(s.exercise || '')}">
-          ${avatarHtml(s.student, s.status)}
-          <div class="who">
-            <div class="name">${esc(s.student)}${pill}</div>
-            <div class="file">${esc(s.file || '—')}</div>
-            ${(s.studentSource || s.repo) ? `<div class="prov" title="identity provenance">${esc(s.studentSource || '?')}${s.repo ? ` · ${esc(s.repo)}` : ''}</div>` : ''}
-            ${reason}
-            <div class="time">
-              <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
-              <span class="sep">·</span><span style="color:#7d8590">${timeAgo(s.lastSeenUnixMs)}</span>
-            </div>
+        ${avatarHtml(s.student, s.status)}
+        <div class="who">
+          <div class="name"><span class="nm">${esc(s.student)}</span>${pill}</div>
+          <div class="file">${esc(s.file || '—')}</div>
+          ${prov}
+          ${reason}
+          <div class="time">
+            <span class="clock">${ICONS.clock}${fmtDuration(s.secondsOnExercise)}</span>
+            <span class="sep">·</span><span>${timeAgo(s.lastSeenUnixMs)}</span>
           </div>
         </div>`;
     }
-    function column(title, students, cls = '') {
-      return `
-        <div class="column ${cls}">
-          <h2>${title}<span class="count">${students.length}</span></h2>
-          <div class="cards">${students.map(studentCard).join('')}</div>
-        </div>`;
+    function createCard() {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'card';
+      // Bound once, not per refresh; reads its live data-* on click.
+      b.addEventListener('click', () =>
+        openTerminal(b.dataset.student, b.dataset.session || null, b.dataset.exercise || null));
+      return b;
     }
-    function exerciseColumn(g) {
-      const s = g.stats || { total: g.students.length, active: 0, needHelp: 0, medianSeconds: 0 };
-      const summary = s.total === 0
-        ? 'no activity yet'
-        : `${s.active} active${s.needHelp ? ` · <span class="warn">${s.needHelp} need help</span>` : ''} · med ${fmtDuration(s.medianSeconds)}`;
-      return `
-        <div class="column">
-          <h2>📘 ${esc(g.title || g.exercise)}<span class="count">${s.total}</span></h2>
-          <div class="summary">${summary}</div>
-          <div class="cards">${g.students.map(studentCard).join('')}</div>
-        </div>`;
+    function updateCard(b, s) {
+      b.dataset.student = s.student;
+      b.dataset.session = s.terminalSessionId || '';
+      b.dataset.exercise = s.exercise || '';
+      b.classList.toggle('open', openPanes.has(s.student));
+      b.classList.toggle('struggle-help', s.struggle === 'help');
+      b.classList.toggle('struggle-watch', s.struggle === 'watch');
+      const label = `${s.student}, ${s.exercise || 'no exercise'}, ${s.status}`
+        + (s.struggle === 'help' ? ', needs help' : s.struggle === 'watch' ? ', watch' : '');
+      b.setAttribute('aria-label', label);
+      b.innerHTML = cardInner(s);
+    }
+
+    // A compact distribution strip of time-on-exercise across the group, with
+    // the watch/help thresholds marked — so "everyone's piled up at 25 min"
+    // reads as a shape, not a number you compute by scanning cards.
+    function sparkline(students) {
+      if (!students.length) return '';
+      const W = 232, H = 22, padX = 3;
+      const max = Math.max(HELP_SECS, ...students.map(s => s.secondsOnExercise || 0));
+      const x = secs => padX + (W - 2 * padX) * Math.min(secs, max) / max;
+      const colorFor = s => s.struggle === 'help' ? 'var(--red)'
+        : s.struggle === 'watch' ? 'var(--amber)' : 'var(--green)';
+      const thr = [WATCH_SECS, HELP_SECS]
+        .map(t => `<line class="thr" x1="${x(t).toFixed(1)}" y1="1" x2="${x(t).toFixed(1)}" y2="${H - 1}"/>`)
+        .join('');
+      const dots = students
+        .map(s => `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="3.2" fill="${colorFor(s)}" fill-opacity="0.85"/>`)
+        .join('');
+      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group">${thr}${dots}</svg>`;
+    }
+
+    function summaryHtml(st) {
+      if (!st || st.total === 0) return '<span class="muted">no activity yet</span>';
+      const help = st.needHelp ? ` · <span class="warn">${st.needHelp} need help</span>` : '';
+      return `${st.active} active${help} · med ${fmtDuration(st.medianSeconds)}`;
+    }
+
+    function createColumn() {
+      const col = document.createElement('div');
+      col.className = 'column';
+      col.innerHTML = `<h2><span class="col-title"></span><span class="count"></span></h2>
+        <div class="summary"></div>
+        <div class="cards"></div>`;
+      return col;
+    }
+    function updateColumn(col, c) {
+      const g = c.g;
+      const isEx = c.kind === 'ex';
+      col.classList.toggle('unassigned', !isEx);
+      const title = g.title || g.exercise || 'No exercise';
+      col.querySelector('.col-title').innerHTML = (isEx ? ICONS.book : '') + `<span>${esc(title)}</span>`;
+      const st = isEx ? (g.stats || { total: g.students.length, active: 0, needHelp: 0, medianSeconds: 0 }) : null;
+      col.querySelector('.count').textContent = isEx ? st.total : g.students.length;
+      const summary = col.querySelector('.summary');
+      if (isEx) {
+        summary.style.display = '';
+        summary.innerHTML = summaryHtml(st) + sparkline(g.students);
+      } else {
+        summary.style.display = 'none';
+        summary.innerHTML = '';
+      }
+      reconcile(col.querySelector('.cards'), g.students, s => s.student, createCard, updateCard);
+    }
+
+    let lastAudience = 0;
+
+    function setAlert(n) {
+      const a = document.getElementById('alert');
+      a.innerHTML = n ? `<span class="alert-dot"></span>${n} need help` : '';
+    }
+
+    function renderBoard(data) {
+      const board = document.getElementById('board');
+      const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
+      lastAudience = allStudents.length;
+      setAlert(allStudents.filter(s => s.struggle === 'help').length);
+
+      if (data.exercises.length === 0 && data.noExercise.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.innerHTML = 'No exercises defined and no activity yet.<br>Define exercises and start the recorder + VSCode extension.';
+        board.replaceChildren(empty);
+        return;
+      }
+      const cols = data.exercises.map(g => ({ key: 'ex:' + g.exercise, kind: 'ex', g }));
+      if (data.noExercise.length) {
+        cols.push({ key: '__none__', kind: 'none', g: { title: 'No exercise', students: data.noExercise } });
+      }
+      reconcile(board, cols, c => c.key, createColumn, updateColumn);
     }
 
     let currentCourse = null;
@@ -263,7 +437,7 @@
       const ws = new WebSocket(`${proto}://${location.host}/ws?course=${encodeURIComponent(currentCourse)}`);
       msgSocket = ws;
       ws.onmessage = (ev) => {
-        try { const m = JSON.parse(ev.data); if (m && m.body) toast(`📣 ${m.body}`); } catch (_) {}
+        try { const m = JSON.parse(ev.data); if (m && m.body) toast(m.body); } catch (_) {}
       };
       ws.onclose = () => { if (msgSocket === ws) { msgSocket = null; setTimeout(connectMessages, 5000); } };
     }
@@ -277,40 +451,43 @@
       setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 5000);
     }
 
+    // ---- freshness ----
+    let lastUpdated = 0, lastError = false;
+    function setFreshness() {
+      const el = document.getElementById('freshness');
+      if (lastError) {
+        el.className = 'freshness failed';
+        el.innerHTML = '<span class="fdot"></span>Update failed — retrying';
+        return;
+      }
+      if (!lastUpdated) { el.className = 'freshness'; el.textContent = 'Connecting…'; return; }
+      const s = Math.round((Date.now() - lastUpdated) / 1000);
+      el.className = 'freshness' + (s > 15 ? ' stale' : '');
+      el.innerHTML = `<span class="fdot"></span>Updated ${s}s ago`;
+    }
+    setInterval(setFreshness, 1000);
+
     async function refresh() {
       if (!currentCourse) return;
       let data;
       try {
         const res = await fetch(`/api/overview?course=${encodeURIComponent(currentCourse)}`);
         if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) throw new Error('http ' + res.status);
         data = await res.json();
-      } catch (_) { return; }
-
-      const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
-      const needHelp = allStudents.filter(s => s.struggle === 'help').length;
-      document.getElementById('alert').textContent = needHelp ? `🔴 ${needHelp} need help` : '';
-
-      const board = document.getElementById('board');
-      // Show the board if there are exercises (even empty, defined ones) or activity.
-      if (data.exercises.length === 0 && data.noExercise.length === 0) {
-        board.innerHTML = '<div class="empty">No exercises defined and no activity yet.<br>Define exercises and start the recorder + VSCode extension.</div>';
-        return;
-      }
-      let html = data.exercises.map(exerciseColumn).join('');
-      if (data.noExercise.length) html += column('No exercise', data.noExercise, 'unassigned');
-      board.innerHTML = html;
-
-      board.querySelectorAll('.card').forEach(el => {
-        el.addEventListener('click', () => {
-          const student = decodeURIComponent(el.dataset.student);
-          openTerminal(student, el.dataset.session || null, el.dataset.exercise || null);
-        });
-      });
+      } catch (_) { lastError = true; setFreshness(); return; }
+      lastError = false; lastUpdated = Date.now(); setFreshness();
+      renderBoard(data);
     }
 
     // ---- terminal panes ----
     function openTerminal(student, sessionId, exercise) {
+      if (!student) return;
       if (openPanes.has(student)) { flashPane(student); return; }
+      if (!localStorage.getItem(HINT_KEY)) {
+        localStorage.setItem(HINT_KEY, '1');
+        document.getElementById('hint').style.display = 'none';
+      }
 
       const dock = document.getElementById('dock');
       const pane = document.createElement('div');
@@ -319,11 +496,12 @@
         <div class="pane-head">
           ${avatarHtml(student, 'active')}
           <span><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
-          <button class="close" title="Close">✕</button>
+          <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s terminal">${ICONS.close}</button>
         </div>
         <div class="term"></div>`;
       dock.appendChild(pane);
       dock.classList.add('active');
+      document.getElementById('divider').classList.add('active');
       pane.querySelector('.close').addEventListener('click', () => closeTerminal(student));
 
       const body = pane.querySelector('.term');
@@ -358,7 +536,14 @@
       if (p.term) p.term.dispose();
       p.el.remove();
       openPanes.delete(student);
-      if (openPanes.size === 0) document.getElementById('dock').classList.remove('active');
+      if (openPanes.size === 0) {
+        document.getElementById('dock').classList.remove('active');
+        const div = document.getElementById('divider');
+        div.classList.remove('active');
+        // Hand the space back to the board and clear any dragged sizing.
+        document.getElementById('board').style.flex = '';
+        document.getElementById('dock').style.flex = '';
+      }
       relayout();
       markOpenCards();
     }
@@ -366,13 +551,13 @@
     function flashPane(student) {
       const p = openPanes.get(student);
       if (!p) return;
-      p.el.style.outline = '2px solid #1f6feb';
+      p.el.style.outline = '2px solid var(--accent)';
       setTimeout(() => { p.el.style.outline = ''; }, 600);
     }
 
     function markOpenCards() {
       document.querySelectorAll('.card').forEach(el => {
-        el.classList.toggle('open', openPanes.has(decodeURIComponent(el.dataset.student)));
+        el.classList.toggle('open', openPanes.has(el.dataset.student));
       });
     }
 
@@ -385,28 +570,103 @@
       setTimeout(() => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }), 30);
     }
 
-    window.addEventListener('resize', () => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }));
+    function refitPanes() { openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }); }
+    window.addEventListener('resize', refitPanes);
+
+    // ---- draggable board/dock divider ----
+    (function () {
+      const divider = document.getElementById('divider');
+      let dragging = false;
+      divider.addEventListener('pointerdown', (e) => {
+        dragging = true; divider.classList.add('dragging');
+        divider.setPointerCapture(e.pointerId); e.preventDefault();
+      });
+      divider.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const content = document.getElementById('content');
+        const rect = content.getBoundingClientRect();
+        const min = 240, max = rect.width - 280;
+        const bx = Math.max(min, Math.min(max, e.clientX - rect.left));
+        document.getElementById('board').style.flex = `0 0 ${bx}px`;
+        document.getElementById('dock').style.flex = '1 1 0';
+        refitPanes();
+      });
+      const end = (e) => {
+        if (!dragging) return;
+        dragging = false; divider.classList.remove('dragging');
+        try { divider.releasePointerCapture(e.pointerId); } catch (_) {}
+      };
+      divider.addEventListener('pointerup', end);
+      divider.addEventListener('pointercancel', end);
+    })();
+
+    // ---- broadcast composer ----
+    function openBroadcast() {
+      if (!currentCourse) return;
+      const opener = document.activeElement;
+      const courseName = document.querySelector('#course option:checked')?.textContent || currentCourse;
+      const max = 280;
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bc-title">
+          <h2 id="bc-title">Broadcast message</h2>
+          <p class="sub">To ${lastAudience} student${lastAudience === 1 ? '' : 's'} in ${esc(courseName)}</p>
+          <textarea id="bc-text" maxlength="${max}" placeholder="Message to the class…" aria-label="Message to the class"></textarea>
+          <div class="row">
+            <span class="ct" id="bc-ct">0 / ${max}</span>
+            <button class="btn" id="bc-cancel" type="button">Cancel</button>
+            <button class="btn primary" id="bc-send" type="button" disabled>Send</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+
+      const ta = backdrop.querySelector('#bc-text');
+      const ct = backdrop.querySelector('#bc-ct');
+      const send = backdrop.querySelector('#bc-send');
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+
+      ta.focus();
+      ta.addEventListener('input', () => {
+        ct.textContent = `${ta.value.length} / ${max}`;
+        send.disabled = ta.value.trim().length === 0;
+      });
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#bc-cancel').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { close(); return; }
+        if (e.key === 'Tab') { // simple focus trap
+          const f = [...backdrop.querySelectorAll('textarea,button')].filter(x => !x.disabled);
+          const first = f[0], last = f[f.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      });
+      send.addEventListener('click', async () => {
+        const text = ta.value.trim();
+        if (!text) return;
+        send.disabled = true; send.textContent = 'Sending…';
+        try {
+          const res = await fetch('/api/messages', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ course: currentCourse, text }),
+          });
+          if (res.ok) { close(); toast('Broadcast sent to the class'); }
+          else { send.disabled = false; send.textContent = 'Send'; toast('Failed to send broadcast'); }
+        } catch (_) { send.disabled = false; send.textContent = 'Send'; toast('Failed to send broadcast'); }
+      });
+    }
 
     document.getElementById('logout').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
     });
-
-    document.getElementById('broadcast').addEventListener('click', async () => {
-      if (!currentCourse) return;
-      const text = window.prompt('Message to all students in this course:');
-      if (!text || !text.trim()) return;
-      const btn = document.getElementById('broadcast');
-      const res = await fetch('/api/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ course: currentCourse, text: text.trim() }),
-      });
-      btn.textContent = res.ok ? '✓ Sent' : '✕ Failed';
-      setTimeout(() => { btn.textContent = '📣 Broadcast'; }, 2000);
-    });
+    document.getElementById('broadcast').addEventListener('click', openBroadcast);
 
     (async () => {
+      if (localStorage.getItem(HINT_KEY)) document.getElementById('hint').style.display = 'none';
+      setFreshness();
       await loadCourses();
       await refresh();
       setInterval(refresh, 3000);

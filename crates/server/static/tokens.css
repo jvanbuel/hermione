@@ -1,0 +1,48 @@
+/* Hermione design tokens + shared base — used by every page.
+ * Lifted out of the individual pages so the visual language (colour, spacing,
+ * type scale, focus behaviour) lives in one place and survives a future
+ * frontend rewrite (e.g. a component framework can consume these CSS vars). */
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #1f242c;
+  --border: #30363d;
+  --border-subtle: #21262d;
+
+  /* text — all chosen to clear 4.5:1 on the surfaces they sit on */
+  --fg: #e6edf3;
+  --fg-muted: #9da7b3;
+  --fg-subtle: #8b949e;
+
+  /* semantic */
+  --accent: #1f6feb;
+  --brand: #a371f7;
+  --green: #2ea043;
+  --green-emphasis: #3fb950;
+  --red: #f85149;
+  --amber: #d8a634;
+  --help-bg: #b62324;
+  --watch-bg: #9e6a03;
+
+  /* a real type scale — five steps, not thirteen */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+
+/* Keyboard focus is always visible; mouse focus stays quiet. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

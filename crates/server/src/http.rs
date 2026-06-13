@@ -12,7 +12,7 @@ use axum::{
     middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse, Redirect, Response,
+        IntoResponse, Redirect, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -30,6 +30,11 @@ use uuid::Uuid;
 use crate::auth::{constant_time_eq, AuthCtx};
 use crate::state::{AppState, MessageOut};
 use crate::tenancy::{self, DEFAULT_COURSE_ID};
+
+/// Static frontend assets, embedded at build time from `static/` (see build.rs).
+mod assets {
+    include!(concat!(env!("OUT_DIR"), "/assets.rs"));
+}
 
 /// A request's resolved course (tenant), injected by ingest auth.
 #[derive(Clone, Copy)]
@@ -64,9 +69,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/device/poll", post(auth_device_poll))
         // The message stream authenticates itself (enrollment token or cookie).
         .route("/ws", get(ws_handler))
-        .route("/vendor/xterm.js", get(xterm_js))
-        .route("/vendor/xterm.css", get(xterm_css))
-        .route("/vendor/addon-fit.js", get(addon_fit_js));
+        .route("/tokens.css", get(tokens_css))
+        .route("/vendor/{*path}", get(vendor));
 
     // Teacher-only routes: the dashboard and everything that exposes student
     // data, all scoped to a course the caller may access.
@@ -124,41 +128,56 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../static/index.html"))
+// --- static frontend assets (embedded; no CDN, works offline) --------------
+
+/// Looks up an embedded asset by its path relative to `static/`.
+fn asset(path: &str) -> Option<&'static [u8]> {
+    assets::ASSETS
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, data)| *data)
 }
 
-// xterm.js assets are vendored (no external CDN) so the viewer works offline
-// and in locked-down networks.
-async fn xterm_js() -> impl IntoResponse {
-    js(include_str!("../static/vendor/xterm.js"))
+/// Content-Type for an embedded asset, by extension.
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    }
 }
 
-async fn addon_fit_js() -> impl IntoResponse {
-    js(include_str!("../static/vendor/addon-fit.js"))
+/// Serves an embedded asset, or 404 if there's no such file. Unknown paths
+/// (including any `..` traversal) simply don't match an embedded key.
+fn serve_asset(path: &str) -> Response {
+    match asset(path) {
+        Some(bytes) => ([(header::CONTENT_TYPE, content_type(path))], bytes).into_response(),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
 }
 
-async fn xterm_css() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../static/vendor/xterm.css"),
-    )
+async fn index() -> Response {
+    serve_asset("index.html")
 }
 
-fn js(body: &'static str) -> impl IntoResponse {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        body,
-    )
+async fn tokens_css() -> Response {
+    serve_asset("tokens.css")
+}
+
+async fn vendor(Path(path): Path<String>) -> Response {
+    serve_asset(&format!("vendor/{path}"))
 }
 
 // --- authentication --------------------------------------------------------
 
-async fn login_page() -> Html<&'static str> {
-    Html(include_str!("../static/login.html"))
+async fn login_page() -> Response {
+    serve_asset("login.html")
 }
 
 #[derive(Deserialize)]
