@@ -344,7 +344,55 @@ fn assess(sig: Signals, seconds_on_exercise: i64) -> (String, Vec<String>) {
 #[serde(rename_all = "camelCase")]
 struct ExerciseGroup {
     exercise: String,
+    title: String,
     students: Vec<OverviewStudent>,
+    stats: GroupStats,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupStats {
+    total: usize,
+    active: usize,
+    need_help: usize,
+    /// Median time-on-exercise across the group (seconds).
+    median_seconds: i64,
+}
+
+fn group_stats(students: &[OverviewStudent]) -> GroupStats {
+    let mut secs: Vec<i64> = students.iter().map(|s| s.seconds_on_exercise).collect();
+    secs.sort_unstable();
+    let median = if secs.is_empty() {
+        0
+    } else {
+        secs[secs.len() / 2]
+    };
+    GroupStats {
+        total: students.len(),
+        active: students.iter().filter(|s| s.status == "active").count(),
+        need_help: students.iter().filter(|s| s.struggle == "help").count(),
+        median_seconds: median,
+    }
+}
+
+fn into_group(
+    exercise: String,
+    title: String,
+    mut students: Vec<OverviewStudent>,
+) -> ExerciseGroup {
+    // Struggling students float to the top, then by time-on-exercise.
+    students.sort_by(|a, b| {
+        struggle_rank(&b.struggle)
+            .cmp(&struggle_rank(&a.struggle))
+            .then(b.seconds_on_exercise.cmp(&a.seconds_on_exercise))
+    });
+    let stats = group_stats(&students);
+    ExerciseGroup {
+        exercise,
+        title,
+        students,
+        stats,
+    }
 }
 
 #[derive(Serialize)]
@@ -467,9 +515,8 @@ pub async fn overview(
         });
     }
 
-    // Group by current exercise.
-    let mut groups: std::collections::BTreeMap<String, Vec<OverviewStudent>> =
-        std::collections::BTreeMap::new();
+    // Bucket students by their current exercise slug.
+    let mut groups: std::collections::HashMap<String, Vec<OverviewStudent>> = HashMap::new();
     let mut no_exercise: Vec<OverviewStudent> = Vec::new();
     for s in students {
         match &s.exercise {
@@ -478,22 +525,28 @@ pub async fn overview(
         }
     }
 
-    let exercises: Vec<ExerciseGroup> = groups
-        .into_iter()
-        .map(|(exercise, mut students)| {
-            // Struggling students float to the top, then by time-on-exercise.
-            students.sort_by(|a, b| {
-                struggle_rank(&b.struggle)
-                    .cmp(&struggle_rank(&a.struggle))
-                    .then(b.seconds_on_exercise.cmp(&a.seconds_on_exercise))
-            });
-            ExerciseGroup { exercise, students }
-        })
-        .collect();
+    // Emit defined exercises first, in their configured order (including ones
+    // nobody has started yet), then any active-but-undefined exercises.
+    let defined = crate::exercises::list_for_course(&state.db, course_id)
+        .await
+        .unwrap_or_default();
+
+    let mut output: Vec<ExerciseGroup> = Vec::new();
+    for ex in defined {
+        let students = groups.remove(&ex.slug).unwrap_or_default();
+        output.push(into_group(ex.slug, ex.title, students));
+    }
+    let mut leftover: Vec<(String, Vec<OverviewStudent>)> = groups.into_iter().collect();
+    leftover.sort_by(|a, b| a.0.cmp(&b.0));
+    for (slug, students) in leftover {
+        let title = slug.clone();
+        output.push(into_group(slug, title, students));
+    }
+
     no_exercise.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
 
     Json(Overview {
-        exercises,
+        exercises: output,
         no_exercise,
     })
     .into_response()

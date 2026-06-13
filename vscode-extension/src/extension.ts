@@ -1,7 +1,29 @@
+import { execSync } from 'child_process';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import WebSocket from 'ws';
 import { ExerciseMap } from './exercises';
+
+interface CourseConfig {
+    backend?: string;
+    token?: string;
+    identity?: string;
+}
+
+/** Reads `backend`/`token`/`identity` from the workspace's `.hermione.json`. */
+async function readCourseConfig(): Promise<CourseConfig> {
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        try {
+            const uri = vscode.Uri.joinPath(folder.uri, '.hermione.json');
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            const cfg = JSON.parse(Buffer.from(bytes).toString('utf8'));
+            return { backend: cfg.backend, token: cfg.token, identity: cfg.identity };
+        } catch (_) {
+            // try the next folder
+        }
+    }
+    return {};
+}
 
 interface FileEvent {
     student: string;
@@ -45,7 +67,7 @@ class Reporter {
     }
 
     async start(): Promise<void> {
-        this.readConfig();
+        await this.loadConfig();
         await this.exercises.load();
         this.enabled = true;
 
@@ -55,10 +77,13 @@ class Reporter {
                 this.windowFocused = s.focused;
             }),
             vscode.workspace.onDidCloseTextDocument((doc) => this.onClose(doc)),
-            vscode.workspace.onDidChangeWorkspaceFolders(() => this.exercises.load()),
-            vscode.workspace.onDidChangeConfiguration((e) => {
+            vscode.workspace.onDidChangeWorkspaceFolders(async () => {
+                await this.loadConfig();
+                await this.exercises.load();
+            }),
+            vscode.workspace.onDidChangeConfiguration(async (e) => {
                 if (e.affectsConfiguration('hermione')) {
-                    this.readConfig();
+                    await this.loadConfig();
                     this.restartHeartbeat();
                 }
             }),
@@ -164,28 +189,57 @@ class Reporter {
 
     async setStudent(): Promise<void> {
         const value = await vscode.window.showInputBox({
-            prompt: 'Student identifier reported to Hermione',
+            prompt: 'Override the student identifier reported to Hermione',
             value: this.student,
         });
         if (value !== undefined) {
             await vscode.workspace
                 .getConfiguration('hermione')
                 .update('student', value, vscode.ConfigurationTarget.Global);
-            this.readConfig();
+            await this.loadConfig();
             this.updateStatusBar();
         }
     }
 
-    private readConfig(): void {
+    /**
+     * Loads configuration. The committed course file (`.hermione.json`) is the
+     * single source of truth a teacher controls — it can carry `backend`,
+     * `token`, and an `identity` source — falling back to VSCode settings/env.
+     */
+    private async loadConfig(): Promise<void> {
         const cfg = vscode.workspace.getConfiguration('hermione');
-        this.serverUrl = (cfg.get<string>('serverUrl') || 'http://localhost:8080').replace(/\/$/, '');
+        const course = await readCourseConfig();
+        this.serverUrl = (course.backend || cfg.get<string>('serverUrl') || 'http://localhost:8080')
+            .replace(/\/$/, '');
         this.heartbeatSeconds = Math.max(5, cfg.get<number>('heartbeatSeconds') ?? 15);
-        this.student =
-            cfg.get<string>('student') ||
-            process.env.HERMIONE_STUDENT ||
-            os.userInfo().username ||
-            'unknown';
-        this.token = cfg.get<string>('token') || process.env.HERMIONE_TOKEN || '';
+        this.token = course.token || cfg.get<string>('token') || process.env.HERMIONE_TOKEN || '';
+        this.student = this.resolveStudent(course.identity);
+    }
+
+    /**
+     * Derives the student identity from the container environment — no login.
+     * The course config picks the source; "auto" tries the most specific first.
+     */
+    private resolveStudent(source?: string): string {
+        const cfg = vscode.workspace.getConfiguration('hermione');
+        const explicit = cfg.get<string>('student') || process.env.HERMIONE_STUDENT || '';
+        const ghUser = process.env.GITHUB_USER || '';
+        const osUser = os.userInfo().username || 'unknown';
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const gitEmail = (): string => {
+            try {
+                return execSync('git config user.email', { cwd, encoding: 'utf8' }).trim();
+            } catch (_) {
+                return '';
+            }
+        };
+        switch (source) {
+            case 'github': return ghUser || explicit || osUser;
+            case 'git-email': return gitEmail() || explicit || osUser;
+            case 'env': return explicit || osUser;
+            case 'os': return osUser;
+            default: return explicit || ghUser || gitEmail() || osUser;
+        }
     }
 
     private restartHeartbeat(): void {

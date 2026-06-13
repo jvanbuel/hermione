@@ -165,6 +165,9 @@ cd vscode-extension && npm install && npm run compile
   student has open right now).
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
+- `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
+  a course's exercises (title + order). The dashboard shows all of them, even
+  ones nobody has started, with per-exercise stats.
 - `POST /api/messages` — teacher broadcasts a message to a course (persisted).
 - `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
   token (`?token=`) or the session cookie (`?course=`); pass `?since=<id>` to
@@ -274,10 +277,13 @@ Planned next:
 
 - [x] Multi-tenancy: courses, admin accounts + membership, per-course enrollment.
 - [x] Struggle detection: flag students with errors/failed runs/time-stuck.
-- [ ] First-class exercise model (assignments table; teacher-side mapping UI).
-- [ ] Correlate terminal sessions with editor activity per student/exercise.
+- [x] First-class exercise model: defined exercises (title + order) with stats.
+- [x] Broadcast messages (teacher → students) over WebSocket.
+- [x] Environment-derived student identity (no login). See trust model in
+      [`examples/course-template`](examples/course-template).
 - [x] Authentication: admin login + per-course enrollment tokens.
+- [ ] Stronger student identity for grading (per-student tokens / OIDC).
+- [ ] Two-way chat (student → teacher) on the existing WebSocket channel.
 - [ ] Richer offline analytics: replay timeline.
-- [ ] Render stdin keystrokes distinctly in the viewer (e.g. input highlighting).
 
 [xterm.js]: https://xtermjs.org/

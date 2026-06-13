@@ -299,3 +299,77 @@ async fn provisioning_requires_admin_token() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn defined_exercises_drive_overview_order() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("ord{s}"), "Ord")
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("ad{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("ad{s}"), "pw").await.unwrap();
+
+    // Define exercises with explicit positions (intentionally not slug order).
+    let define = format!(
+        r#"{{"course":"ord{s}","exercises":[{{"slug":"two","title":"Two","position":1}},{{"slug":"one","title":"One","position":0}},{{"slug":"three","title":"Three","position":2}}]}}"#
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/exercises")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(define))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Activity on "one" only; "three" stays defined-but-empty.
+    let now = chrono::Utc::now().timestamp_millis();
+    let ev = format!(
+        r#"[{{"student":"st{s}","path":"/x.py","exercise":"one","kind":"focus","atUnixMs":{now}}}]"#
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(ev))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=ord{s}"), &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let groups = v["exercises"].as_array().unwrap();
+    let slugs: Vec<&str> = groups
+        .iter()
+        .map(|g| g["exercise"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        &slugs[..3],
+        &["one", "two", "three"],
+        "defined order honored"
+    );
+
+    let three = groups.iter().find(|g| g["exercise"] == "three").unwrap();
+    assert_eq!(
+        three["stats"]["total"], 0,
+        "defined-but-empty exercise shown"
+    );
+}

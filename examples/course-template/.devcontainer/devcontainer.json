@@ -12,11 +12,12 @@
     // Where the course's Hermione backend lives.
     "HERMIONE_BACKEND": "https://hermione.example.edu:50051",
     // The course enrollment token (from POST /api/admin/courses). This is what
-    // makes the data land in *this* course.
-    "HERMIONE_TOKEN": "REPLACE_WITH_COURSE_ENROLLMENT_TOKEN",
-    // Identify the student. Falls back to the host username; a teacher could
-    // instead derive this from the LMS or the student's git identity.
-    "HERMIONE_STUDENT": "${localEnv:USER}"
+    // makes the data land in *this* course; both the recorder and the extension
+    // read it.
+    "HERMIONE_TOKEN": "REPLACE_WITH_COURSE_ENROLLMENT_TOKEN"
+    // Student identity is derived from the environment — no login. In GitHub
+    // Codespaces, $GITHUB_USER is set to the authenticated user (trustworthy).
+    // The `identity` field in ../.hermione.json selects the source.
   },
 
   // Install the `hermione` recorder binary into the container.

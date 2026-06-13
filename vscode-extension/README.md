@@ -37,21 +37,28 @@ missed via a `since` cursor, so messages aren't lost across disconnects.
 
 | Setting                      | Default                  | Description                                      |
 |------------------------------|--------------------------|--------------------------------------------------|
-| `hermione.serverUrl`         | `http://localhost:8080`  | Hermione backend HTTP base URL                   |
-| `hermione.student`           | `""`                     | Student id (falls back to `$HERMIONE_STUDENT` / OS username) |
-| `hermione.token`             | `""`                     | Course enrollment token (falls back to `$HERMIONE_TOKEN`); selects the course the data belongs to |
+| `hermione.serverUrl`         | `http://localhost:8080`  | Backend URL (overridden by `backend` in `.hermione.json` / `$HERMIONE_*`) |
+| `hermione.student`           | `""`                     | Manual identity override (identity is otherwise derived — see below) |
+| `hermione.token`             | `""`                     | Course enrollment token (overridden by `token` in `.hermione.json` / `$HERMIONE_TOKEN`) |
 | `hermione.heartbeatSeconds`  | `15`                     | How often to confirm the current file is active  |
 | `hermione.enabled`           | `true`                   | Start reporting automatically                    |
 
 Commands: **Hermione: Start / Stop Reporting**, **Hermione: Set Student Identifier**.
 
-## Mapping files to exercises
+## Course config & identity (`.hermione.json`)
 
-Add a `.hermione.json` at the workspace root to label files with an exercise.
-Patterns are matched against the workspace-relative path (`**`, `*`, `?`):
+The committed `.hermione.json` is the single course config — it carries the
+backend, enrollment token, identity source, and the file→exercise mapping. The
+**student identity is derived from the container environment** (no login); the
+`identity` field picks the source (`github` / `git-email` / `env` / `os`, or
+auto). See [`examples/course-template`](../examples/course-template) for the
+trust model.
 
 ```json
 {
+  "backend": "https://hermione.example.edu:50051",
+  "token": "<course enrollment token>",
+  "identity": "github",
   "exercises": [
     { "name": "ex1", "match": "ex1/**" },
     { "name": "ex2", "match": ["ex2/**", "solutions/ex2/*"] }

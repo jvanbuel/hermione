@@ -2,6 +2,7 @@
 //! persisting every terminal session to Postgres.
 
 mod auth;
+mod exercises;
 mod files;
 mod grpc;
 mod http;

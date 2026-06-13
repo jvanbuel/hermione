@@ -52,6 +52,9 @@
     .column.unassigned > h2 { color: #7d8590; }
     .count { margin-left: auto; font-size: .72rem; color: #7d8590;
       background: #21262d; padding: 1px 8px; border-radius: 10px; }
+    .summary { padding: 4px 14px 8px; font-size: .72rem; color: #7d8590;
+      border-bottom: 1px solid #21262d; }
+    .summary .warn { color: #f85149; }
     .cards { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
 
     .card {
@@ -215,6 +218,18 @@
           <div class="cards">${students.map(studentCard).join('')}</div>
         </div>`;
     }
+    function exerciseColumn(g) {
+      const s = g.stats || { total: g.students.length, active: 0, needHelp: 0, medianSeconds: 0 };
+      const summary = s.total === 0
+        ? 'no activity yet'
+        : `${s.active} active${s.needHelp ? ` · <span class="warn">${s.needHelp} need help</span>` : ''} · med ${fmtDuration(s.medianSeconds)}`;
+      return `
+        <div class="column">
+          <h2>📘 ${esc(g.title || g.exercise)}<span class="count">${s.total}</span></h2>
+          <div class="summary">${summary}</div>
+          <div class="cards">${g.students.map(studentCard).join('')}</div>
+        </div>`;
+    }
 
     let currentCourse = null;
 
@@ -274,12 +289,12 @@
       document.getElementById('alert').textContent = needHelp ? `🔴 ${needHelp} need help` : '';
 
       const board = document.getElementById('board');
-      const total = allStudents.length;
-      if (total === 0) {
-        board.innerHTML = '<div class="empty">No student activity yet.<br>Start the recorder and the VSCode extension.</div>';
+      // Show the board if there are exercises (even empty, defined ones) or activity.
+      if (data.exercises.length === 0 && data.noExercise.length === 0) {
+        board.innerHTML = '<div class="empty">No exercises defined and no activity yet.<br>Define exercises and start the recorder + VSCode extension.</div>';
         return;
       }
-      let html = data.exercises.map(g => column(`📘 ${esc(g.exercise)}`, g.students)).join('');
+      let html = data.exercises.map(exerciseColumn).join('');
       if (data.noExercise.length) html += column('No exercise', data.noExercise, 'unassigned');
       board.innerHTML = html;
 

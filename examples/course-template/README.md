@@ -6,8 +6,20 @@ repository your students clone/open as a devcontainer.
 ```
 your-course/
 ├── .devcontainer/devcontainer.json   # connects students to the backend
-├── .hermione.json                    # maps files → exercises
+├── .hermione.json                    # identity source + maps files → exercises
 ├── lab1/ lab2/ project/ ...          # your exercises
+```
+
+The `.hermione.json` is the course config a student's extension reads:
+
+```jsonc
+{
+  "identity": "github",          // how to identify the student (see below)
+  "exercises": [                  // map files → exercise slugs
+    { "name": "lab1", "match": "lab1/**" },
+    { "name": "lab2", "match": "lab2/**" }
+  ]
+}
 ```
 
 ## One-time setup (course administrator)
@@ -35,6 +47,37 @@ curl -X POST https://hermione.example.edu/api/admin/memberships \
 
 Put the enrollment token from step 1 into `.devcontainer/devcontainer.json`
 (`HERMIONE_TOKEN`) and set `HERMIONE_BACKEND` to your backend.
+
+Optionally define the course's **exercises** (title + order) so the dashboard
+shows them all — even ones nobody has started:
+
+```bash
+curl -X POST https://hermione.example.edu/api/exercises \
+  -H "Cookie: hermione_session=<from logging in>" \
+  -H 'Content-Type: application/json' \
+  -d '{"course":"cs101","exercises":[
+        {"slug":"lab1","title":"Lab 1 — Sorting","position":0},
+        {"slug":"lab2","title":"Lab 2 — Trees","position":1}
+      ]}'
+```
+
+## Student identity (no login)
+
+Identity is derived from the container environment — students never log in. The
+`identity` field in `.hermione.json` picks the source:
+
+| `identity`  | Source                              | Trust |
+|-------------|-------------------------------------|-------|
+| `github`    | `$GITHUB_USER`                      | **Trustworthy in GitHub Codespaces** (platform-set); weak elsewhere |
+| `git-email` | `git config user.email`             | Stable, but student-editable |
+| `env`       | `HERMIONE_STUDENT`                  | Trustworthy only if the *teacher* sets it |
+| `os`        | OS username                         | Collides in shared devcontainers — avoid |
+| *(omitted)* | auto: github → git-email → os       | — |
+
+This is classroom **attribution**, not authentication: a determined student can
+spoof it. For graded/high-stakes use, run on **GitHub Codespaces** (so
+`$GITHUB_USER` is platform-authenticated), or issue per-student enrollment
+tokens via GitHub Classroom.
 
 ## What students do
 

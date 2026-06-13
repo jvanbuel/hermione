@@ -68,11 +68,7 @@ impl Drop for RawModeGuard {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let student = args
-        .student
-        .clone()
-        .or_else(|| std::env::var("USER").ok())
-        .unwrap_or_else(|| "unknown".to_string());
+    let student = resolve_student(args.student.as_deref());
     let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
 
     let (prog, prog_args) = resolve_command(&args.command);
@@ -305,6 +301,33 @@ fn chunk(stream: StreamKind, data: &[u8], start: &Instant) -> IngestEvent {
 fn looks_like_password_prompt(bytes: &[u8]) -> bool {
     let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
     text.contains("password") || text.contains("passphrase")
+}
+
+/// Resolves the student identity from the environment — no login required.
+/// Priority: explicit `--student`/`HERMIONE_STUDENT`, then `GITHUB_USER`
+/// (Codespaces), then git `user.email`, then the OS username.
+fn resolve_student(explicit: Option<&str>) -> String {
+    let non_empty = |s: String| (!s.trim().is_empty()).then_some(s);
+    explicit
+        .map(str::to_string)
+        .and_then(non_empty)
+        .or_else(|| std::env::var("GITHUB_USER").ok().and_then(non_empty))
+        .or_else(git_email)
+        .or_else(|| std::env::var("USER").ok().and_then(non_empty))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// The repo's configured git email, if available.
+fn git_email() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "user.email"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let email = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!email.is_empty()).then_some(email)
 }
 
 /// Resolves the program and arguments to record, defaulting to the user's shell.

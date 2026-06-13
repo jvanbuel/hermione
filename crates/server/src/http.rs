@@ -76,6 +76,10 @@ pub fn router(state: AppState) -> Router {
             "/api/analytics/time-per-file",
             get(crate::files::time_per_file),
         )
+        .route(
+            "/api/exercises",
+            get(crate::exercises::list).post(crate::exercises::define),
+        )
         .route("/api/messages", post(crate::messages::broadcast))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
