@@ -238,13 +238,13 @@ pub async fn time_per_file(
             seconds,
         })
         .collect();
-    per_file.sort_by(|a, b| b.seconds.cmp(&a.seconds));
+    per_file.sort_by_key(|f| std::cmp::Reverse(f.seconds));
 
     let mut per_exercise: Vec<ExerciseTime> = per_exercise_secs
         .into_iter()
         .map(|(exercise, seconds)| ExerciseTime { exercise, seconds })
         .collect();
-    per_exercise.sort_by(|a, b| b.seconds.cmp(&a.seconds));
+    per_exercise.sort_by_key(|e| std::cmp::Reverse(e.seconds));
 
     Json(TimeReport {
         student: q.student,
@@ -554,7 +554,7 @@ pub async fn overview(
         output.push(into_group(slug, title, students));
     }
 
-    no_exercise.sort_by(|a, b| b.last_seen_unix_ms.cmp(&a.last_seen_unix_ms));
+    no_exercise.sort_by_key(|s| std::cmp::Reverse(s.last_seen_unix_ms));
 
     Json(Overview {
         exercises: output,

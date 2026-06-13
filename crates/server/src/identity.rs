@@ -10,6 +10,13 @@ use jsonwebtoken::{
     Validation,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
+
+/// How long a provider's discovery document + JWKS are cached before refetch.
+const OIDC_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// Lifetime of an issued Hermione identity token.
 pub const TOKEN_TTL_SECS: i64 = 8 * 60 * 60;
@@ -46,6 +53,17 @@ pub struct Identity {
     /// HS256 signing secret for Hermione identity tokens. `None` disables auth.
     secret: Option<String>,
     http: reqwest::Client,
+    /// Cached OIDC discovery + JWKS, keyed by issuer, so verification doesn't
+    /// refetch keys on every request. Shared across clones of `Identity`.
+    oidc_cache: Arc<RwLock<HashMap<String, OidcMeta>>>,
+}
+
+/// A provider's discovery document and signing keys, with a fetch timestamp.
+#[derive(Clone)]
+struct OidcMeta {
+    discovery: Discovery,
+    jwks: JwkSet,
+    fetched_at: Instant,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +79,7 @@ struct OidcClaims {
     email: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct Discovery {
     jwks_uri: String,
     token_endpoint: Option<String>,
@@ -111,6 +129,7 @@ impl Identity {
             providers,
             secret,
             http: reqwest::Client::new(),
+            oidc_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -121,6 +140,7 @@ impl Identity {
             providers: Vec::new(),
             secret: None,
             http: reqwest::Client::new(),
+            oidc_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -131,6 +151,7 @@ impl Identity {
             providers,
             secret: Some(secret.to_string()),
             http: reqwest::Client::new(),
+            oidc_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -220,28 +241,29 @@ impl Identity {
         Ok(user.login)
     }
 
-    async fn discovery(&self, issuer: &str) -> Result<Discovery, String> {
+    /// Returns the provider's discovery doc + JWKS, served from cache when fresh.
+    /// `refresh` forces a refetch (used on a JWKS miss, e.g. after key rotation).
+    async fn meta(&self, issuer: &str, refresh: bool) -> Result<OidcMeta, String> {
+        if !refresh {
+            if let Some(meta) = self.oidc_cache.read().await.get(issuer) {
+                if meta.fetched_at.elapsed() < OIDC_CACHE_TTL {
+                    return Ok(meta.clone());
+                }
+            }
+        }
         let url = format!(
             "{}/.well-known/openid-configuration",
             issuer.trim_end_matches('/')
         );
-        self.http
+        let discovery: Discovery = self
+            .http
             .get(url)
             .send()
             .await
             .map_err(|e| e.to_string())?
-            .json::<Discovery>()
+            .json()
             .await
-            .map_err(|e| e.to_string())
-    }
-
-    async fn verify_oidc(
-        &self,
-        issuer: &str,
-        client_id: &str,
-        id_token: &str,
-    ) -> Result<String, String> {
-        let discovery = self.discovery(issuer).await?;
+            .map_err(|e| e.to_string())?;
         let jwks: JwkSet = self
             .http
             .get(&discovery.jwks_uri)
@@ -251,7 +273,35 @@ impl Identity {
             .json()
             .await
             .map_err(|e| e.to_string())?;
-        let claims = verify_id_token(id_token, &jwks, issuer, client_id)?;
+        let meta = OidcMeta {
+            discovery,
+            jwks,
+            fetched_at: Instant::now(),
+        };
+        self.oidc_cache
+            .write()
+            .await
+            .insert(issuer.to_string(), meta.clone());
+        Ok(meta)
+    }
+
+    async fn verify_oidc(
+        &self,
+        issuer: &str,
+        client_id: &str,
+        id_token: &str,
+    ) -> Result<String, String> {
+        let kid = decode_header(id_token)
+            .map_err(|e| e.to_string())?
+            .kid
+            .ok_or("token missing kid")?;
+        let mut meta = self.meta(issuer, false).await?;
+        // A cached JWKS that lacks the token's key id may be stale (rotation):
+        // refetch once before giving up.
+        if meta.jwks.find(&kid).is_none() {
+            meta = self.meta(issuer, true).await?;
+        }
+        let claims = verify_id_token(id_token, &meta.jwks, issuer, client_id)?;
         Ok(claims.email.unwrap_or(claims.sub))
     }
 
@@ -270,8 +320,9 @@ impl Identity {
                     .as_deref()
                     .ok_or("oidc provider needs issuer")?;
                 let endpoint = self
-                    .discovery(issuer)
+                    .meta(issuer, false)
                     .await?
+                    .discovery
                     .device_authorization_endpoint
                     .ok_or("provider has no device endpoint")?;
                 (endpoint, "openid email".to_string())
@@ -306,8 +357,9 @@ impl Identity {
                     .issuer
                     .as_deref()
                     .ok_or("oidc provider needs issuer")?;
-                self.discovery(issuer)
+                self.meta(issuer, false)
                     .await?
+                    .discovery
                     .token_endpoint
                     .ok_or("provider has no token endpoint")?
             }
@@ -390,6 +442,7 @@ mod tests {
             providers: vec![],
             secret: Some("test-secret".to_string()),
             http: reqwest::Client::new(),
+            oidc_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -409,6 +462,7 @@ mod tests {
             providers: vec![],
             secret: Some("other-secret".to_string()),
             http: reqwest::Client::new(),
+            oidc_cache: Arc::new(RwLock::new(HashMap::new())),
         };
         let foreign = other.issue("github:mallory").unwrap();
         assert!(id.verify(&foreign).is_none());
