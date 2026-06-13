@@ -3,28 +3,43 @@
  * type scale, focus behaviour) lives in one place and survives a future
  * frontend rewrite (e.g. a component framework can consume these CSS vars). */
 
+/* Two palettes, one set of names.
+ *
+ * Dark is the default in :root, and it's a deliberately classroom-flavoured
+ * "chalkboard": slate-green surfaces, warm chalk-white text, dusty muted tones,
+ * and a faint chalk-dust texture on <body>. Semantic hues stay dark enough that
+ * white-on-colour pills, toasts and primary buttons keep their contrast.
+ *
+ * Light (a clean "whiteboard") is applied two ways:
+ *   1. automatically, via prefers-color-scheme, when the teacher hasn't made
+ *      an explicit choice (i.e. there's no data-theme override pinning dark);
+ *   2. on demand, when data-theme="light" is set on <html> (the header toggle,
+ *      persisted to localStorage).
+ * data-theme always wins over the system preference, so the toggle is a real
+ * override in both directions. Pages set data-theme from an inline <head>
+ * script before first paint, so there's no flash of the wrong theme. */
 :root {
   color-scheme: dark;
 
-  /* surfaces */
-  --bg: #0d1117;
-  --surface: #161b22;
-  --surface-2: #1f242c;
-  --border: #30363d;
-  --border-subtle: #21262d;
+  /* surfaces — slate "blackboard" */
+  --bg: #243831;
+  --surface: #2b4239;
+  --surface-2: #355046;
+  --border: #4d6358;
+  --border-subtle: #36493f;
 
-  /* text — all chosen to clear 4.5:1 on the surfaces they sit on */
-  --fg: #e6edf3;
-  --fg-muted: #9da7b3;
-  --fg-subtle: #8b949e;
+  /* text — warm chalk, all chosen to clear 4.5:1 on the surfaces they sit on */
+  --fg: #eef1e6;
+  --fg-muted: #b4c0ad;
+  --fg-subtle: #93a08e;
 
-  /* semantic */
-  --accent: #1f6feb;
-  --brand: #a371f7;
-  --green: #2ea043;
-  --green-emphasis: #3fb950;
-  --red: #f85149;
-  --amber: #d8a634;
+  /* semantic — softened "coloured chalk", but dark enough for white-on-colour */
+  --accent: #3f7cbb;
+  --brand: #e9d27a;
+  --green: #4caf63;
+  --green-emphasis: #67c97e;
+  --red: #ef8e8e;
+  --amber: #e6c163;
   --help-bg: #b62324;
   --watch-bg: #9e6a03;
 
@@ -34,6 +49,70 @@
   --fs-base: 14px;
   --fs-lg: 16px;
   --fs-xl: 20px;
+}
+
+/* Chalk-dust grain + a soft top-of-board glow, layered over the chalkboard.
+ * Higher specificity than the per-page `body { background: var(--bg) }`, so it
+ * adds a texture on top; the light theme turns it back off (below). */
+:root body {
+  background-image:
+    radial-gradient(120% 80% at 50% -20%, rgba(255,255,255,.06), transparent 55%),
+    radial-gradient(90% 60% at 85% 115%, rgba(255,255,255,.04), transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  background-attachment: fixed;
+}
+
+/* The light "whiteboard" palette. Surfaces invert (white page, grey cards); the
+ * semantic colours are the darker, light-background variants so text still
+ * clears 4.5:1, and the help/watch pills stay dark enough to carry white text.
+ * The chalk texture is removed so the board reads as clean paper. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --surface-2: #eaeef2;
+  --border: #d0d7de;
+  --border-subtle: #e4e8ed;
+
+  --fg: #1f2328;
+  --fg-muted: #59636e;
+  --fg-subtle: #6e7781;
+
+  --accent: #0969da;
+  --brand: #8250df;
+  --green: #1a7f37;
+  --green-emphasis: #1f883d;
+  --red: #cf222e;
+  --amber: #9a6700;
+  --help-bg: #cf222e;
+  --watch-bg: #9a6700;
+}
+:root[data-theme="light"] body { background-image: none; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --surface-2: #eaeef2;
+    --border: #d0d7de;
+    --border-subtle: #e4e8ed;
+
+    --fg: #1f2328;
+    --fg-muted: #59636e;
+    --fg-subtle: #6e7781;
+
+    --accent: #0969da;
+    --brand: #8250df;
+    --green: #1a7f37;
+    --green-emphasis: #1f883d;
+    --red: #cf222e;
+    --amber: #9a6700;
+    --help-bg: #cf222e;
+    --watch-bg: #9a6700;
+  }
+  :root:not([data-theme="dark"]) body { background-image: none; }
 }
 
 * { box-sizing: border-box; }
