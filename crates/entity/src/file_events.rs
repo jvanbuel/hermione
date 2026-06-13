@@ -23,6 +23,10 @@ pub struct Model {
     pub language: Option<String>,
     /// Exercise this file maps to, if the extension could resolve one.
     pub exercise: Option<String>,
+    /// How the student identity was derived ("github", "git-email", "config", …).
+    pub student_source: Option<String>,
+    /// The git repo the activity came from (owner/name), for provenance.
+    pub repo: Option<String>,
     /// "focus" (became active), "heartbeat" (still active), or "close".
     pub kind: String,
     /// When the event happened on the client.

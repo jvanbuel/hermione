@@ -27,6 +27,8 @@ async function readCourseConfig(): Promise<CourseConfig> {
 
 interface FileEvent {
     student: string;
+    studentSource?: string;
+    repo?: string;
     workspace?: string;
     path: string;
     relativePath?: string;
@@ -45,6 +47,8 @@ interface FileEvent {
 class Reporter {
     private enabled = false;
     private student = '';
+    private studentSource = '';
+    private repo = '';
     private serverUrl = '';
     private heartbeatSeconds = 15;
     private token = '';
@@ -213,18 +217,22 @@ class Reporter {
             .replace(/\/$/, '');
         this.heartbeatSeconds = Math.max(5, cfg.get<number>('heartbeatSeconds') ?? 15);
         this.token = course.token || cfg.get<string>('token') || process.env.HERMIONE_TOKEN || '';
-        this.student = this.resolveStudent(course.identity);
+        const id = this.resolveStudent(course.identity);
+        this.student = id.value;
+        this.studentSource = id.source;
+        this.repo = this.resolveRepo();
     }
 
     /**
-     * Derives the student identity from the container environment — no login.
-     * The course config picks the source; "auto" tries the most specific first.
+     * Derives the student identity from the container environment — no login —
+     * along with which signal produced it (provenance). The auto path does NOT
+     * fall back to the OS username (it collides in shared devcontainers); an
+     * unresolved identity is reported as "unknown" so it's visible.
      */
-    private resolveStudent(source?: string): string {
+    private resolveStudent(pref?: string): { value: string; source: string } {
         const cfg = vscode.workspace.getConfiguration('hermione');
         const explicit = cfg.get<string>('student') || process.env.HERMIONE_STUDENT || '';
         const ghUser = process.env.GITHUB_USER || '';
-        const osUser = os.userInfo().username || 'unknown';
         const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         const gitEmail = (): string => {
             try {
@@ -233,12 +241,28 @@ class Reporter {
                 return '';
             }
         };
-        switch (source) {
-            case 'github': return ghUser || explicit || osUser;
-            case 'git-email': return gitEmail() || explicit || osUser;
-            case 'env': return explicit || osUser;
-            case 'os': return osUser;
-            default: return explicit || ghUser || gitEmail() || osUser;
+        const pick = (val: string, src: string) => (val ? { value: val, source: src } : null);
+        let r: { value: string; source: string } | null;
+        switch (pref) {
+            case 'github': r = pick(ghUser, 'github') || pick(explicit, 'config'); break;
+            case 'git-email': r = pick(gitEmail(), 'git-email') || pick(explicit, 'config'); break;
+            case 'env': r = pick(explicit, 'config'); break;
+            case 'os': r = pick(os.userInfo().username, 'os'); break;
+            default:
+                r = pick(explicit, 'config') || pick(ghUser, 'github') || pick(gitEmail(), 'git-email');
+        }
+        return r || { value: 'unknown', source: 'unknown' };
+    }
+
+    /** The repo (owner/name) the activity comes from, for identity provenance. */
+    private resolveRepo(): string {
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        try {
+            const url = execSync('git config --get remote.origin.url', { cwd, encoding: 'utf8' }).trim();
+            const m = url.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
+            return m ? m[1] : '';
+        } catch (_) {
+            return '';
         }
     }
 
@@ -283,6 +307,8 @@ class Reporter {
         const relativePath = vscode.workspace.asRelativePath(uri, false);
         return {
             student: this.student,
+            studentSource: this.studentSource || undefined,
+            repo: this.repo || undefined,
             workspace: folder?.name,
             path: uri.fsPath,
             relativePath,

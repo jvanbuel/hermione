@@ -44,6 +44,8 @@ pub struct FileEventIn {
     pub relative_path: Option<String>,
     pub language: Option<String>,
     pub exercise: Option<String>,
+    pub student_source: Option<String>,
+    pub repo: Option<String>,
     pub kind: String,
     pub at_unix_ms: i64,
 }
@@ -69,6 +71,8 @@ pub async fn ingest(
             relative_path: Set(e.relative_path),
             language: Set(e.language),
             exercise: Set(e.exercise),
+            student_source: Set(e.student_source),
+            repo: Set(e.repo),
             kind: Set(e.kind),
             at: Set(unix_ms_to_dt(e.at_unix_ms)),
             created_at: Set(Utc::now().into()),
@@ -278,6 +282,9 @@ struct OverviewStudent {
     /// Latest terminal session for this student, if any.
     terminal_session_id: Option<String>,
     terminal_status: Option<String>,
+    /// How the identity was derived, and the repo it came from (provenance).
+    student_source: Option<String>,
+    repo: Option<String>,
     /// Struggle assessment: "ok", "watch", or "help".
     struggle: String,
     /// Human-readable reasons behind the struggle level.
@@ -508,6 +515,8 @@ pub async fn overview(
             started_exercise_unix_ms: started_exercise,
             terminal_session_id: terminal.map(|t| t.0.clone()),
             terminal_status: terminal.map(|t| t.1.clone()),
+            student_source: last.student_source.clone(),
+            repo: last.repo.clone(),
             struggle,
             struggle_reasons,
             errors: sig.errors,

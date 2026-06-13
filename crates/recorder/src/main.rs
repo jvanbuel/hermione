@@ -305,7 +305,9 @@ fn looks_like_password_prompt(bytes: &[u8]) -> bool {
 
 /// Resolves the student identity from the environment — no login required.
 /// Priority: explicit `--student`/`HERMIONE_STUDENT`, then `GITHUB_USER`
-/// (Codespaces), then git `user.email`, then the OS username.
+/// (Codespaces), then git `user.email`. We deliberately do *not* fall back to
+/// the OS username, which collides in shared devcontainers — an unresolved
+/// identity surfaces as "unknown" instead of silently merging students.
 fn resolve_student(explicit: Option<&str>) -> String {
     let non_empty = |s: String| (!s.trim().is_empty()).then_some(s);
     explicit
@@ -313,7 +315,6 @@ fn resolve_student(explicit: Option<&str>) -> String {
         .and_then(non_empty)
         .or_else(|| std::env::var("GITHUB_USER").ok().and_then(non_empty))
         .or_else(git_email)
-        .or_else(|| std::env::var("USER").ok().and_then(non_empty))
         .unwrap_or_else(|| "unknown".to_string())
 }
 

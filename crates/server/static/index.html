@@ -71,6 +71,7 @@
     .pill.help { background: #b62324; color: #fff; }
     .pill.watch { background: #9e6a03; color: #fff; }
     .who .reason { font-size: .72rem; color: #e3a008; margin-top: 2px; }
+    .who .prov { font-size: .68rem; color: #6e7681; margin-top: 1px; }
     #alert { font-size: .8rem; color: #f85149; font-weight: 600; }
 
     .avatar {
@@ -203,6 +204,7 @@
           <div class="who">
             <div class="name">${esc(s.student)}${pill}</div>
             <div class="file">${esc(s.file || '—')}</div>
+            ${(s.studentSource || s.repo) ? `<div class="prov" title="identity provenance">${esc(s.studentSource || '?')}${s.repo ? ` · ${esc(s.repo)}` : ''}</div>` : ''}
             ${reason}
             <div class="time">
               <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
