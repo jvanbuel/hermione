@@ -55,7 +55,8 @@
           body: JSON.stringify({ username, password }),
         });
         if (res.ok) { window.location.href = '/'; }
-        else { error.textContent = 'Incorrect password.'; }
+        else if (res.status === 401) { error.textContent = 'Incorrect username or password.'; }
+        else { error.textContent = 'Sign-in failed. Please try again.'; }
       } catch (_) { error.textContent = 'Could not reach the server.'; }
     });
   </script>
