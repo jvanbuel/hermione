@@ -155,7 +155,7 @@
     function avatarHtml(name, status, extraClass = '') {
       const hue = hashHue(name);
       return `<div class="avatar ${extraClass}" style="background:hsl(${hue},48%,45%)">
-        ${initials(name)}<span class="dot ${status}"></span></div>`;
+        ${esc(initials(name))}<span class="dot ${status}"></span></div>`;
     }
     function fmtDuration(secs) {
       if (secs < 60) return `${secs}s`;
@@ -176,6 +176,13 @@
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return bytes;
     }
+    // Escape untrusted strings (student names, file paths, exercises, course
+    // names) before putting them in HTML — they originate from students.
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
 
     // ---- board rendering ----
     function studentCard(s) {
@@ -185,14 +192,14 @@
       const pill = s.struggle === 'help' ? '<span class="pill help">needs help</span>'
                  : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '';
       const reason = (s.struggleReasons && s.struggleReasons.length)
-                   ? `<div class="reason">⚠ ${s.struggleReasons.join(' · ')}</div>` : '';
+                   ? `<div class="reason">⚠ ${esc(s.struggleReasons.join(' · '))}</div>` : '';
       return `
         <div class="card ${isOpen ? 'open' : ''} ${struggleClass}" data-student="${encodeURIComponent(s.student)}"
-             data-session="${s.terminalSessionId || ''}" data-exercise="${s.exercise || ''}">
+             data-session="${esc(s.terminalSessionId || '')}" data-exercise="${esc(s.exercise || '')}">
           ${avatarHtml(s.student, s.status)}
           <div class="who">
-            <div class="name">${s.student}${pill}</div>
-            <div class="file">${s.file || '—'}</div>
+            <div class="name">${esc(s.student)}${pill}</div>
+            <div class="file">${esc(s.file || '—')}</div>
             ${reason}
             <div class="time">
               <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
@@ -219,7 +226,7 @@
         courses = await res.json();
       } catch (_) { return; }
       const sel = document.getElementById('course');
-      sel.innerHTML = courses.map(c => `<option value="${c.slug}">${c.name}</option>`).join('');
+      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
       currentCourse = courses[0]?.slug || null;
       sel.addEventListener('change', () => {
         currentCourse = sel.value;
@@ -272,7 +279,7 @@
         board.innerHTML = '<div class="empty">No student activity yet.<br>Start the recorder and the VSCode extension.</div>';
         return;
       }
-      let html = data.exercises.map(g => column(`📘 ${g.exercise}`, g.students)).join('');
+      let html = data.exercises.map(g => column(`📘 ${esc(g.exercise)}`, g.students)).join('');
       if (data.noExercise.length) html += column('No exercise', data.noExercise, 'unassigned');
       board.innerHTML = html;
 
@@ -294,7 +301,7 @@
       pane.innerHTML = `
         <div class="pane-head">
           ${avatarHtml(student, 'active')}
-          <span><b>${student}</b> ${exercise ? `<span class="ex">· ${exercise}</span>` : ''}</span>
+          <span><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
           <button class="close" title="Close">✕</button>
         </div>
         <div class="term"></div>`;
@@ -306,7 +313,7 @@
       let term = null, fit = null, es = null;
 
       if (!sessionId) {
-        body.innerHTML = `<div class="note">No terminal session recorded for <b>${student}</b> yet.</div>`;
+        body.innerHTML = `<div class="note">No terminal session recorded for <b>${esc(student)}</b> yet.</div>`;
       } else {
         term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 12,
           scrollback: 10000, theme: TERM_THEME, convertEol: false });

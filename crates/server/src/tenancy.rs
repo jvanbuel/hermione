@@ -39,7 +39,11 @@ pub async fn create_admin(
     username: &str,
     password: &str,
 ) -> Result<admins::Model, String> {
-    let hash = hash_password(password)?;
+    // Argon2 is intentionally CPU-heavy; keep it off the async worker threads.
+    let owned = password.to_string();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&owned))
+        .await
+        .map_err(|e| e.to_string())??;
     let model = admins::ActiveModel {
         id: Set(Uuid::new_v4()),
         username: Set(username.to_string()),
@@ -59,7 +63,11 @@ pub async fn verify_login(db: &DatabaseConnection, username: &str, password: &st
         .one(db)
         .await
         .ok()??;
-    verify_password(password, &admin.password_hash).then_some(admin.id)
+    let (owned, stored) = (password.to_string(), admin.password_hash.clone());
+    let ok = tokio::task::spawn_blocking(move || verify_password(&owned, &stored))
+        .await
+        .unwrap_or(false);
+    ok.then_some(admin.id)
 }
 
 pub async fn count_admins(db: &DatabaseConnection) -> u64 {

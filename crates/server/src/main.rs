@@ -10,6 +10,9 @@ mod state;
 mod tenancy;
 mod text;
 
+#[cfg(test)]
+mod it_tenancy;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
