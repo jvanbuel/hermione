@@ -4,32 +4,31 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hermione — Sign in</title>
+  <link rel="stylesheet" href="/tokens.css" />
   <style>
-    :root { color-scheme: dark; }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
     body {
-      display: grid; place-items: center; background: #0d1117; color: #e6edf3;
+      display: grid; place-items: center; background: var(--bg); color: var(--fg);
       font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--fs-base);
     }
     .card {
-      width: 320px; background: #161b22; border: 1px solid #21262d; border-radius: 12px;
-      padding: 28px; text-align: center;
+      width: 320px; background: var(--surface); border: 1px solid var(--border-subtle);
+      border-radius: 12px; padding: 28px; text-align: center;
     }
-    .glyph { color: #a371f7; }
+    .glyph { color: var(--brand); }
     .glyph svg { width: 40px; height: 40px; }
-    h1 { font-size: 1.2rem; margin: 8px 0 4px; }
-    p { color: #7d8590; font-size: .85rem; margin: 0 0 20px; }
+    h1 { font-size: var(--fs-xl); margin: 8px 0 4px; }
+    p { color: var(--fg-muted); font-size: var(--fs-sm); margin: 0 0 20px; }
     input {
-      width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #30363d;
-      background: #0d1117; color: #e6edf3; font-size: .95rem; margin-bottom: 12px;
+      width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--fg); font-size: var(--fs-base); margin-bottom: 12px;
     }
     button {
       width: 100%; padding: 10px; border: none; border-radius: 8px; cursor: pointer;
-      background: #238636; color: #fff; font-size: .95rem; font-weight: 600;
+      background: var(--green); color: #fff; font-size: var(--fs-base); font-weight: 600;
     }
-    button:hover { background: #2ea043; }
-    .error { color: #f85149; font-size: .82rem; min-height: 1.1em; margin-top: 10px; }
+    button:hover { background: var(--green-emphasis); }
+    .error { color: var(--red); font-size: var(--fs-sm); min-height: 1.1em; margin-top: 10px; }
   </style>
 </head>
 <body>

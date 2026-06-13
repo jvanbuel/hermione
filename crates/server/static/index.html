@@ -4,39 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hermione — Class Overview</title>
+  <link rel="stylesheet" href="/tokens.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
   <style>
-    :root {
-      color-scheme: dark;
-      /* surfaces */
-      --bg: #0d1117;
-      --surface: #161b22;
-      --surface-2: #1f242c;
-      --border: #30363d;
-      --border-subtle: #21262d;
-      /* text — all chosen to clear 4.5:1 on the surfaces they sit on */
-      --fg: #e6edf3;
-      --fg-muted: #9da7b3;
-      --fg-subtle: #8b949e;
-      /* semantic */
-      --accent: #1f6feb;
-      --brand: #a371f7;
-      --green: #2ea043;
-      --red: #f85149;
-      --amber: #d8a634;
-      --help-bg: #b62324;
-      --watch-bg: #9e6a03;
-      /* a real type scale — five steps, not thirteen */
-      --fs-xs: 11px;
-      --fs-sm: 12px;
-      --fs-base: 14px;
-      --fs-lg: 16px;
-      --fs-xl: 20px;
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
     body {
       display: flex; flex-direction: column;
       font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
@@ -44,10 +16,6 @@
       font-variant-numeric: tabular-nums;
       background: var(--bg); color: var(--fg);
     }
-
-    /* Keyboard focus is always visible; mouse focus stays quiet. */
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    :focus:not(:focus-visible) { outline: none; }
 
     .ico { width: 1em; height: 1em; vertical-align: -0.125em; flex: none; }
     .visually-hidden {
@@ -210,10 +178,6 @@
     .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
     .btn.primary:hover { background: #3fb950; }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
-
-    @media (prefers-reduced-motion: reduce) {
-      * { transition: none !important; animation: none !important; }
-    }
   </style>
 </head>
 <body>
