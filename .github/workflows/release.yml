@@ -1,0 +1,65 @@
+name: Release
+
+# Tag a release (e.g. `git tag v0.1.0 && git push --tags`) to build and publish
+# the recorder binaries, the VSCode extension, and the server image.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  recorder:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset: hermione-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            asset: hermione-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: houseabsolute/actions-rust-cross@v1
+        with:
+          target: ${{ matrix.target }}
+          args: "--release -p hermione-recorder"
+      - name: Package
+        run: tar -C target/${{ matrix.target }}/release -czf ${{ matrix.asset }}.tar.gz hermione
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}.tar.gz
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+        working-directory: vscode-extension
+      - run: npm run package
+        working-directory: vscode-extension
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: vscode-extension/hermione-vscode.vsix
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest

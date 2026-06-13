@@ -1,0 +1,45 @@
+// Example devcontainer for a Hermione-observed course.
+//
+// A teacher commits this (and ../.hermione.json) to the course repository. When
+// a student opens it in a devcontainer, the Hermione extension reports their
+// file activity and every integrated terminal is transparently recorded — all
+// scoped to this course via HERMIONE_TOKEN (the course enrollment token).
+{
+  "name": "CS 101",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+
+  "containerEnv": {
+    // Where the course's Hermione backend lives.
+    "HERMIONE_BACKEND": "https://hermione.example.edu:50051",
+    // The course enrollment token (from POST /api/admin/courses). This is what
+    // makes the data land in *this* course; both the recorder and the extension
+    // read it.
+    "HERMIONE_TOKEN": "REPLACE_WITH_COURSE_ENROLLMENT_TOKEN",
+    // HTTP base URL for student sign-in. Set this (and configure OIDC providers
+    // on the server) to require *verified* identity: the recorder uses the
+    // Codespaces GitHub token or the device flow, the extension uses VSCode's
+    // GitHub sign-in. Omit it to fall back to env-derived attribution (the
+    // `identity` field in ../.hermione.json then selects the source).
+    "HERMIONE_AUTH_URL": "https://hermione.example.edu"
+  },
+
+  // Install the `hermione` recorder binary into the container.
+  "postCreateCommand": "curl -fsSL https://raw.githubusercontent.com/jvanbuel/hermione/main/scripts/install-recorder.sh | sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // The Hermione editor-activity extension (publish it, or reference a vsix).
+        "hermione.hermione-vscode"
+      ],
+      "settings": {
+        // Make every integrated terminal a recorded one by using the recorder
+        // as the shell. `hermione` with no command spawns the student's shell.
+        "terminal.integrated.defaultProfile.linux": "hermione",
+        "terminal.integrated.profiles.linux": {
+          "hermione": { "path": "hermione" }
+        }
+      }
+    }
+  }
+}

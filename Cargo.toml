@@ -1,14 +1,77 @@
-[package]
-name = "hermione"
+[workspace]
+resolver = "2"
+members = [
+    "crates/proto",
+    "crates/entity",
+    "crates/migration",
+    "crates/recorder",
+    "crates/server",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["Hermione contributors"]
+repository = "https://github.com/jvanbuel/hermione"
 
-[dependencies]
-tokio = { version = "1.0", features = ["full"] }
-tokio-tungstenite = "0.21"
-futures-util = "0.3"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4"] }
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-stream = "0.3"
+
+# gRPC / protobuf (pinned to the stable 0.12 / prost 0.13 line)
+tonic = "0.12"
+tonic-build = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+protoc-bin-vendored = "3"
+
+# Web / HTTP
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Persistence.
+# default-features = false avoids pulling in sqlx's `time` type support, which
+# currently conflicts with sqlx-core under recent toolchains (E0119 in json.rs).
+sea-orm = { version = "1.1", default-features = false, features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-uuid",
+    "with-chrono",
+] }
+sea-orm-migration = { version = "1.1", default-features = false, features = [
+    "cli",
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "with-uuid",
+    "with-chrono",
+] }
+
+# Terminal / PTY
+portable-pty = "0.9"
+crossterm = "0.29"
+
+# Utilities
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+strip-ansi-escapes = "0.2"
+argon2 = "0.5"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Local crates
+hermione-proto = { path = "crates/proto" }
+hermione-entity = { path = "crates/entity" }
+hermione-migration = { path = "crates/migration" }

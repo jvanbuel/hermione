@@ -1,194 +1,321 @@
-# 🔮 Hermione - Real-time File Monitor
+# 🔮 Hermione
 
-A WebSocket-based system that allows VSCode extensions to share active file information with web applications in real-time.
+**An observability platform for teachers.**
+
+Hermione lets an instructor watch students' terminal sessions live — to give
+feedback the moment someone gets stuck — and stores every session for offline
+analysis of where students spend their time and where they struggle.
+
+The terminal recorder is **transparent**: like the classic `script` command, it
+spawns the student's normal shell inside a pseudo-terminal and faithfully
+forwards I/O in both directions, while teeing every byte to the backend.
+
+---
 
 ## Architecture
 
-- **WebSocket Server** (Rust + tokio-tungstenite): Central server managing sessions and message routing
-- **VSCode Extension** (TypeScript): Monitors active files and sends updates to the server
-- **Svelte Web App** (JavaScript + Svelte): Displays active file information from all connected VSCode sessions
-
-## Components
-
-### 1. WebSocket Server (`src/main.rs`)
-
-A Rust-based WebSocket server that:
-- Manages client connections and sessions
-- Routes messages between VSCode extensions and web clients
-- Handles session creation and file update broadcasting
-- Runs on `ws://localhost:8080`
-
-**Message Types:**
-- `register`: Client registration (vscode/webapp)
-- `file_update`: File change notifications from VSCode
-- `session_created`: New session confirmation
-- `file_updated`: Broadcast to web clients
-- `error`: Error messages
-
-### 2. VSCode Extension (`vscode-extension/`)
-
-A TypeScript extension that:
-- Connects to the WebSocket server on startup
-- Monitors active editor changes
-- Sends file path and content updates
-- Provides connect/disconnect commands
-- Shows connection status in the status bar
-
-**Features:**
-- Auto-reconnection on disconnect
-- Configurable server URL
-- Optional file content sharing
-- Debounced updates to prevent spam
-
-### 3. Svelte Web App (`webapp/`)
-
-A Svelte application that:
-- Connects to the WebSocket server
-- Displays active sessions and files
-- Shows file content with syntax highlighting
-- Auto-reconnects on connection loss
-- Responsive design with dark theme
-
-**Features:**
-- Real-time session monitoring
-- File type icons and language detection
-- Clean, modern UI
-- Connection status indicator
-
-## Quick Start
-
-### 1. Start the WebSocket Server
-
-```bash
-cargo run
+```
+   ┌────────────────────┐        gRPC (stream)        ┌──────────────────────────┐
+   │  hermione (recorder)│ ──────────────────────────▶ │     hermione-server      │
+   │  transparent PTY,   │   IngestEvent: start /      │  ┌────────────────────┐  │
+   │  script-like        │   chunk / resize / end      │  │ Ingest  gRPC svc   │  │
+   └────────────────────┘                              │  │ Viewer  gRPC svc   │  │
+            ▲  student's real terminal                 │  └─────────┬──────────┘  │
+            │                                          │       persist │ fan-out  │
+            ▼                                          │         ┌─────▼───────┐   │
+   student types / sees output                        │         │  Postgres   │   │
+                                                       │         │ (SeaORM)    │   │
+   ┌────────────────────┐         SSE (live)          │         └─────────────┘   │
+   │  teacher's browser  │ ◀─────────────────────────  │   Axum HTTP + web viewer  │
+   │  xterm.js viewer    │    base64 terminal chunks   │                           │
+   └────────────────────┘                              └──────────────────────────┘
 ```
 
-The server will start on `ws://localhost:8080`.
+A Rust workspace with five crates:
 
-### 2. Set up the Svelte Web App
+| Crate                 | What it is                                                               |
+|-----------------------|--------------------------------------------------------------------------|
+| `crates/proto`        | The gRPC/protobuf contract (`proto/hermione.proto`), compiled with tonic |
+| `crates/recorder`     | The `hermione` CLI — a transparent, `script`-like terminal recorder      |
+| `crates/server`       | `hermione-server` — tonic gRPC ingest/viewer + Axum HTTP/SSE web viewer  |
+| `crates/entity`       | SeaORM entities for the Postgres schema                                  |
+| `crates/migration`    | SeaORM migrations (runs automatically on server start)                   |
+| `vscode-extension`    | VSCode extension reporting the student's active file + exercise          |
+
+### Key design decisions
+
+- **Transport: gRPC bidirectional streaming (tonic).** The recorder client-streams
+  a sequence of `IngestEvent`s (`SessionStart`, `TerminalChunk`, `Resize`,
+  `SessionEnd`) to the backend. A typed contract with built-in backpressure.
+- **Storage: everything in Postgres (SeaORM).** Sessions live in `sessions`;
+  raw terminal activity is append-only in `terminal_events`. Each event keeps
+  **both** forms of the bytes: the verbatim raw bytes (ANSI escapes and all,
+  which may not be valid UTF-8) base64-encoded in `data` for faithful replay,
+  and an ANSI-stripped, lossy-UTF8 plain-text version in `text` that is
+  readable and searchable for offline analysis.
+- **Bounded cost as data grows.** Terminal chunks are buffered and written in
+  batched multi-row INSERTs (flushed by size or a short timer) rather than one
+  INSERT per read. Live queries (overview, activity) only scan a recent time
+  window, backed by an index; session history is replayed in pages so long
+  sessions never load entirely into memory.
+- **Editor activity: HTTP/JSON, not gRPC.** The VSCode extension is a Node
+  process, so it reports file-focus and heartbeat events as plain JSON to the
+  Axum server (`POST /api/file-events`). Far less machinery than gRPC in a
+  TypeScript extension, and it still lands in the same Postgres.
+- **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
+  Axum server exposes an SSE endpoint that replays history then tails live. The
+  bundled viewer renders it with [xterm.js]. Native/programmatic observers can
+  use the gRPC `Viewer` service instead.
+
+---
+
+## Quick start
+
+### 1. Start Postgres
 
 ```bash
-cd webapp
-npm install
-npm run dev
+docker compose up -d
 ```
 
-The web app will be available at `http://localhost:5173`.
-
-### 3. Install the VSCode Extension
+### 2. Run the backend
 
 ```bash
-cd vscode-extension
-npm install
-npm run compile
+cargo run -p hermione-server
+# gRPC on 0.0.0.0:50051, HTTP/web viewer on http://localhost:8080
 ```
 
-Then install the extension in VSCode:
-- Open the Command Palette (`Ctrl+Shift+P`)
-- Run "Extensions: Install from VSIX..."
-- Select the compiled extension
+Migrations run automatically on startup. Configuration is via flags or env vars:
 
-Or for development:
-- Open the `vscode-extension` folder in VSCode
-- Press `F5` to launch a new Extension Development Host window
+| Flag              | Env var                  | Default                                               |
+|-------------------|--------------------------|-------------------------------------------------------|
+| `--database-url`  | `HERMIONE_DATABASE_URL`  | `postgres://hermione:hermione@localhost:5432/hermione`|
+| `--grpc-addr`     | `HERMIONE_GRPC_ADDR`     | `0.0.0.0:50051`                                       |
+| `--http-addr`     | `HERMIONE_HTTP_ADDR`     | `0.0.0.0:8080`                                        |
+| `--admin-token`   | `HERMIONE_ADMIN_TOKEN`   | none — set it to enable the provisioning API          |
 
-## Configuration
+### 3. Record a session (on the student's machine)
 
-### VSCode Extension Settings
+```bash
+cargo run -p hermione-recorder
+# or the built binary, named `hermione`:
+./target/debug/hermione --student alice
+```
 
-- `hermione.serverUrl`: WebSocket server URL (default: `ws://localhost:8080`)
-- `hermione.autoConnect`: Auto-connect on startup (default: `true`)
-- `hermione.sendFileContent`: Include file content in updates (default: `true`)
+This drops you into your normal shell. Everything you do is recorded and
+streamed. Type `exit` (or Ctrl-D) to end the session. To record a specific
+command instead of a shell:
 
-### Commands
+```bash
+hermione --student alice -- python3 exercise.py
+```
 
-- `Hermione: Connect to Hermione Service`: Manual connection
-- `Hermione: Disconnect from Hermione Service`: Disconnect from service
+Recorder options:
+
+| Flag              | Env var              | Default                     |
+|-------------------|----------------------|-----------------------------|
+| `--backend`       | `HERMIONE_BACKEND`   | `http://127.0.0.1:50051`    |
+| `--student`       | `HERMIONE_STUDENT`   | `$USER`                     |
+| `--token`         | `HERMIONE_TOKEN`     | none — the course enrollment token (required unless in open dev mode) |
+| `--auth-url`      | `HERMIONE_AUTH_URL`  | none — HTTP base URL for student sign-in; set to use verified identity |
+| `--auth-provider` | `HERMIONE_AUTH_PROVIDER` | `github` — which configured IdP to sign in with |
+| `--capture-input` | —                    | off — keystrokes are not recorded (see Security & privacy) |
+| `--offline`       | —                    | off (record locally only)   |
+
+### 4. Watch live
+
+Open **http://localhost:8080**. The board groups students by the exercise
+they're on, with time-on-task; click an avatar to open their terminal (multiple
+tile side by side). Students who look stuck — errors or failed runs in their
+terminal, or a long time on one exercise — are flagged **needs help** and sorted
+to the top, with a count in the header.
+
+### 5. (Optional) Report editor activity
+
+Install the VSCode extension (`vscode-extension/`) on the student's machine to
+report their active file and exercise. See
+[`vscode-extension/README.md`](vscode-extension/README.md) for setup and the
+`.hermione.json` exercise-mapping format.
+
+```bash
+cd vscode-extension && npm install && npm run compile
+# then press F5 in VSCode to launch an Extension Development Host
+```
+
+---
+
+## API reference
+
+### gRPC (`proto/hermione.proto`)
+
+- `Ingest.StreamSession(stream IngestEvent) → IngestSummary` — recorders push here.
+- `Viewer.ListSessions(...) → ListSessionsResponse` — list all sessions.
+- `Viewer.WatchSession(WatchRequest) → stream TerminalChunk` — replay + live tail.
+
+### HTTP
+
+- `GET /` — the bundled xterm.js web viewer.
+- `GET /api/sessions` — JSON list of sessions.
+- `GET /api/sessions/{id}/stream?history=true` — SSE stream of terminal chunks
+  (`{ stream, offset_ms, data, text }`, where `data` is verbatim base64 bytes
+  and `text` is the ANSI-stripped plain text).
+- `GET /api/sessions/{id}/transcript?stream=stdout` — the ANSI-stripped plain
+  text transcript of a session as `text/plain` (`stream` = `stdout` (default),
+  `stdin`, or `all`).
+- `POST /api/file-events` — batch of editor file-activity events (used by the
+  VSCode extension).
+- `GET /api/students/activity` — the latest file activity per student (what each
+  student has open right now).
+- `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
+  file and per exercise for one student.
+- `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
+  a course's exercises (title + order). The dashboard shows all of them, even
+  ones nobody has started, with per-exercise stats.
+- `POST /api/messages` — teacher broadcasts a message to a course (persisted).
+- `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
+  token (`?token=`) or the session cookie (`?course=`); pass `?since=<id>` to
+  replay missed messages, omit it for live-only. Used by the extension (real-time
+  broadcasts) and the dashboard.
+- `GET /api/inbox?since=<id>` — HTTP fallback for the message inbox.
+
+The teacher routes require a session cookie (obtained via `POST /api/login`);
+agent routes require a course enrollment token. See below.
+
+---
+
+## Multi-tenancy (courses)
+
+Everything is scoped to a **course** (the tenant). Sessions and file activity
+belong to a course; admins are granted access per course; the dashboard only
+ever shows the selected course's data.
+
+- **Admin accounts + membership.** Named admin accounts log in at `/login`;
+  each may be granted access to one or more courses (the dashboard has a course
+  switcher). Passwords are Argon2-hashed.
+- **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
+  admins and grant membership.
+
+  ```bash
+  # returns the course's enrollment token
+  curl -X POST localhost:8080/api/admin/courses   -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"slug":"cs101","name":"CS 101"}'
+  curl -X POST localhost:8080/api/admin/admins    -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","password":"…"}'
+  curl -X POST localhost:8080/api/admin/memberships -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","courseSlug":"cs101"}'
+  ```
+- **Enrollment by token.** Each course has an enrollment token. The recorder
+  (`--token` / `HERMIONE_TOKEN`) and extension (`hermione.token`) present it;
+  the backend resolves which course the data belongs to. No global token.
+- **Devcontainer flow.** A teacher commits the course token + backend URL into a
+  devcontainer (see [`examples/course-template`](examples/course-template)); a
+  student just opens it and is connected, scoped to that course.
+- **Open dev mode.** Until the first admin exists, the dashboard is open and
+  scoped to a seeded `default` course, and untokened agents land there — so
+  local dev is frictionless. Creating an admin locks it down.
+
+## Verified student identity
+
+By default `student` is derived from the environment (attribution, not auth).
+Configure OIDC to make it **server-trusted** — students authenticate with an IdP
+and the backend issues a short-lived Hermione identity token that agents present
+with each ingest.
+
+```bash
+HERMIONE_IDENTITY_SECRET=$(openssl rand -hex 32) \
+HERMIONE_OIDC_PROVIDERS='[
+  {"name":"github","kind":"github","clientId":"<gh-oauth-app-client-id>"},
+  {"name":"google","kind":"oidc","issuer":"https://accounts.google.com","clientId":"<google-client-id>"}
+]' \
+cargo run -p hermione-server
+```
+
+- **GitHub** is verified via the GitHub API; **Google and any OIDC provider** via
+  discovery + JWKS. Add more by listing them (issuer + clientId).
+- Once configured, identity is **enforced**: ingest without a valid identity token
+  is rejected, and the verified student (e.g. `github:alice`) overrides any
+  self-asserted name.
+- **Agents:** the **extension** uses VSCode's GitHub sign-in (silent in
+  Codespaces) and exchanges it at `POST /api/auth/exchange`. The **recorder**
+  (`--auth-url`) uses the same exchange in Codespaces (the platform
+  `GITHUB_TOKEN`) or the OAuth **device flow** (`/api/auth/device/*`) otherwise,
+  caching the token between sessions.
+
+> Endpoints: `POST /api/auth/exchange`, `POST /api/auth/device/{start,poll}`.
+> The interactive browser/device logins require real IdP credentials and aren't
+> exercised by the test suite (the token issuance/verification + enforcement are).
+
+## Security & privacy
+
+Hermione records keystrokes and exposes live student terminals, so treat it as
+sensitive.
+
+- **Access control** is the multi-tenant model above: admin login for the
+  dashboard, per-course enrollment tokens for agents, `HERMIONE_ADMIN_TOKEN` for
+  provisioning.
+- **Keystrokes are not recorded by default.** The recorder streams terminal
+  output but not stdin, so passwords and other typed secrets are never stored.
+  `--capture-input` opts in to keystroke capture for richer analysis; even then,
+  input during no-echo password prompts is redacted.
+- **TLS:** terminate TLS at a reverse proxy in front of the HTTP and gRPC ports,
+  and add the `Secure` attribute to the session cookie there.
+
+---
+
+## Deployment
+
+The three components ship independently:
+
+- **Backend** — a container image (built by the `Dockerfile`; the web viewer is
+  embedded in the binary). Run the whole stack with `docker compose up` (Postgres
+  + server), or pull `ghcr.io/jvanbuel/hermione`. Migrations run on startup.
+- **Recorder** — a single static-ish binary. Install with:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/jvanbuel/hermione/main/scripts/install-recorder.sh | sh
+  ```
+
+  (downloads a prebuilt binary for the host, or builds from source with cargo).
+- **VSCode extension** — packaged as a `.vsix` (`cd vscode-extension && npm run
+  package`), installable via `code --install-extension` or published to a
+  marketplace.
+
+CI (`.github/workflows/ci.yml`) runs fmt/clippy/test and compiles the extension.
+Tagging `v*` triggers `release.yml`, which builds the recorder binaries (x86_64 +
+aarch64 Linux), packages the `.vsix`, and builds/pushes the server image — the
+artifacts the [`examples/course-template`](examples/course-template) devcontainer
+consumes.
+
+---
 
 ## Development
 
-### WebSocket Server
-
 ```bash
-# Run the server
-cargo run
-
-# Check for compilation errors
-cargo check
-
-# Run with debug logging
-RUST_LOG=debug cargo run
+cargo build              # build everything
+cargo clippy --workspace # lint
+cargo run -p hermione-server
 ```
 
-### Svelte Web App
+The protobuf compiler is needed to build `crates/proto`. A vendored `protoc` is
+used automatically if one isn't on `PATH`.
 
-```bash
-cd webapp
-npm run dev    # Development server
-npm run build  # Production build
-```
+---
 
-### VSCode Extension
+## Roadmap
 
-```bash
-cd vscode-extension
-npm run compile  # Compile TypeScript
-npm run watch    # Watch mode for development
-```
+Milestone 1 delivers the terminal pipeline end-to-end: transparent recorder →
+gRPC ingest → Postgres → live web view.
 
-## Protocol
+Milestone 2 (in progress) adds editor observability: the **VSCode extension**
+reports the student's active file and resolved exercise; the backend exposes
+live per-student activity and time-on-task analytics, surfaced in the viewer.
 
-### Client Registration
+Planned next:
 
-**VSCode Extension:**
-```json
-{
-  "type": "register",
-  "client_type": "vscode"
-}
-```
+- [x] Multi-tenancy: courses, admin accounts + membership, per-course enrollment.
+- [x] Struggle detection: flag students with errors/failed runs/time-stuck.
+- [x] First-class exercise model: defined exercises (title + order) with stats.
+- [x] Broadcast messages (teacher → students) over WebSocket.
+- [x] Student identity: env-derived attribution (default) or verified OIDC/GitHub
+      (GitHub, Google, any OIDC provider) — server-trusted, enforced when configured.
+- [x] Authentication: admin login + per-course enrollment tokens.
+- [ ] Two-way chat (student → teacher) on the existing WebSocket channel.
+- [ ] Richer offline analytics: replay timeline.
 
-**Web App:**
-```json
-{
-  "type": "register",
-  "client_type": "webapp"
-}
-```
-
-### File Updates
-
-**From VSCode:**
-```json
-{
-  "type": "file_update",
-  "session_id": "uuid",
-  "active_file": "/path/to/file.js",
-  "file_content": "optional file content..."
-}
-```
-
-**To Web App:**
-```json
-{
-  "type": "file_updated",
-  "session_id": "uuid",
-  "active_file": "/path/to/file.js",
-  "file_content": "optional file content..."
-}
-```
-
-## Security Notes
-
-- The server runs on localhost only
-- File content sharing is optional and configurable
-- No authentication is currently implemented (suitable for local development)
-
-## Future Enhancements
-
-- [ ] Authentication and authorization
-- [ ] Multiple workspace support
-- [ ] File diff visualization
-- [ ] Custom themes for web app
-- [ ] Plugin system for custom file processors
-- [ ] Remote server deployment options
+[xterm.js]: https://xtermjs.org/

@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package hermione.v1;
+
+// ---------------------------------------------------------------------------
+// Core terminal data model
+// ---------------------------------------------------------------------------
+
+// Which side of the terminal a chunk of bytes belongs to.
+enum StreamKind {
+  STREAM_KIND_UNSPECIFIED = 0;
+  STREAM_KIND_STDOUT = 1; // bytes the program wrote to the terminal
+  STREAM_KIND_STDIN = 2;  // bytes the student typed
+}
+
+// A raw, time-stamped slice of terminal activity. `data` is opaque and may
+// contain ANSI escape sequences and non-UTF-8 bytes, so it is transported
+// as raw bytes over gRPC.
+message TerminalChunk {
+  StreamKind stream = 1;
+  bytes data = 2;
+  int64 offset_ms = 3; // milliseconds since the session started
+}
+
+// First message of an ingest stream: identifies who/what is being recorded.
+message SessionStart {
+  string student = 1;
+  string command = 2; // command line being recorded, e.g. "/bin/bash"
+  uint32 cols = 3;
+  uint32 rows = 4;
+  string hostname = 5;
+}
+
+// Terminal window was resized.
+message Resize {
+  uint32 cols = 1;
+  uint32 rows = 2;
+}
+
+// Recorded process exited; final message of an ingest stream.
+message SessionEnd {
+  int32 exit_code = 1;
+}
+
+// Multiplexed message sent from a recorder to the backend.
+message IngestEvent {
+  oneof event {
+    SessionStart start = 1;
+    TerminalChunk chunk = 2;
+    Resize resize = 3;
+    SessionEnd end = 4;
+  }
+}
+
+// Returned once an ingest stream completes.
+message IngestSummary {
+  string session_id = 1;
+  uint64 chunks_received = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Viewer API (for native / programmatic observers; the web UI uses SSE)
+// ---------------------------------------------------------------------------
+
+message SessionInfo {
+  string session_id = 1;
+  string student = 2;
+  string command = 3;
+  string status = 4; // "active" | "ended"
+  int64 started_at_unix_ms = 5;
+  optional int64 ended_at_unix_ms = 6;
+  optional int32 exit_code = 7;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message WatchRequest {
+  string session_id = 1;
+  bool include_history = 2; // replay stored chunks before live tailing
+}
+
+// ---------------------------------------------------------------------------
+// Services
+// ---------------------------------------------------------------------------
+
+// Recorders push terminal activity to the backend.
+service Ingest {
+  rpc StreamSession(stream IngestEvent) returns (IngestSummary);
+}
+
+// Observers list and watch sessions.
+service Viewer {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc WatchSession(WatchRequest) returns (stream TerminalChunk);
+}

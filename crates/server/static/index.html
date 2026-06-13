@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermione — Class Overview</title>
+  <link rel="stylesheet" href="/vendor/xterm.css" />
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      background: #0d1117; color: #e6edf3;
+    }
+
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 18px; border-bottom: 1px solid #21262d; background: #161b22;
+      flex: 0 0 auto;
+    }
+    header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header select {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 4px 8px; font-size: .85rem;
+    }
+    header .hint { margin-left: auto; font-size: .78rem; color: #7d8590; }
+    header button {
+      background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 4px 10px; font-size: .8rem; cursor: pointer;
+    }
+    header button:hover { background: #30363d; }
+
+    #content { flex: 1 1 auto; display: flex; min-height: 0; }
+
+    /* ---- Overview board (main pane) ---- */
+    #board {
+      flex: 1 1 0; min-width: 0; overflow-x: auto;
+      display: flex; gap: 16px; padding: 16px; align-items: flex-start;
+    }
+    .column {
+      flex: 0 0 260px; background: #161b22; border: 1px solid #21262d;
+      border-radius: 10px; max-height: 100%; display: flex; flex-direction: column;
+    }
+    .column > h2 {
+      font-size: .82rem; margin: 0; padding: 12px 14px; border-bottom: 1px solid #21262d;
+      display: flex; align-items: center; gap: 8px; font-weight: 600;
+    }
+    .column.unassigned > h2 { color: #7d8590; }
+    .count { margin-left: auto; font-size: .72rem; color: #7d8590;
+      background: #21262d; padding: 1px 8px; border-radius: 10px; }
+    .summary { padding: 4px 14px 8px; font-size: .72rem; color: #7d8590;
+      border-bottom: 1px solid #21262d; }
+    .summary .warn { color: #f85149; }
+    .cards { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+
+    .card {
+      display: flex; align-items: center; gap: 10px; padding: 8px;
+      border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+      transition: background .1s, border-color .1s;
+    }
+    .card:hover { background: #1f242c; border-color: #30363d; }
+    .card.open { border-color: #1f6feb; }
+    .card.struggle-help { border-left: 3px solid #f85149; }
+    .card.struggle-watch { border-left: 3px solid #d29922; }
+    .pill { font-size: .62rem; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+      vertical-align: middle; font-weight: 600; }
+    .pill.help { background: #b62324; color: #fff; }
+    .pill.watch { background: #9e6a03; color: #fff; }
+    .who .reason { font-size: .72rem; color: #e3a008; margin-top: 2px; }
+    .who .prov { font-size: .68rem; color: #6e7681; margin-top: 1px; }
+    #alert { font-size: .8rem; color: #f85149; font-weight: 600; }
+
+    .avatar {
+      position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
+      display: grid; place-items: center; font-size: .8rem; font-weight: 700; color: #fff;
+      user-select: none;
+    }
+    .avatar .dot {
+      position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px;
+      border-radius: 50%; border: 2px solid #161b22;
+    }
+    .dot.active { background: #2ea043; }
+    .dot.idle { background: #6e7681; }
+
+    .who { min-width: 0; flex: 1; }
+    .who .name { font-weight: 600; font-size: .9rem; }
+    .who .file { color: #7d8590; font-size: .76rem; font-family: ui-monospace, monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .who .time { font-size: .76rem; margin-top: 2px; }
+    .time .clock { color: #d29922; font-variant-numeric: tabular-nums; }
+    .time .sep { color: #4d5560; margin: 0 5px; }
+
+    .empty { margin: auto; color: #6e7681; padding: 40px; text-align: center; }
+    #toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column;
+      gap: 8px; z-index: 1000; }
+    .toast { background: #1f6feb; color: #fff; padding: 10px 14px; border-radius: 8px;
+      font-size: .85rem; box-shadow: 0 4px 14px rgba(0,0,0,.45); max-width: 320px;
+      opacity: 0; transform: translateY(8px); transition: opacity .25s, transform .25s; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    /* ---- Terminal dock (extra panes) ---- */
+    #dock {
+      flex: 1.5 1 0; min-width: 0; border-left: 1px solid #21262d;
+      display: none; grid-auto-rows: 1fr; gap: 1px; background: #21262d;
+    }
+    #dock.active { display: grid; }
+    .pane { background: #0d1117; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .pane > .pane-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px; background: #161b22; border-bottom: 1px solid #21262d; font-size: .82rem;
+    }
+    .pane-head .ex { color: #7d8590; font-size: .74rem; }
+    .pane-head .badge { font-size: .68rem; padding: 1px 6px; border-radius: 8px; background: #30363d; }
+    .pane-head .badge.active { background: #1f6f3f; }
+    .pane-head .close {
+      margin-left: auto; cursor: pointer; color: #7d8590; border: none; background: none;
+      font-size: 1rem; line-height: 1; padding: 2px 6px; border-radius: 5px;
+    }
+    .pane-head .close:hover { background: #30363d; color: #e6edf3; }
+    .pane > .term { flex: 1 1 auto; min-height: 0; padding: 6px 8px; }
+    .pane .note { margin: auto; color: #6e7681; font-size: .85rem; padding: 24px; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <span style="font-size:1.1rem">🔮</span>
+    <h1>Hermione</h1>
+    <select id="course" title="Course"></select>
+    <span id="alert"></span>
+    <span class="hint">Click a student to open their terminal · panes tile side by side</span>
+    <button id="broadcast" title="Send a message to all students in this course">📣 Broadcast</button>
+    <button id="logout" title="Sign out">Sign out</button>
+  </header>
+  <div id="content">
+    <div id="board"><div class="empty">Loading…</div></div>
+    <div id="dock"></div>
+  </div>
+  <div id="toasts"></div>
+
+  <script>
+    const TERM_THEME = { background: '#0d1117', foreground: '#e6edf3', cursor: '#e6edf3' };
+    const openPanes = new Map(); // student -> { term, fit, es, el }
+
+    // ---- helpers ----
+    function hashHue(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+      return h;
+    }
+    function initials(name) {
+      const parts = name.split(/[\s._-]+/).filter(Boolean);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+      return name.slice(0, 2).toUpperCase();
+    }
+    function avatarHtml(name, status, extraClass = '') {
+      const hue = hashHue(name);
+      return `<div class="avatar ${extraClass}" style="background:hsl(${hue},48%,45%)">
+        ${esc(initials(name))}<span class="dot ${status}"></span></div>`;
+    }
+    function fmtDuration(secs) {
+      if (secs < 60) return `${secs}s`;
+      const m = Math.floor(secs / 60), s = secs % 60;
+      if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
+      const h = Math.floor(m / 60);
+      return `${h}h ${String(m % 60).padStart(2, '0')}m`;
+    }
+    function timeAgo(ms) {
+      const s = Math.round((Date.now() - ms) / 1000);
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.round(s / 60)}m ago`;
+      return `${Math.round(s / 3600)}h ago`;
+    }
+    function b64ToBytes(b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return bytes;
+    }
+    // Escape untrusted strings (student names, file paths, exercises, course
+    // names) before putting them in HTML — they originate from students.
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // ---- board rendering ----
+    function studentCard(s) {
+      const isOpen = openPanes.has(s.student);
+      const struggleClass = s.struggle === 'help' ? 'struggle-help'
+                          : s.struggle === 'watch' ? 'struggle-watch' : '';
+      const pill = s.struggle === 'help' ? '<span class="pill help">needs help</span>'
+                 : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '';
+      const reason = (s.struggleReasons && s.struggleReasons.length)
+                   ? `<div class="reason">⚠ ${esc(s.struggleReasons.join(' · '))}</div>` : '';
+      return `
+        <div class="card ${isOpen ? 'open' : ''} ${struggleClass}" data-student="${encodeURIComponent(s.student)}"
+             data-session="${esc(s.terminalSessionId || '')}" data-exercise="${esc(s.exercise || '')}">
+          ${avatarHtml(s.student, s.status)}
+          <div class="who">
+            <div class="name">${esc(s.student)}${pill}</div>
+            <div class="file">${esc(s.file || '—')}</div>
+            ${(s.studentSource || s.repo) ? `<div class="prov" title="identity provenance">${esc(s.studentSource || '?')}${s.repo ? ` · ${esc(s.repo)}` : ''}</div>` : ''}
+            ${reason}
+            <div class="time">
+              <span class="clock">⏱ ${fmtDuration(s.secondsOnExercise)}</span>
+              <span class="sep">·</span><span style="color:#7d8590">${timeAgo(s.lastSeenUnixMs)}</span>
+            </div>
+          </div>
+        </div>`;
+    }
+    function column(title, students, cls = '') {
+      return `
+        <div class="column ${cls}">
+          <h2>${title}<span class="count">${students.length}</span></h2>
+          <div class="cards">${students.map(studentCard).join('')}</div>
+        </div>`;
+    }
+    function exerciseColumn(g) {
+      const s = g.stats || { total: g.students.length, active: 0, needHelp: 0, medianSeconds: 0 };
+      const summary = s.total === 0
+        ? 'no activity yet'
+        : `${s.active} active${s.needHelp ? ` · <span class="warn">${s.needHelp} need help</span>` : ''} · med ${fmtDuration(s.medianSeconds)}`;
+      return `
+        <div class="column">
+          <h2>📘 ${esc(g.title || g.exercise)}<span class="count">${s.total}</span></h2>
+          <div class="summary">${summary}</div>
+          <div class="cards">${g.students.map(studentCard).join('')}</div>
+        </div>`;
+    }
+
+    let currentCourse = null;
+
+    async function loadCourses() {
+      let courses;
+      try {
+        const res = await fetch('/api/courses');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        courses = await res.json();
+      } catch (_) { return; }
+      const sel = document.getElementById('course');
+      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
+      currentCourse = courses[0]?.slug || null;
+      sel.addEventListener('change', () => {
+        currentCourse = sel.value;
+        [...openPanes.keys()].forEach(closeTerminal); // terminals belong to a course
+        connectMessages();
+        refresh();
+      });
+      connectMessages();
+    }
+
+    // ---- live messages (WebSocket) ----
+    let msgSocket = null;
+    function connectMessages() {
+      if (msgSocket) { try { msgSocket.close(); } catch (_) {} msgSocket = null; }
+      if (!currentCourse) return;
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws?course=${encodeURIComponent(currentCourse)}`);
+      msgSocket = ws;
+      ws.onmessage = (ev) => {
+        try { const m = JSON.parse(ev.data); if (m && m.body) toast(`📣 ${m.body}`); } catch (_) {}
+      };
+      ws.onclose = () => { if (msgSocket === ws) { msgSocket = null; setTimeout(connectMessages, 5000); } };
+    }
+    function toast(text) {
+      const c = document.getElementById('toasts');
+      const el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = text;
+      c.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 5000);
+    }
+
+    async function refresh() {
+      if (!currentCourse) return;
+      let data;
+      try {
+        const res = await fetch(`/api/overview?course=${encodeURIComponent(currentCourse)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        data = await res.json();
+      } catch (_) { return; }
+
+      const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
+      const needHelp = allStudents.filter(s => s.struggle === 'help').length;
+      document.getElementById('alert').textContent = needHelp ? `🔴 ${needHelp} need help` : '';
+
+      const board = document.getElementById('board');
+      // Show the board if there are exercises (even empty, defined ones) or activity.
+      if (data.exercises.length === 0 && data.noExercise.length === 0) {
+        board.innerHTML = '<div class="empty">No exercises defined and no activity yet.<br>Define exercises and start the recorder + VSCode extension.</div>';
+        return;
+      }
+      let html = data.exercises.map(exerciseColumn).join('');
+      if (data.noExercise.length) html += column('No exercise', data.noExercise, 'unassigned');
+      board.innerHTML = html;
+
+      board.querySelectorAll('.card').forEach(el => {
+        el.addEventListener('click', () => {
+          const student = decodeURIComponent(el.dataset.student);
+          openTerminal(student, el.dataset.session || null, el.dataset.exercise || null);
+        });
+      });
+    }
+
+    // ---- terminal panes ----
+    function openTerminal(student, sessionId, exercise) {
+      if (openPanes.has(student)) { flashPane(student); return; }
+
+      const dock = document.getElementById('dock');
+      const pane = document.createElement('div');
+      pane.className = 'pane';
+      pane.innerHTML = `
+        <div class="pane-head">
+          ${avatarHtml(student, 'active')}
+          <span><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
+          <button class="close" title="Close">✕</button>
+        </div>
+        <div class="term"></div>`;
+      dock.appendChild(pane);
+      dock.classList.add('active');
+      pane.querySelector('.close').addEventListener('click', () => closeTerminal(student));
+
+      const body = pane.querySelector('.term');
+      let term = null, fit = null, es = null;
+
+      if (!sessionId) {
+        body.innerHTML = `<div class="note">No terminal session recorded for <b>${esc(student)}</b> yet.</div>`;
+      } else {
+        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 12,
+          scrollback: 10000, theme: TERM_THEME, convertEol: false });
+        fit = new FitAddon.FitAddon();
+        term.loadAddon(fit);
+        term.open(body);
+        setTimeout(() => { try { fit.fit(); } catch (_) {} }, 0);
+
+        es = new EventSource(`/api/sessions/${sessionId}/stream?history=true`);
+        es.onmessage = (e) => {
+          const chunk = JSON.parse(e.data);
+          if (chunk.stream === 'stdout') term.write(b64ToBytes(chunk.data));
+        };
+      }
+
+      openPanes.set(student, { term, fit, es, el: pane });
+      relayout();
+      markOpenCards();
+    }
+
+    function closeTerminal(student) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      if (p.es) p.es.close();
+      if (p.term) p.term.dispose();
+      p.el.remove();
+      openPanes.delete(student);
+      if (openPanes.size === 0) document.getElementById('dock').classList.remove('active');
+      relayout();
+      markOpenCards();
+    }
+
+    function flashPane(student) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      p.el.style.outline = '2px solid #1f6feb';
+      setTimeout(() => { p.el.style.outline = ''; }, 600);
+    }
+
+    function markOpenCards() {
+      document.querySelectorAll('.card').forEach(el => {
+        el.classList.toggle('open', openPanes.has(decodeURIComponent(el.dataset.student)));
+      });
+    }
+
+    // Lay terminal panes out in a near-square grid and refit.
+    function relayout() {
+      const dock = document.getElementById('dock');
+      const n = openPanes.size;
+      const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+      dock.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+      setTimeout(() => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }), 30);
+    }
+
+    window.addEventListener('resize', () => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }));
+
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+
+    document.getElementById('broadcast').addEventListener('click', async () => {
+      if (!currentCourse) return;
+      const text = window.prompt('Message to all students in this course:');
+      if (!text || !text.trim()) return;
+      const btn = document.getElementById('broadcast');
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ course: currentCourse, text: text.trim() }),
+      });
+      btn.textContent = res.ok ? '✓ Sent' : '✕ Failed';
+      setTimeout(() => { btn.textContent = '📣 Broadcast'; }, 2000);
+    });
+
+    (async () => {
+      await loadCourses();
+      await refresh();
+      setInterval(refresh, 3000);
+    })();
+  </script>
+</body>
+</html>
