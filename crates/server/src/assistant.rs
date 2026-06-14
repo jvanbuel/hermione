@@ -10,23 +10,29 @@
 //! [`Assistant::enabled`] is false and every assistant route reports "disabled".
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use chrono::Utc;
+use futures::StreamExt;
 use hermione_entity::{assistant_conversations, assistant_messages, course_assistants, courses};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::auth::AuthCtx;
@@ -76,6 +82,8 @@ fn parse_json_list<T: for<'de> Deserialize<'de>>(s: &str) -> Vec<T> {
 #[derive(Clone)]
 pub struct Assistant {
     client: reqwest::Client,
+    /// A second client with no overall timeout, for the long-lived SSE stream.
+    stream_client: reqwest::Client,
     api_key: Option<String>,
     /// The shared cloud environment id, resolved lazily and cached.
     environment_id: Arc<RwLock<Option<String>>>,
@@ -87,8 +95,13 @@ impl Assistant {
             .timeout(Duration::from_secs(30))
             .build()
             .unwrap_or_default();
+        let stream_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
         Self {
             client,
+            stream_client,
             api_key,
             environment_id: Arc::new(RwLock::new(environment_id)),
         }
@@ -332,6 +345,138 @@ impl Assistant {
             .flatten()
             .filter_map(|e| e.get("id").and_then(|i| i.as_str()).map(String::from))
             .collect())
+    }
+
+    /// Opens the session's SSE event stream. Returns once response headers
+    /// arrive, so the caller can send the user message into an already-open
+    /// stream (the "stream-first" ordering Managed Agents requires).
+    async fn open_event_stream(&self, session_id: &str) -> Result<reqwest::Response, String> {
+        let key = self.key()?;
+        let resp = self
+            .stream_client
+            .get(format!("{API_BASE}/v1/sessions/{session_id}/events/stream"))
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", MANAGED_AGENTS_BETA)
+            .header("accept", "text/event-stream")
+            .send()
+            .await
+            .map_err(|e| format!("stream open failed: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("anthropic {status}: {body}"));
+        }
+        Ok(resp)
+    }
+
+    /// Runs one chat turn over the SSE stream, forwarding each agent message and
+    /// status to `tx` as it arrives, and returns the full accumulated reply.
+    ///
+    /// `Err` is reserved for failures *before* streaming begins (open/send), so
+    /// the caller can safely retry on a fresh session; a mid-stream drop or
+    /// timeout ends the turn with whatever text arrived so far.
+    async fn run_streaming_turn(
+        &self,
+        session_id: &str,
+        text: &str,
+        tx: &mpsc::Sender<TurnEvent>,
+    ) -> Result<String, String> {
+        let resp = self.open_event_stream(session_id).await?;
+        self.post(
+            &format!("/v1/sessions/{session_id}/events"),
+            json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
+        )
+        .await?;
+
+        let mut reply = String::new();
+        let mut buf = String::new();
+        let mut bytes = resp.bytes_stream();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(TURN_TIMEOUT_SECS);
+
+        'read: loop {
+            // Stream end, transport error, or overall timeout all end the turn
+            // with whatever we've gathered.
+            let chunk = match tokio::time::timeout_at(deadline, bytes.next()).await {
+                Ok(Some(Ok(c))) => c,
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break 'read,
+            };
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            // SSE frames are line-oriented; we dispatch on each `data:` JSON's
+            // `type` and ignore `event:`/keep-alive lines.
+            while let Some(i) = buf.find('\n') {
+                let line = buf[..i].trim_end().to_string();
+                buf.drain(..=i);
+                let Some(data) = line.strip_prefix("data:") else { continue };
+                let data = data.trim();
+                if data.is_empty() {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                    "agent.message" => {
+                        let mut msg = String::new();
+                        for b in v.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                                    msg.push_str(t);
+                                }
+                            }
+                        }
+                        if !msg.is_empty() {
+                            reply.push_str(&msg);
+                            if tx.send(TurnEvent::Message(msg)).await.is_err() {
+                                break 'read; // client disconnected
+                            }
+                        }
+                    }
+                    "agent.thinking" => {
+                        let _ = tx.send(TurnEvent::Status("thinking…".into())).await;
+                    }
+                    "agent.tool_use" => {
+                        let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("a tool");
+                        let _ = tx.send(TurnEvent::Status(format!("running {name}…"))).await;
+                    }
+                    "agent.mcp_tool_use" => {
+                        let _ = tx.send(TurnEvent::Status("using a connected tool…".into())).await;
+                    }
+                    "session.status_idle" => {
+                        let kind = v
+                            .get("stop_reason")
+                            .and_then(|s| s.get("type"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("end_turn");
+                        if kind != "requires_action" {
+                            break 'read;
+                        }
+                    }
+                    "session.status_terminated" => break 'read,
+                    _ => {}
+                }
+            }
+        }
+        Ok(reply)
+    }
+}
+
+/// An incremental update from a streaming turn, relayed to the client as SSE.
+enum TurnEvent {
+    /// A complete agent message (Managed Agents streams at message granularity).
+    Message(String),
+    /// A transient progress note ("thinking…", "running bash…").
+    Status(String),
+    Error(String),
+    Done,
+}
+
+impl TurnEvent {
+    fn into_event(self) -> Event {
+        match self {
+            TurnEvent::Message(t) => Event::default().event("message").data(json!({ "text": t }).to_string()),
+            TurnEvent::Status(t) => Event::default().event("status").data(json!({ "text": t }).to_string()),
+            TurnEvent::Error(t) => Event::default().event("error").data(json!({ "text": t }).to_string()),
+            TurnEvent::Done => Event::default().event("done").data("{}"),
+        }
     }
 }
 
@@ -595,16 +740,26 @@ struct ChatReply {
     reply: String,
 }
 
-/// POST /api/assistant/chat — one turn with the course assistant.
-pub async fn chat(
-    State(state): State<AppState>,
-    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
-    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
-    Json(body): Json<ChatRequest>,
-) -> Response {
+/// A validated, ready-to-run turn: the conversation, the synced agent, and the
+/// context-grounded prompt. The student's message is already persisted.
+struct PreparedTurn {
+    conversation: assistant_conversations::Model,
+    agent_id: String,
+    prompt: String,
+}
+
+/// Shared validation for both chat endpoints: checks the assistant is live,
+/// resolves the student and conversation, persists the question, and builds the
+/// context-grounded prompt.
+async fn prepare_turn(
+    state: &AppState,
+    course_id: Uuid,
+    verified: Option<String>,
+    body: ChatRequest,
+) -> Result<PreparedTurn, Response> {
     let message = body.message.trim().to_string();
     if message.is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty message").into_response();
+        return Err((StatusCode::BAD_REQUEST, "empty message").into_response());
     }
     // A verified identity (when enforced) wins over the self-asserted one.
     let student = verified
@@ -612,54 +767,125 @@ pub async fn chat(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let Some(student) = student else {
-        return (StatusCode::BAD_REQUEST, "missing student").into_response();
+        return Err((StatusCode::BAD_REQUEST, "missing student").into_response());
     };
 
-    let Some(assistant_row) = (match course_assistants::Entity::find_by_id(course_id)
-        .one(&state.db)
-        .await
-    {
+    let row = match course_assistants::Entity::find_by_id(course_id).one(&state.db).await {
         Ok(row) => row,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }) else {
-        return (StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response();
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
     };
-    if !assistant_row.enabled || assistant_row.agent_id.is_none() || !state.assistant.enabled() {
-        return (StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response();
+    let Some(row) = row else {
+        return Err((StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response());
+    };
+    if !row.enabled || row.agent_id.is_none() || !state.assistant.enabled() {
+        return Err((StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response());
     }
-    let agent_id = assistant_row.agent_id.unwrap();
+    let agent_id = row.agent_id.unwrap();
 
-    // Find or create this student's conversation.
-    let conversation = match find_or_create_conversation(&state, course_id, &student).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    };
+    let conversation = find_or_create_conversation(state, course_id, &student)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e).into_response())?;
 
-    // Persist the student's question.
-    if let Err(e) = insert_message(&state, conversation.id, "student", &message).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    if let Err(e) = insert_message(state, conversation.id, "student", &message).await {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, e).into_response());
     }
 
     // Ground the turn with light editor context, if provided.
     let prompt = match (&body.file, &body.language) {
-        (Some(f), Some(l)) if !f.is_empty() => {
-            format!("[Student is editing `{f}` ({l})]\n\n{message}")
-        }
+        (Some(f), Some(l)) if !f.is_empty() => format!("[Student is editing `{f}` ({l})]\n\n{message}"),
         (Some(f), _) if !f.is_empty() => format!("[Student is editing `{f}`]\n\n{message}"),
-        _ => message.clone(),
+        _ => message,
     };
 
-    // Ensure a session, then run the turn — re-opening once if it was lost.
-    let reply = match run_with_session(&state, &conversation, &agent_id, &prompt).await {
+    Ok(PreparedTurn { conversation, agent_id, prompt })
+}
+
+/// POST /api/assistant/chat — one turn with the course assistant (non-streaming).
+pub async fn chat(
+    State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
+    Json(body): Json<ChatRequest>,
+) -> Response {
+    let prepared = match prepare_turn(&state, course_id, verified, body).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let reply = match run_with_session(&state, &prepared.conversation, &prepared.agent_id, &prepared.prompt).await {
         Ok(r) => r,
         Err(e) => return (StatusCode::BAD_GATEWAY, format!("assistant error: {e}")).into_response(),
     };
 
-    if let Err(e) = insert_message(&state, conversation.id, "assistant", &reply).await {
+    if let Err(e) = insert_message(&state, prepared.conversation.id, "assistant", &reply).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
 
     Json(ChatReply { reply }).into_response()
+}
+
+/// POST /api/assistant/chat/stream — one turn, relayed to the client as SSE.
+/// Managed Agents streams at message granularity, so each `message` event is a
+/// complete agent message; `status` events surface progress between tool calls.
+pub async fn chat_stream(
+    State(state): State<AppState>,
+    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
+    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
+    Json(body): Json<ChatRequest>,
+) -> Response {
+    let prepared = match prepare_turn(&state, course_id, verified, body).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let (tx, rx) = mpsc::channel::<TurnEvent>(32);
+    let st = state.clone();
+    tokio::spawn(async move {
+        let assistant = st.assistant.clone();
+        let PreparedTurn { conversation, agent_id, prompt } = prepared;
+
+        // Ensure a session, streaming the turn — re-opening once if it's stale.
+        let session_id = match &conversation.session_id {
+            Some(s) => s.clone(),
+            None => match assistant.open_session(&agent_id).await {
+                Ok(s) => {
+                    let _ = set_session(&st, conversation.id, &s).await;
+                    s
+                }
+                Err(e) => {
+                    let _ = tx.send(TurnEvent::Error(format!("could not start a session: {e}"))).await;
+                    let _ = tx.send(TurnEvent::Done).await;
+                    return;
+                }
+            },
+        };
+
+        let mut reply = match assistant.run_streaming_turn(&session_id, &prompt, &tx).await {
+            Ok(r) => r,
+            // Open/send failed (e.g. session expired) — retry on a fresh one.
+            Err(_) => match assistant.open_session(&agent_id).await {
+                Ok(fresh) => {
+                    let _ = set_session(&st, conversation.id, &fresh).await;
+                    assistant.run_streaming_turn(&fresh, &prompt, &tx).await.unwrap_or_default()
+                }
+                Err(e) => {
+                    let _ = tx.send(TurnEvent::Error(format!("assistant unavailable: {e}"))).await;
+                    String::new()
+                }
+            },
+        };
+
+        reply = reply.trim().to_string();
+        if reply.is_empty() {
+            let _ = tx.send(TurnEvent::Error("The assistant didn't return a response.".into())).await;
+        } else {
+            let _ = insert_message(&st, conversation.id, "assistant", &reply).await;
+        }
+        let _ = tx.send(TurnEvent::Done).await;
+    });
+
+    let stream = ReceiverStream::new(rx).map(|ev| Ok::<Event, Infallible>(ev.into_event()));
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
 /// Runs a turn, transparently opening a session (or re-opening a stale one).

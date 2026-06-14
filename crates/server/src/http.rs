@@ -122,6 +122,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/inbox", get(crate::messages::inbox))
         .route("/api/assistant/status", get(crate::assistant::status))
         .route("/api/assistant/chat", post(crate::assistant::chat))
+        .route("/api/assistant/chat/stream", post(crate::assistant::chat_stream))
         .route("/api/assistant/history", get(crate::assistant::history))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

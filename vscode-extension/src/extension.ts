@@ -244,23 +244,94 @@ class Reporter {
         }
     }
 
-    /** Sends one question, grounded with the current file, and returns the reply. */
-    async assistantChat(message: string): Promise<string> {
-        await this.ensureIdentity(false);
+    private chatBody(message: string): string {
         const editor = vscode.window.activeTextEditor;
         const onFile = editor && editor.document.uri.scheme === 'file';
         const file = onFile ? vscode.workspace.asRelativePath(editor!.document.uri, false) : undefined;
         const language = onFile ? editor!.document.languageId : undefined;
+        return JSON.stringify({ message, student: this.student, file, language });
+    }
+
+    /** Sends one question, grounded with the current file, and returns the reply. */
+    async assistantChat(message: string): Promise<string> {
+        await this.ensureIdentity(false);
         const res = await fetch(`${this.serverUrl}/api/assistant/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-            body: JSON.stringify({ message, student: this.student, file, language }),
+            body: this.chatBody(message),
         });
         if (!res.ok) {
             throw new Error((await res.text()) || `HTTP ${res.status}`);
         }
         const data = (await res.json()) as { reply: string };
         return data.reply;
+    }
+
+    /**
+     * Streams one turn. Managed Agents streams at message granularity, so
+     * `onMessage` fires once per complete agent message; `onStatus` reports
+     * progress between tool calls. Resolves when the turn ends.
+     */
+    async assistantChatStream(
+        message: string,
+        on: { status: (t: string) => void; message: (t: string) => void; error: (t: string) => void },
+    ): Promise<void> {
+        await this.ensureIdentity(false);
+        let res: Awaited<ReturnType<typeof fetch>>;
+        try {
+            res = await fetch(`${this.serverUrl}/api/assistant/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                body: this.chatBody(message),
+            });
+        } catch (e) {
+            on.error(e instanceof Error ? e.message : 'Request failed');
+            return;
+        }
+        if (!res.ok || !res.body) {
+            on.error((await res.text().catch(() => '')) || `HTTP ${res.status}`);
+            return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let event = 'message';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            buf += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+                const line = buf.slice(0, nl).replace(/\r$/, '');
+                buf = buf.slice(nl + 1);
+                if (line === '') {
+                    event = 'message';
+                } else if (line.startsWith(':')) {
+                    // keep-alive comment
+                } else if (line.startsWith('event:')) {
+                    event = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    let payload: { text?: string } = {};
+                    try {
+                        payload = JSON.parse(line.slice(5).trim());
+                    } catch (_) {
+                        // ignore malformed frame
+                    }
+                    const text = payload.text || '';
+                    if (event === 'status') {
+                        on.status(text);
+                    } else if (event === 'error') {
+                        on.error(text);
+                    } else if (event === 'message') {
+                        on.message(text);
+                    }
+                    // 'done' ends the turn; the stream closes right after.
+                }
+            }
+        }
     }
 
     async setStudent(): Promise<void> {

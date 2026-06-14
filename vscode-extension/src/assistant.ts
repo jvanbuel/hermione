@@ -4,7 +4,10 @@ import * as vscode from 'vscode';
 export interface AssistantClient {
     assistantStatus(): Promise<boolean>;
     assistantHistory(): Promise<{ role: string; body: string }[]>;
-    assistantChat(message: string): Promise<string>;
+    assistantChatStream(
+        message: string,
+        on: { status: (t: string) => void; message: (t: string) => void; error: (t: string) => void },
+    ): Promise<void>;
 }
 
 let panel: vscode.WebviewPanel | undefined;
@@ -45,14 +48,14 @@ export function registerAssistant(context: vscode.ExtensionContext, client: Assi
                         if (!text) {
                             return;
                         }
-                        panel?.webview.postMessage({ type: 'thinking' });
-                        try {
-                            const reply = await client.assistantChat(text);
-                            panel?.webview.postMessage({ type: 'reply', body: reply });
-                        } catch (e) {
-                            const message = e instanceof Error ? e.message : 'Request failed';
-                            panel?.webview.postMessage({ type: 'error', body: message });
-                        }
+                        const post = (m: object) => panel?.webview.postMessage(m);
+                        post({ type: 'status', body: 'thinking…' });
+                        await client.assistantChatStream(text, {
+                            status: (t) => post({ type: 'status', body: t }),
+                            message: (t) => post({ type: 'message', body: t }),
+                            error: (t) => post({ type: 'error', body: t }),
+                        });
+                        post({ type: 'done' });
                     }
                 },
                 undefined,
@@ -112,7 +115,7 @@ function chatHtml(webview: vscode.Webview): string {
     const log = document.getElementById('log');
     const input = document.getElementById('input');
     const send = document.getElementById('send');
-    let thinkingEl = null;
+    let statusEl = null;
 
     function clearEmpty() {
       const e = log.querySelector('.empty');
@@ -123,22 +126,23 @@ function chatHtml(webview: vscode.Webview): string {
       const el = document.createElement('div');
       el.className = 'msg ' + role;
       el.textContent = body;
-      log.appendChild(el);
+      // Keep the transient status line pinned to the bottom.
+      log.insertBefore(el, statusEl);
       log.scrollTop = log.scrollHeight;
       return el;
     }
-    function setThinking(on) {
-      if (on) {
-        clearEmpty();
-        thinkingEl = document.createElement('div');
-        thinkingEl.className = 'thinking';
-        thinkingEl.textContent = 'Assistant is thinking…';
-        log.appendChild(thinkingEl);
-        log.scrollTop = log.scrollHeight;
-      } else if (thinkingEl) {
-        thinkingEl.remove();
-        thinkingEl = null;
+    function setStatus(text) {
+      clearEmpty();
+      if (!statusEl) {
+        statusEl = document.createElement('div');
+        statusEl.className = 'thinking';
+        log.appendChild(statusEl);
       }
+      statusEl.textContent = text || 'working…';
+      log.scrollTop = log.scrollHeight;
+    }
+    function clearStatus() {
+      if (statusEl) { statusEl.remove(); statusEl = null; }
     }
     function setBusy(busy) {
       send.disabled = busy;
@@ -148,7 +152,7 @@ function chatHtml(webview: vscode.Webview): string {
 
     function submit() {
       const text = input.value.trim();
-      if (!text) return;
+      if (!text || send.disabled) return;
       addMessage('student', text);
       input.value = '';
       setBusy(true);
@@ -163,12 +167,14 @@ function chatHtml(webview: vscode.Webview): string {
       const m = event.data;
       if (m.type === 'history') {
         for (const msg of m.messages || []) addMessage(msg.role === 'student' ? 'student' : 'assistant', msg.body);
-      } else if (m.type === 'thinking') {
-        setThinking(true);
-      } else if (m.type === 'reply') {
-        setThinking(false); addMessage('assistant', m.body); setBusy(false);
+      } else if (m.type === 'status') {
+        setStatus(m.body);
+      } else if (m.type === 'message') {
+        addMessage('assistant', m.body);
       } else if (m.type === 'error') {
-        setThinking(false); addMessage('error', m.body); setBusy(false);
+        addMessage('error', m.body);
+      } else if (m.type === 'done') {
+        clearStatus(); setBusy(false);
       }
     });
 
