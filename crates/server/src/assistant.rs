@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Extension, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -27,7 +27,8 @@ use chrono::Utc;
 use futures::StreamExt;
 use hermione_entity::{assistant_conversations, assistant_messages, course_assistants, courses};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+    ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -695,6 +696,149 @@ impl ActiveModelFrom {
             course_assistants::Entity::insert(active).exec(db).await.map(|_| ())
         };
         res.map_err(|e| e.to_string())
+    }
+}
+
+// --- teacher transcripts (read student↔assistant conversations) -------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationSummary {
+    id: String,
+    student: String,
+    message_count: u64,
+    last_activity_unix_ms: i64,
+    /// "student" or "assistant" — who spoke last.
+    last_role: Option<String>,
+    /// A short, single-line preview of the last message.
+    preview: Option<String>,
+}
+
+/// GET /api/assistant/conversations?course=… — one row per student who has
+/// chatted with the course assistant, newest activity first.
+pub async fn list_conversations(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let conversations = match assistant_conversations::Entity::find()
+        .filter(assistant_conversations::Column::CourseId.eq(course_id))
+        .order_by_desc(assistant_conversations::Column::UpdatedAt)
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Class-sized lists, so a count + last-message lookup per conversation is
+    // fine. The last message also fixes up `last_activity` for older rows whose
+    // `updated_at` only tracked the session, not the transcript.
+    let mut out = Vec::with_capacity(conversations.len());
+    for c in conversations {
+        let count = assistant_messages::Entity::find()
+            .filter(assistant_messages::Column::ConversationId.eq(c.id))
+            .count(&state.db)
+            .await
+            .unwrap_or(0);
+        let last = assistant_messages::Entity::find()
+            .filter(assistant_messages::Column::ConversationId.eq(c.id))
+            .order_by_desc(assistant_messages::Column::Id)
+            .one(&state.db)
+            .await
+            .ok()
+            .flatten();
+        let last_activity = last
+            .as_ref()
+            .map(|m| m.created_at.timestamp_millis())
+            .unwrap_or_else(|| c.updated_at.timestamp_millis());
+        out.push(ConversationSummary {
+            id: c.id.to_string(),
+            student: c.student,
+            message_count: count,
+            last_activity_unix_ms: last_activity,
+            last_role: last.as_ref().map(|m| m.role.clone()),
+            preview: last.map(|m| preview(&m.body)),
+        });
+    }
+    Json(out).into_response()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationDetail {
+    id: String,
+    student: String,
+    messages: Vec<HistoryMessage>,
+}
+
+/// GET /api/assistant/conversations/{id}/messages?course=… — the full
+/// transcript of one student's conversation, for the teacher view.
+pub async fn conversation_messages(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(id): Path<String>,
+    Query(q): Query<CourseQuery>,
+) -> Response {
+    let course_id = match resolve_course(&state, ctx, q.course).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return (StatusCode::BAD_REQUEST, "invalid conversation id").into_response();
+    };
+
+    let conversation = match assistant_conversations::Entity::find_by_id(id)
+        .one(&state.db)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    // Scope to the resolved course: a conversation from another course is not
+    // visible here even with a valid id.
+    let Some(conversation) = conversation.filter(|c| c.course_id == course_id) else {
+        return (StatusCode::NOT_FOUND, "no such conversation").into_response();
+    };
+
+    let messages = match assistant_messages::Entity::find()
+        .filter(assistant_messages::Column::ConversationId.eq(conversation.id))
+        .order_by_asc(assistant_messages::Column::Id)
+        .all(&state.db)
+        .await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|m| HistoryMessage {
+                role: m.role,
+                body: m.body,
+                created_at_unix_ms: m.created_at.timestamp_millis(),
+            })
+            .collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    Json(ConversationDetail {
+        id: conversation.id.to_string(),
+        student: conversation.student,
+        messages,
+    })
+    .into_response()
+}
+
+/// Collapses a message body to a short single-line preview.
+fn preview(body: &str) -> String {
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 120 {
+        let truncated: String = flat.chars().take(120).collect();
+        format!("{truncated}…")
+    } else {
+        flat
     }
 }
 

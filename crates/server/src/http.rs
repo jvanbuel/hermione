@@ -77,7 +77,16 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/", get(index))
         .route("/analytics", get(analytics_page))
+        .route("/transcripts", get(transcripts_page))
         .route("/api/courses", get(list_courses))
+        .route(
+            "/api/assistant/conversations",
+            get(crate::assistant::list_conversations),
+        )
+        .route(
+            "/api/assistant/conversations/{id}/messages",
+            get(crate::assistant::conversation_messages),
+        )
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
@@ -177,6 +186,10 @@ async fn index() -> Response {
 
 async fn analytics_page() -> Response {
     serve_asset("analytics.html")
+}
+
+async fn transcripts_page() -> Response {
+    serve_asset("transcripts.html")
 }
 
 async fn tokens_css() -> Response {

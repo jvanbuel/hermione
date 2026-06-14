@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermione — Transcripts</title>
+  <!-- Apply the saved theme before first paint so the page never flashes the
+       wrong colours. No saved choice → falls through to prefers-color-scheme. -->
+  <script>
+    try {
+      var t = localStorage.getItem('hermione.theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (_) {}
+  </script>
+  <link rel="stylesheet" href="/tokens.css" />
+  <style>
+    body {
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--fs-base); line-height: 1.4;
+      background: var(--bg); color: var(--fg);
+    }
+
+    .ico { width: 1em; height: 1em; vertical-align: -0.125em; flex: none; }
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+
+    /* ---- Header: mirrors the dashboard chrome ---- */
+    header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
+      flex: 0 0 auto;
+    }
+    header .logo-mark { width: 22px; height: 22px; color: var(--brand); flex: none; }
+    header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
+    header .crumb { color: var(--fg-subtle); font-size: var(--fs-lg); }
+    header select {
+      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px 8px; font-size: var(--fs-sm);
+    }
+    header .spacer { margin-left: auto; }
+    header a.nav, header button {
+      background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+    }
+    header a.nav:hover, header button:hover { background: var(--border); }
+    #theme-toggle { padding: 5px; }
+    #theme-toggle .ico { width: 16px; height: 16px; }
+
+    /* ---- Two-column layout: conversation list + transcript ---- */
+    .layout { flex: 1 1 auto; display: flex; min-height: 0; }
+
+    aside {
+      flex: 0 0 320px; border-right: 1px solid var(--border-subtle);
+      background: var(--surface); overflow-y: auto;
+    }
+    .list-empty { color: var(--fg-muted); padding: 32px 20px; text-align: center; font-size: var(--fs-sm); }
+
+    .conv {
+      display: flex; align-items: center; gap: 11px; width: 100%;
+      padding: 11px 16px; border: 0; border-bottom: 1px solid var(--border-subtle);
+      background: none; color: inherit; cursor: pointer; text-align: left;
+    }
+    .conv:hover { background: var(--surface-2); }
+    .conv.active { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+    .avatar {
+      flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%;
+      display: grid; place-items: center; font-size: var(--fs-sm); font-weight: 700;
+      color: #fff; user-select: none;
+    }
+    .conv .meta { min-width: 0; flex: 1 1 auto; }
+    .conv .top { display: flex; align-items: baseline; gap: 8px; }
+    .conv .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv .ago { margin-left: auto; color: var(--fg-subtle); font-size: var(--fs-xs); flex: none; }
+    .conv .preview {
+      color: var(--fg-muted); font-size: var(--fs-sm);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .conv .preview .who { color: var(--fg-subtle); }
+
+    /* ---- Transcript panel ---- */
+    main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+    .panel-head {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 12px;
+      padding: 14px 24px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
+    }
+    .panel-head .name { font-weight: 600; font-size: var(--fs-lg); }
+    .panel-head .sub { color: var(--fg-subtle); font-size: var(--fs-sm); }
+    .panel-head.hidden { display: none; }
+
+    .thread { flex: 1 1 auto; overflow-y: auto; padding: 22px 24px; }
+    .thread-wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+    .turn { display: flex; flex-direction: column; gap: 4px; max-width: 80%; }
+    .turn.student { align-self: flex-end; align-items: flex-end; }
+    .turn.assistant { align-self: flex-start; align-items: flex-start; }
+    .turn .role {
+      font-size: var(--fs-xs); color: var(--fg-subtle);
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .bubble {
+      padding: 9px 13px; border-radius: 12px; white-space: pre-wrap;
+      overflow-wrap: anywhere; font-size: var(--fs-sm); line-height: 1.5;
+    }
+    .turn.student .bubble {
+      background: var(--accent); color: #fff; border-bottom-right-radius: 4px;
+    }
+    .turn.assistant .bubble {
+      background: var(--surface-2); border: 1px solid var(--border-subtle);
+      border-bottom-left-radius: 4px;
+    }
+    .turn .when { font-size: var(--fs-xs); color: var(--fg-subtle); }
+
+    .empty { color: var(--fg-muted); padding: 80px 24px; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 17.5h8l1.8 3.5H6.2z" fill="currentColor" opacity="0.55"/><circle cx="12" cy="9.5" r="7.5" fill="currentColor" opacity="0.15"/><circle cx="12" cy="9.5" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.6 7.2a4.4 4.4 0 0 1 3.2-2.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <h1>Hermione</h1>
+    <span class="crumb">/ Transcripts</span>
+    <label class="visually-hidden" for="course">Course</label>
+    <select id="course" title="Course"></select>
+    <span class="spacer"></span>
+    <button id="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"></button>
+    <a class="nav" href="/" title="Back to the live board">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9.7 3.3 5 8l4.7 4.7 1-1L7 8l3.7-3.7z"/></svg>
+      Board
+    </a>
+    <button id="logout" type="button" title="Sign out">Sign out</button>
+  </header>
+
+  <div class="layout">
+    <aside id="list"><div class="list-empty">Loading…</div></aside>
+    <main>
+      <div class="panel-head hidden" id="panel-head">
+        <div class="avatar" id="head-avatar" aria-hidden="true"></div>
+        <div>
+          <div class="name" id="head-name"></div>
+          <div class="sub" id="head-sub"></div>
+        </div>
+      </div>
+      <div class="thread">
+        <div class="thread-wrap" id="thread">
+          <div class="empty">Select a student to read their conversation with the assistant.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const ICONS = {
+      sun: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3 3l1.3 1.3M11.7 11.7 13 13M13 3l-1.3 1.3M4.3 11.7 3 13"/></svg>',
+      moon: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.2 2.3a5.8 5.8 0 1 0 7.5 7.5A4.7 4.7 0 0 1 6.2 2.3z"/></svg>',
+    };
+
+    // ---- theme: OS default + manual override (shared with the dashboard) ----
+    const THEME_KEY = 'hermione.theme';
+    const lightMQ = window.matchMedia('(prefers-color-scheme: light)');
+    function effectiveTheme() {
+      const pinned = document.documentElement.dataset.theme;
+      if (pinned === 'light' || pinned === 'dark') return pinned;
+      return lightMQ.matches ? 'light' : 'dark';
+    }
+    function applyTheme() {
+      const t = effectiveTheme();
+      const btn = document.getElementById('theme-toggle');
+      btn.innerHTML = t === 'dark' ? ICONS.sun : ICONS.moon;
+      btn.title = t === 'dark' ? 'Switch to light theme' : 'Switch to chalkboard theme';
+    }
+    function setTheme(theme) {
+      document.documentElement.dataset.theme = theme;
+      try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+      applyTheme();
+    }
+    lightMQ.addEventListener('change', () => {
+      if (!document.documentElement.dataset.theme) applyTheme();
+    });
+
+    // ---- helpers (mirror the dashboard) ----
+    function hashHue(str) {
+      let h = 0;
+      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+      return h;
+    }
+    function initials(name) {
+      const parts = name.split(/[\s._:\-]+/).filter(Boolean);
+      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+      return name.slice(0, 2).toUpperCase();
+    }
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function fmtAgo(ms) {
+      const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      if (s < 60) return 'now';
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h`;
+      const d = Math.floor(h / 24);
+      if (d < 7) return `${d}d`;
+      return new Date(ms).toLocaleDateString();
+    }
+    function fmtWhen(ms) {
+      const d = new Date(ms);
+      return d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    }
+
+    // ---- state ----
+    let currentCourse = null;
+    let activeId = null;
+    let conversations = [];
+
+    function avatarHtml(name, cls) {
+      const hue = hashHue(name);
+      return `<div class="avatar ${cls || ''}" aria-hidden="true" style="background:hsl(${hue},26%,38%)">${esc(initials(name))}</div>`;
+    }
+
+    function renderList() {
+      const el = document.getElementById('list');
+      if (!conversations.length) {
+        el.innerHTML = '<div class="list-empty">No conversations yet.<br>Students chat with the assistant from the VSCode extension.</div>';
+        return;
+      }
+      el.innerHTML = conversations.map(c => {
+        const who = c.lastRole === 'student' ? 'Student: ' : (c.lastRole === 'assistant' ? 'Assistant: ' : '');
+        const preview = c.preview ? `<span class="who">${esc(who)}</span>${esc(c.preview)}` : '<span class="who">No messages</span>';
+        const n = c.messageCount;
+        return `<button class="conv${c.id === activeId ? ' active' : ''}" data-id="${esc(c.id)}" title="${esc(c.student)} · ${n} message${n === 1 ? '' : 's'}">
+          ${avatarHtml(c.student)}
+          <div class="meta">
+            <div class="top">
+              <span class="name">${esc(c.student)}</span>
+              <span class="ago">${fmtAgo(c.lastActivityUnixMs)}</span>
+            </div>
+            <div class="preview">${preview}</div>
+          </div>
+        </button>`;
+      }).join('');
+      for (const btn of el.querySelectorAll('.conv')) {
+        btn.addEventListener('click', () => openConversation(btn.dataset.id));
+      }
+    }
+
+    function renderTranscript(detail) {
+      const head = document.getElementById('panel-head');
+      const thread = document.getElementById('thread');
+      head.classList.remove('hidden');
+      const av = document.getElementById('head-avatar');
+      av.style.background = `hsl(${hashHue(detail.student)},26%,38%)`;
+      av.textContent = initials(detail.student);
+      document.getElementById('head-name').textContent = detail.student;
+      const n = detail.messages.length;
+      document.getElementById('head-sub').textContent = `${n} message${n === 1 ? '' : 's'}`;
+
+      if (!n) {
+        thread.innerHTML = '<div class="empty">This conversation has no messages.</div>';
+        return;
+      }
+      thread.innerHTML = detail.messages.map(m => {
+        const role = m.role === 'student' ? 'student' : 'assistant';
+        const label = role === 'student' ? esc(detail.student) : 'Assistant';
+        return `<div class="turn ${role}">
+          <div class="role">${label}</div>
+          <div class="bubble">${esc(m.body)}</div>
+          <div class="when">${fmtWhen(m.createdAtUnixMs)}</div>
+        </div>`;
+      }).join('');
+      thread.parentElement.scrollTop = 0;
+    }
+
+    async function openConversation(id) {
+      activeId = id;
+      renderList();
+      const thread = document.getElementById('thread');
+      thread.innerHTML = '<div class="empty">Loading…</div>';
+      try {
+        const res = await fetch(`/api/assistant/conversations/${encodeURIComponent(id)}/messages?course=${encodeURIComponent(currentCourse)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) throw new Error('http ' + res.status);
+        renderTranscript(await res.json());
+      } catch (_) {
+        thread.innerHTML = '<div class="empty">Failed to load this conversation.</div>';
+      }
+    }
+
+    function resetPanel() {
+      activeId = null;
+      document.getElementById('panel-head').classList.add('hidden');
+      document.getElementById('thread').innerHTML =
+        '<div class="empty">Select a student to read their conversation with the assistant.</div>';
+    }
+
+    async function loadConversations() {
+      const el = document.getElementById('list');
+      if (!currentCourse) { el.innerHTML = '<div class="list-empty">No course selected.</div>'; return; }
+      el.innerHTML = '<div class="list-empty">Loading…</div>';
+      try {
+        const res = await fetch(`/api/assistant/conversations?course=${encodeURIComponent(currentCourse)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) throw new Error('http ' + res.status);
+        conversations = await res.json();
+      } catch (_) {
+        el.innerHTML = '<div class="list-empty">Failed to load conversations.</div>';
+        return;
+      }
+      renderList();
+    }
+
+    async function loadCourses() {
+      let courses;
+      try {
+        const res = await fetch('/api/courses');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        courses = await res.json();
+      } catch (_) { return; }
+      const sel = document.getElementById('course');
+      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
+      currentCourse = courses[0]?.slug || null;
+      sel.addEventListener('change', () => {
+        currentCourse = sel.value;
+        resetPanel();
+        loadConversations();
+      });
+      await loadConversations();
+    }
+
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+    document.getElementById('theme-toggle').addEventListener('click', () =>
+      setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));
+
+    applyTheme();
+    loadCourses();
+  </script>
+</body>
+</html>
