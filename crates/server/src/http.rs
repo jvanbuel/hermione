@@ -76,7 +76,17 @@ pub fn router(state: AppState) -> Router {
     // data, all scoped to a course the caller may access.
     let protected = Router::new()
         .route("/", get(index))
+        .route("/analytics", get(analytics_page))
+        .route("/transcripts", get(transcripts_page))
         .route("/api/courses", get(list_courses))
+        .route(
+            "/api/assistant/conversations",
+            get(crate::assistant::list_conversations),
+        )
+        .route(
+            "/api/assistant/conversations/{id}/messages",
+            get(crate::assistant::conversation_messages),
+        )
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}/stream", get(stream_session))
         .route("/api/sessions/{id}/transcript", get(transcript))
@@ -92,6 +102,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/exercises",
             get(crate::exercises::list).post(crate::exercises::define),
+        )
+        .route(
+            "/api/assistant",
+            get(crate::assistant::get_config).put(crate::assistant::put_config),
         )
         .route("/api/messages", post(crate::messages::broadcast))
         .route_layer(middleware::from_fn_with_state(
@@ -115,6 +129,10 @@ pub fn router(state: AppState) -> Router {
     let ingest = Router::new()
         .route("/api/file-events", post(crate::files::ingest))
         .route("/api/inbox", get(crate::messages::inbox))
+        .route("/api/assistant/status", get(crate::assistant::status))
+        .route("/api/assistant/chat", post(crate::assistant::chat))
+        .route("/api/assistant/chat/stream", post(crate::assistant::chat_stream))
+        .route("/api/assistant/history", get(crate::assistant::history))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_ingest,
@@ -164,6 +182,14 @@ fn serve_asset(path: &str) -> Response {
 
 async fn index() -> Response {
     serve_asset("index.html")
+}
+
+async fn analytics_page() -> Response {
+    serve_asset("analytics.html")
+}
+
+async fn transcripts_page() -> Response {
+    serve_asset("transcripts.html")
 }
 
 async fn tokens_css() -> Response {

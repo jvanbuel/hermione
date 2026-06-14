@@ -57,6 +57,12 @@
       display: inline-flex; align-items: center; gap: 6px;
     }
     header button:hover { background: var(--border); }
+    header a.nav {
+      background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+    }
+    header a.nav:hover { background: var(--border); }
     /* Icon-only theme toggle: square, no text. */
     #theme-toggle { padding: 5px; }
     #theme-toggle .ico { width: 16px; height: 16px; }
@@ -189,6 +195,22 @@
     .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
     .btn.primary:hover { background: var(--green-emphasis); }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ---- Assistant settings form (modal) ---- */
+    .modal.wide { width: 540px; }
+    .modal .field { margin-top: 12px; }
+    .modal .field > label { display: block; font-size: var(--fs-sm); font-weight: 600; margin-bottom: 4px; }
+    .modal .field .desc { font-weight: 400; color: var(--fg-subtle); font-size: var(--fs-xs); }
+    .modal input[type="text"] {
+      width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font: inherit; font-size: var(--fs-base);
+    }
+    .modal textarea.mono { font-family: ui-monospace, monospace; min-height: 64px; }
+    .modal .toggle { display: flex; align-items: center; gap: 8px; font-size: var(--fs-base); cursor: pointer; }
+    .modal .toggle input { width: 16px; height: 16px; }
+    .modal .notice { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: var(--fs-sm);
+      background: var(--surface-2); color: var(--fg-muted); }
+    .modal .notice.warn { color: var(--amber); }
   </style>
 </head>
 <body>
@@ -202,6 +224,18 @@
     <span id="freshness" class="freshness">Connecting…</span>
     <span id="hint" class="hint">Click a student to open their terminal</span>
     <button id="theme-toggle" type="button" title="Toggle light / dark theme" aria-label="Toggle light or dark theme"></button>
+    <a class="nav" href="/analytics" title="Time-on-task analytics">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 13.5h12v1.3H1V2h1.3v11.5zM5 11V7h1.6v4H5zm3-6h1.6v6H8V5zm3 2.5h1.6V11H11V7.5z"/></svg>
+      Analytics
+    </a>
+    <a class="nav" href="/transcripts" title="Read student conversations with the assistant">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v1.3h8V5H4zm0 2.7V9h5V7.7H4z"/></svg>
+      Transcripts
+    </a>
+    <button id="assistant-settings" type="button" title="Configure the AI teaching assistant for this course">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6 1h4l.4 2.1 1.4.8 2-.8 2 3.4-1.6 1.4v1.6L15.2 11l-2 3.4-2-.8-1.4.8L10 16H6l-.4-2.6-1.4-.8-2 .8L.2 10l1.6-1.4V7L.2 5.6l2-3.4 2 .8 1.4-.8zM8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5z"/></svg>
+      Assistant
+    </button>
     <button id="broadcast" type="button" title="Send a message to all students in this course">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 2.2 4.6 5.5H2.3A1.3 1.3 0 0 0 1 6.8v2.4a1.3 1.3 0 0 0 1.3 1.3h.6l1 3.2h2l-.9-3.2 6.5 3V2.2zM13.8 6a2 2 0 0 1 0 4V6z"/></svg>
       Broadcast
@@ -707,11 +741,107 @@
       });
     }
 
+    // ---- AI assistant settings ----
+    // Skills/MCP are edited as plain lines and parsed to the API's shapes.
+    function parseSkills(text) {
+      return text.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+        const [kind, skillId, version] = line.split(':').map(p => p.trim());
+        const o = { type: kind || 'anthropic', skillId: skillId || '' };
+        if (version) o.version = version;
+        return o;
+      }).filter(s => s.skillId);
+    }
+    function skillsToText(skills) {
+      return (skills || []).map(s => [s.type, s.skillId, s.version].filter(Boolean).join(':')).join('\n');
+    }
+    function parseMcp(text) {
+      return text.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+        const i = line.indexOf(' ');
+        return i < 0 ? null : { name: line.slice(0, i).trim(), url: line.slice(i + 1).trim() };
+      }).filter(Boolean);
+    }
+    function mcpToText(servers) {
+      return (servers || []).map(s => `${s.name} ${s.url}`).join('\n');
+    }
+
+    async function openAssistantSettings() {
+      if (!currentCourse) return;
+      let cfg;
+      try {
+        const res = await fetch(`/api/assistant?course=${encodeURIComponent(currentCourse)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        cfg = await res.json();
+      } catch (_) { toast('Failed to load assistant settings'); return; }
+
+      const opener = document.activeElement;
+      const courseName = document.querySelector('#course option:checked')?.textContent || currentCourse;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="as-title">
+          <h2 id="as-title">AI assistant</h2>
+          <p class="sub">For ${esc(courseName)}</p>
+          ${cfg.available ? '' : '<div class="notice warn">No Anthropic API key is configured on the server, so the assistant cannot be enabled. Set HERMIONE_ANTHROPIC_API_KEY.</div>'}
+          <div class="field">
+            <label class="toggle"><input type="checkbox" id="as-enabled" ${cfg.enabled ? 'checked' : ''} ${cfg.available ? '' : 'disabled'} /> Enable the assistant for this course</label>
+          </div>
+          <div class="field">
+            <label for="as-model">Model</label>
+            <input type="text" id="as-model" value="${esc(cfg.model || '')}" />
+          </div>
+          <div class="field">
+            <label for="as-system">System prompt <span class="desc">— how it should help (tone, how much to reveal)</span></label>
+            <textarea id="as-system" placeholder="You are a patient teaching assistant. Guide students with hints; don't hand over full solutions.">${esc(cfg.systemPrompt || '')}</textarea>
+          </div>
+          <div class="field">
+            <label for="as-skills">Skills <span class="desc">— one per line: type:skill_id[:version], e.g. anthropic:pdf</span></label>
+            <textarea id="as-skills" class="mono" placeholder="anthropic:pdf">${esc(skillsToText(cfg.skills))}</textarea>
+          </div>
+          <div class="field">
+            <label for="as-mcp">MCP servers <span class="desc">— one per line: name url (public servers only)</span></label>
+            <textarea id="as-mcp" class="mono" placeholder="docs https://mcp.example.com/sse">${esc(mcpToText(cfg.mcpServers))}</textarea>
+          </div>
+          <div class="row">
+            <span class="ct">${cfg.configured ? 'Agent synced' : 'Not synced yet'}</span>
+            <button class="btn" id="as-cancel" type="button">Cancel</button>
+            <button class="btn primary" id="as-save" type="button">Save</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#as-cancel').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+      backdrop.querySelector('#as-system').focus();
+
+      const save = backdrop.querySelector('#as-save');
+      save.addEventListener('click', async () => {
+        const payload = {
+          course: currentCourse,
+          enabled: backdrop.querySelector('#as-enabled').checked,
+          model: backdrop.querySelector('#as-model').value.trim(),
+          systemPrompt: backdrop.querySelector('#as-system').value,
+          skills: parseSkills(backdrop.querySelector('#as-skills').value),
+          mcpServers: parseMcp(backdrop.querySelector('#as-mcp').value),
+        };
+        save.disabled = true; save.textContent = 'Saving…';
+        try {
+          const res = await fetch('/api/assistant', {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (res.ok) { close(); toast('Assistant settings saved'); }
+          else { const t = await res.text(); save.disabled = false; save.textContent = 'Save'; toast(t || 'Failed to save'); }
+        } catch (_) { save.disabled = false; save.textContent = 'Save'; toast('Failed to save'); }
+      });
+    }
+
     document.getElementById('logout').addEventListener('click', async () => {
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
     });
     document.getElementById('broadcast').addEventListener('click', openBroadcast);
+    document.getElementById('assistant-settings').addEventListener('click', openAssistantSettings);
     document.getElementById('theme-toggle').addEventListener('click', () =>
       setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));
     applyTheme(); // paint the correct toggle icon for the resolved theme

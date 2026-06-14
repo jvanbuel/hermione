@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import WebSocket from 'ws';
+import { registerAssistant } from './assistant';
 import { ExerciseMap } from './exercises';
 
 interface CourseConfig {
@@ -197,6 +198,140 @@ class Reporter {
             this.reconnectTimer = undefined;
             this.connectMessages();
         }, 5000);
+    }
+
+    // ---- AI assistant (chat panel) ----
+
+    private authHeaders(): Record<string, string> {
+        const h: Record<string, string> = {};
+        if (this.token) {
+            h['Authorization'] = `Bearer ${this.token}`;
+        }
+        if (this.identityToken) {
+            h['X-Hermione-Identity'] = this.identityToken;
+        }
+        return h;
+    }
+
+    /** Whether the course this workspace is enrolled in has the assistant on. */
+    async assistantStatus(): Promise<boolean> {
+        if (!this.serverUrl) {
+            await this.loadConfig();
+        }
+        await this.ensureIdentity(false);
+        try {
+            const res = await fetch(`${this.serverUrl}/api/assistant/status`, {
+                headers: this.authHeaders(),
+            });
+            if (!res.ok) {
+                return false;
+            }
+            const data = (await res.json()) as { enabled?: boolean };
+            return !!data.enabled;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    /** This student's prior turns with the assistant. */
+    async assistantHistory(): Promise<{ role: string; body: string }[]> {
+        try {
+            const url = `${this.serverUrl}/api/assistant/history?student=${encodeURIComponent(this.student)}`;
+            const res = await fetch(url, { headers: this.authHeaders() });
+            return res.ok ? ((await res.json()) as { role: string; body: string }[]) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    private chatBody(message: string): string {
+        const editor = vscode.window.activeTextEditor;
+        const onFile = editor && editor.document.uri.scheme === 'file';
+        const file = onFile ? vscode.workspace.asRelativePath(editor!.document.uri, false) : undefined;
+        const language = onFile ? editor!.document.languageId : undefined;
+        return JSON.stringify({ message, student: this.student, file, language });
+    }
+
+    /** Sends one question, grounded with the current file, and returns the reply. */
+    async assistantChat(message: string): Promise<string> {
+        await this.ensureIdentity(false);
+        const res = await fetch(`${this.serverUrl}/api/assistant/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+            body: this.chatBody(message),
+        });
+        if (!res.ok) {
+            throw new Error((await res.text()) || `HTTP ${res.status}`);
+        }
+        const data = (await res.json()) as { reply: string };
+        return data.reply;
+    }
+
+    /**
+     * Streams one turn. Managed Agents streams at message granularity, so
+     * `onMessage` fires once per complete agent message; `onStatus` reports
+     * progress between tool calls. Resolves when the turn ends.
+     */
+    async assistantChatStream(
+        message: string,
+        on: { status: (t: string) => void; message: (t: string) => void; error: (t: string) => void },
+    ): Promise<void> {
+        await this.ensureIdentity(false);
+        let res: Awaited<ReturnType<typeof fetch>>;
+        try {
+            res = await fetch(`${this.serverUrl}/api/assistant/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                body: this.chatBody(message),
+            });
+        } catch (e) {
+            on.error(e instanceof Error ? e.message : 'Request failed');
+            return;
+        }
+        if (!res.ok || !res.body) {
+            on.error((await res.text().catch(() => '')) || `HTTP ${res.status}`);
+            return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let event = 'message';
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            buf += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+                const line = buf.slice(0, nl).replace(/\r$/, '');
+                buf = buf.slice(nl + 1);
+                if (line === '') {
+                    event = 'message';
+                } else if (line.startsWith(':')) {
+                    // keep-alive comment
+                } else if (line.startsWith('event:')) {
+                    event = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    let payload: { text?: string } = {};
+                    try {
+                        payload = JSON.parse(line.slice(5).trim());
+                    } catch (_) {
+                        // ignore malformed frame
+                    }
+                    const text = payload.text || '';
+                    if (event === 'status') {
+                        on.status(text);
+                    } else if (event === 'error') {
+                        on.error(text);
+                    } else if (event === 'message') {
+                        on.message(text);
+                    }
+                    // 'done' ends the turn; the stream closes right after.
+                }
+            }
+        }
     }
 
     async setStudent(): Promise<void> {
@@ -443,6 +578,9 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand('hermione.setStudent', () => reporter.setStudent()),
         { dispose: () => reporter.stop() },
     );
+
+    // The AI assistant chat panel (only opens when the course has it enabled).
+    registerAssistant(context, reporter);
 
     if (vscode.workspace.getConfiguration('hermione').get<boolean>('enabled', true)) {
         reporter.start();
