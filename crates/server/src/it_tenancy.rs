@@ -68,6 +68,8 @@ async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Ro
         identity,
         admin_token: Some("admintok".to_string()),
         open_dev: Arc::new(AtomicBool::new(false)),
+        assistant: crate::assistant::Assistant::new(None, None),
+        assistant_default_model: "claude-opus-4-8".to_string(),
     };
     let router = http::router(state.clone());
     (state, router)
@@ -106,6 +108,20 @@ async fn get_with_cookie(app: &Router, uri: &str, cookie: &str) -> axum::respons
     app.clone().oneshot(req).await.unwrap()
 }
 
+async fn post_json_with_cookie(
+    app: &Router,
+    uri: &str,
+    cookie: &str,
+    body: &str,
+) -> axum::response::Response {
+    let req = Request::post(uri)
+        .header(header::COOKIE, cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap()
+}
+
 #[tokio::test]
 async fn unauthenticated_api_is_rejected() {
     let (_state, app) = app().await;
@@ -135,10 +151,10 @@ async fn wrong_password_is_rejected() {
 async fn membership_scopes_dashboard_access() {
     let (state, app) = app().await;
     let s = rnd();
-    let mine = tenancy::create_course(&state.db, &format!("mine{s}"), "Mine")
+    let mine = tenancy::create_course(&state.db, &format!("mine{s}"), "Mine", None)
         .await
         .unwrap();
-    tenancy::create_course(&state.db, &format!("other{s}"), "Other")
+    tenancy::create_course(&state.db, &format!("other{s}"), "Other", None)
         .await
         .unwrap();
     let admin = tenancy::create_admin(&state.db, &format!("a{s}"), "pw")
@@ -167,10 +183,10 @@ async fn membership_scopes_dashboard_access() {
 async fn enrollment_token_isolates_tenants() {
     let (state, app) = app().await;
     let s = rnd();
-    let x = tenancy::create_course(&state.db, &format!("x{s}"), "X")
+    let x = tenancy::create_course(&state.db, &format!("x{s}"), "X", None)
         .await
         .unwrap();
-    let y = tenancy::create_course(&state.db, &format!("y{s}"), "Y")
+    let y = tenancy::create_course(&state.db, &format!("y{s}"), "Y", None)
         .await
         .unwrap();
     let student = format!("stud{s}");
@@ -306,10 +322,67 @@ async fn provisioning_requires_admin_token() {
 }
 
 #[tokio::test]
+async fn teacher_creates_course_and_is_enrolled() {
+    let (state, app) = app().await;
+    let s = rnd();
+    tenancy::create_admin(&state.db, &format!("t{s}"), "pw")
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("t{s}"), "pw").await.expect("login");
+
+    // Create a course by linking a repo, letting the server derive the slug.
+    let repo = format!("https://github.com/org/course{s}.git");
+    let body = format!(r#"{{"name":"My Course {s}","repoUrl":"{repo}"}}"#);
+    let resp = post_json_with_cookie(&app, "/api/courses", &cookie, &body).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let slug = created["slug"].as_str().unwrap().to_string();
+    assert_eq!(slug, format!("course{s}"), "slug derived from repo");
+    assert_eq!(created["repoUrl"], repo);
+    assert!(
+        created["enrollmentToken"].as_str().is_some_and(|t| !t.is_empty()),
+        "enrollment token returned"
+    );
+
+    // The creator is now a member, so the course is scoped to them...
+    let resp = get_with_cookie(&app, "/api/courses", &cookie).await;
+    let listed = body_string(resp).await;
+    assert!(listed.contains(&slug), "new course visible to creator: {listed}");
+
+    // ...and its data endpoints are accessible.
+    let resp = get_with_cookie(&app, &format!("/api/overview?course={slug}"), &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Re-creating the same slug is a conflict.
+    let dup = format!(r#"{{"slug":"{slug}","name":"dup"}}"#);
+    let resp = post_json_with_cookie(&app, "/api/courses", &cookie, &dup).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // A course needs at least a slug, name, or repo.
+    let resp = post_json_with_cookie(&app, "/api/courses", &cookie, "{}").await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn course_creation_requires_login() {
+    let (_state, app) = app().await;
+    let resp = app
+        .oneshot(
+            Request::post("/api/courses")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"slug":"nope","name":"Nope"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn defined_exercises_drive_overview_order() {
     let (state, app) = app().await;
     let s = rnd();
-    let course = tenancy::create_course(&state.db, &format!("ord{s}"), "Ord")
+    let course = tenancy::create_course(&state.db, &format!("ord{s}"), "Ord", None)
         .await
         .unwrap();
     let admin = tenancy::create_admin(&state.db, &format!("ad{s}"), "pw")
@@ -397,7 +470,7 @@ async fn enforced_identity_required_and_trusted() {
 
     let (state, app) = app_with_identity(identity).await;
     let s = rnd();
-    let course = tenancy::create_course(&state.db, &format!("idc{s}"), "ID")
+    let course = tenancy::create_course(&state.db, &format!("idc{s}"), "ID", None)
         .await
         .unwrap();
     let admin = tenancy::create_admin(&state.db, &format!("ida{s}"), "pw")
