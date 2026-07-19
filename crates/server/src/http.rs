@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
         // The message stream authenticates itself (enrollment token or cookie).
         .route("/ws", get(ws_handler))
         .route("/tokens.css", get(tokens_css))
+        .route("/assets/{*path}", get(brand_asset))
         .route("/vendor/{*path}", get(vendor));
 
     // Teacher-only routes: the dashboard and everything that exposes student
@@ -198,6 +199,12 @@ async fn tokens_css() -> Response {
 
 async fn vendor(Path(path): Path<String>) -> Response {
     serve_asset(&format!("vendor/{path}"))
+}
+
+/// Brand assets (logo mark, favicon). Public so the login page can show the
+/// mark before a teacher is authenticated.
+async fn brand_asset(Path(path): Path<String>) -> Response {
+    serve_asset(&format!("assets/{path}"))
 }
 
 // --- authentication --------------------------------------------------------
