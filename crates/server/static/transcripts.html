@@ -43,8 +43,9 @@
     header .spacer { margin-left: auto; }
     header a.nav, header button {
       background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
       display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+      box-shadow: var(--shadow-1); transition: background .12s var(--ease), border-color .12s var(--ease);
     }
     header a.nav:hover, header button:hover { background: var(--border); }
     #theme-toggle { padding: 5px; }
@@ -64,12 +65,14 @@
       padding: 11px 16px; border: 0; border-bottom: 1px solid var(--border-subtle);
       background: none; color: inherit; cursor: pointer; text-align: left;
     }
+    .conv { transition: background .12s var(--ease); }
     .conv:hover { background: var(--surface-2); }
-    .conv.active { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+    .conv.active { background: var(--accent-wash); box-shadow: inset 3px 0 0 var(--accent); }
+    .conv.active .name { color: var(--fg); }
     .avatar {
       flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%;
       display: grid; place-items: center; font-size: var(--fs-sm); font-weight: 700;
-      color: #fff; user-select: none;
+      color: #fff; user-select: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14);
     }
     .conv .meta { min-width: 0; flex: 1 1 auto; }
     .conv .top { display: flex; align-items: baseline; gap: 8px; }
@@ -102,8 +105,9 @@
       text-transform: uppercase; letter-spacing: .04em;
     }
     .bubble {
-      padding: 9px 13px; border-radius: 12px; white-space: pre-wrap;
+      padding: 9px 13px; border-radius: var(--radius-lg); white-space: pre-wrap;
       overflow-wrap: anywhere; font-size: var(--fs-sm); line-height: 1.5;
+      box-shadow: var(--shadow-1);
     }
     .turn.student .bubble {
       background: var(--accent); color: #fff; border-bottom-right-radius: 4px;

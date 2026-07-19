@@ -44,8 +44,9 @@
     header .spacer { margin-left: auto; }
     header a.nav, header button {
       background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
       display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+      box-shadow: var(--shadow-1); transition: background .12s var(--ease), border-color .12s var(--ease);
     }
     header a.nav:hover, header button:hover { background: var(--border); }
     #theme-toggle { padding: 5px; }
@@ -58,19 +59,19 @@
     .empty { color: var(--fg-muted); padding: 60px 24px; text-align: center; }
 
     .summary-card {
-      display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+      display: flex; align-items: center; gap: 14px; padding: 18px 20px;
       background: var(--surface); border: 1px solid var(--border-subtle);
-      border-radius: 12px; margin-bottom: 22px;
+      border-radius: var(--radius-lg); margin-bottom: 22px; box-shadow: var(--shadow-1);
     }
     .avatar {
       flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
       display: grid; place-items: center; font-size: var(--fs-base); font-weight: 700;
-      color: #fff; user-select: none;
+      color: #fff; user-select: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14);
     }
     .summary-card .who .name { font-weight: 600; font-size: var(--fs-lg); }
     .summary-card .who .sub { color: var(--fg-muted); font-size: var(--fs-sm); }
     .summary-card .total { margin-left: auto; text-align: right; }
-    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; }
+    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; color: var(--accent); }
     .summary-card .total .lbl { color: var(--fg-subtle); font-size: var(--fs-xs);
       text-transform: uppercase; letter-spacing: .04em; }
 
@@ -81,20 +82,30 @@
     }
 
     /* Horizontal bar rows — used for both exercise and file breakdowns. */
-    .bars { display: flex; flex-direction: column; gap: 8px; }
+    .bars { display: flex; flex-direction: column; gap: 2px; }
     .bar-row {
       display: grid; grid-template-columns: minmax(0, 240px) 1fr auto;
-      align-items: center; gap: 12px;
+      align-items: center; gap: 12px; padding: 5px 8px; margin: 0 -8px;
+      border-radius: var(--radius-sm); transition: background .12s var(--ease);
     }
+    .bar-row:hover { background: var(--surface); }
     .bar-row .label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-size: var(--fs-sm);
     }
     .bar-row .label .ex { color: var(--fg-subtle); font-size: var(--fs-xs); }
     .bar-row .label .path { font-family: ui-monospace, monospace; }
-    .bar-track { height: 10px; background: var(--border-subtle); border-radius: 6px; overflow: hidden; }
-    .bar-fill { height: 100%; background: var(--accent); border-radius: 6px; }
-    .bar-row .secs { font-size: var(--fs-sm); color: var(--fg-muted); white-space: nowrap; }
+    .bar-track { height: 10px; background: var(--border-subtle); border-radius: var(--radius-pill); overflow: hidden; }
+    /* A soft left-to-right gradient gives the fill a bit of depth without
+     * inventing a new colour; the inner highlight reads as a glossy chalk line. */
+    .bar-fill {
+      height: 100%; border-radius: var(--radius-pill);
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--accent) 78%, var(--surface)), var(--accent));
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18);
+    }
+    .bar-row .secs { font-size: var(--fs-sm); color: var(--fg-muted); white-space: nowrap;
+      font-variant-numeric: tabular-nums; font-weight: 600; }
 
     .note { color: var(--fg-subtle); font-size: var(--fs-sm); margin-top: 18px; }
   </style>
