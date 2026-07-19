@@ -436,18 +436,25 @@
     // reads as a shape, not a number you compute by scanning cards.
     function sparkline(students) {
       if (!students.length) return '';
-      const W = 232, H = 22, padX = 3;
+      const W = 232, H = 22, padX = 4;
       const max = Math.max(HELP_SECS, ...students.map(s => s.secondsOnExercise || 0));
       const x = secs => padX + (W - 2 * padX) * Math.min(secs, max) / max;
-      const colorFor = s => s.struggle === 'help' ? 'var(--red)'
-        : s.struggle === 'watch' ? 'var(--amber)' : 'var(--green)';
+      // Severity is ordinal (ok < watch < help), so encode it TWICE: by hue and
+      // by mark size. Red↔amber are indistinguishable under deuteranopia, so the
+      // size ramp is what carries the distinction when colour can't — and it
+      // reads in greyscale/print too. A surface-coloured ring separates dots
+      // that pile up at the same time.
+      const sev = s => s.struggle === 'help' ? 2 : s.struggle === 'watch' ? 1 : 0;
+      const R = [2.8, 3.6, 4.4], COLOR = ['var(--green)', 'var(--amber)', 'var(--red)'];
       const thr = [WATCH_SECS, HELP_SECS]
         .map(t => `<line class="thr" x1="${x(t).toFixed(1)}" y1="1" x2="${x(t).toFixed(1)}" y2="${H - 1}"/>`)
         .join('');
-      const dots = students
-        .map(s => `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="3.2" fill="${colorFor(s)}" fill-opacity="0.85"/>`)
+      // Draw calm dots first so the ones that need attention sit on top.
+      const dots = students.slice().sort((a, b) => sev(a) - sev(b))
+        .map(s => { const k = sev(s);
+          return `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="${R[k]}" fill="${COLOR[k]}" fill-opacity="0.9" stroke="var(--surface)" stroke-width="1"/>`; })
         .join('');
-      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group">${thr}${dots}</svg>`;
+      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group; larger dots are students who need attention">${thr}${dots}</svg>`;
     }
 
     function summaryHtml(st) {
