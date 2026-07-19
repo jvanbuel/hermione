@@ -42,6 +42,10 @@ struct CreateArgs {
     #[arg(long)]
     link: bool,
 
+    /// Don't seed the course's exercises from the repo's folders (see --link).
+    #[arg(long)]
+    no_exercises: bool,
+
     /// HTTP base URL of the Hermione server.
     #[arg(
         long,
@@ -97,30 +101,67 @@ async fn create(args: CreateArgs) -> Result<()> {
         .map(str::to_string)
         .unwrap_or_else(|| title_from_slug(&slug));
 
+    // When linking, we're sitting in the course repo — so its folders (or its
+    // `.hermione.json`) are the exercises. Discover them up front to report on.
+    let exercises = if args.link && !args.no_exercises {
+        discover_exercises().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let server = args.server.trim_end_matches('/').to_string();
     let client = reqwest::Client::new();
     let body = serde_json::json!({ "slug": slug, "name": name, "repoUrl": repo });
 
-    let resp = if let Some(token) = args.admin_token.as_deref().filter(|t| !t.is_empty()) {
-        client
-            .post(format!("{server}/api/admin/courses"))
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await?
-    } else if let Some(user) = args.user.as_deref().filter(|u| !u.is_empty()) {
-        let cookie = login(&client, &server, user, args.password.clone()).await?;
-        client
-            .post(format!("{server}/api/courses"))
-            .header(reqwest::header::COOKIE, cookie)
-            .json(&body)
-            .send()
-            .await?
-    } else {
-        bail!("authenticate with --admin-token (HERMIONE_ADMIN_TOKEN) or --user (HERMIONE_USER)");
-    };
+    // Auth determines both the create endpoint and whether we hold a teacher
+    // session (needed to also define exercises, which is a teacher-only route).
+    let (resp, cookie) =
+        if let Some(token) = args.admin_token.as_deref().filter(|t| !t.is_empty()) {
+            let resp = client
+                .post(format!("{server}/api/admin/courses"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await?;
+            (resp, None)
+        } else if let Some(user) = args.user.as_deref().filter(|u| !u.is_empty()) {
+            let cookie = login(&client, &server, user, args.password.clone()).await?;
+            let resp = client
+                .post(format!("{server}/api/courses"))
+                .header(reqwest::header::COOKIE, &cookie)
+                .json(&body)
+                .send()
+                .await?;
+            (resp, Some(cookie))
+        } else {
+            bail!(
+                "authenticate with --admin-token (HERMIONE_ADMIN_TOKEN) or --user (HERMIONE_USER)"
+            );
+        };
 
-    finish(resp, repo.as_deref()).await
+    let created = created_course(resp).await?;
+    report_created(&created, repo.as_deref());
+
+    // Seed the course's exercises from the repo. `/api/exercises` is a
+    // teacher-only route, so this needs a sign-in — under --admin-token we say so
+    // rather than silently dropping the exercises.
+    if !exercises.is_empty() {
+        match &cookie {
+            Some(cookie) => {
+                seed_exercises(&client, &server, cookie, &created.slug, &exercises).await?;
+                let names: Vec<&str> = exercises.iter().map(|e| e.slug.as_str()).collect();
+                println!("Defined {} exercise(s): {}", exercises.len(), names.join(", "));
+            }
+            None => {
+                eprintln!(
+                    "Note: found {} exercise folder(s) but didn't define them — \
+                     exercise seeding needs a teacher sign-in (--user).",
+                    exercises.len()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Signs in and returns the `hermione_session=…` cookie for the teacher API.
@@ -150,26 +191,152 @@ async fn login(
         .ok_or_else(|| anyhow!("server did not return a session cookie"))
 }
 
-/// Reports the outcome of a create request, printing the enrollment token so the
-/// teacher can hand it to students.
-async fn finish(resp: reqwest::Response, repo: Option<&str>) -> Result<()> {
+/// The course a create request returned.
+struct Created {
+    slug: String,
+    name: String,
+    token: String,
+}
+
+/// Parses a create response, turning a non-2xx into a readable error.
+async fn created_course(resp: reqwest::Response) -> Result<Created> {
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
         bail!("server rejected the request ({status}): {}", text.trim());
     }
     let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    let slug = v["slug"].as_str().unwrap_or("");
-    let name = v["name"].as_str().unwrap_or("");
-    let token = v["enrollmentToken"].as_str().unwrap_or("");
+    Ok(Created {
+        slug: v["slug"].as_str().unwrap_or_default().to_string(),
+        name: v["name"].as_str().unwrap_or_default().to_string(),
+        token: v["enrollmentToken"].as_str().unwrap_or_default().to_string(),
+    })
+}
 
-    println!("Created course '{slug}' ({name}).");
+/// Prints the new course and the enrollment token students need to join.
+fn report_created(c: &Created, repo: Option<&str>) {
+    println!("Created course '{}' ({}).", c.slug, c.name);
     if let Some(repo) = repo {
         println!("Linked repo: {repo}");
     }
-    if !token.is_empty() {
-        println!("Enrollment token: {token}");
-        println!("  Students enroll with: hermione --token {token} --backend <grpc-url>");
+    if !c.token.is_empty() {
+        println!("Enrollment token: {}", c.token);
+        println!(
+            "  Students enroll with: hermione --token {} --backend <grpc-url>",
+            c.token
+        );
+    }
+}
+
+/// An exercise discovered in the course repo.
+struct DiscoveredExercise {
+    slug: String,
+    title: String,
+}
+
+/// Discovers the repo's exercises from the current directory: a `.hermione.json`
+/// (the same file the extension reads) if present, otherwise each top-level
+/// folder. Ordering follows the config, or alphabetical for folders.
+fn discover_exercises() -> Result<Vec<DiscoveredExercise>> {
+    if let Ok(bytes) = std::fs::read(".hermione.json") {
+        if let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let from_config = exercises_from_config(&cfg);
+            if !from_config.is_empty() {
+                return Ok(from_config);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(".")? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_ignored_dir(&name) {
+            continue;
+        }
+        if let Some(slug) = normalize_slug(&name) {
+            out.push(DiscoveredExercise {
+                title: title_from_slug(&slug),
+                slug,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.slug.cmp(&b.slug));
+    out.dedup_by(|a, b| a.slug == b.slug);
+    Ok(out)
+}
+
+/// Extracts exercises from a parsed `.hermione.json`, preserving its order.
+fn exercises_from_config(cfg: &serde_json::Value) -> Vec<DiscoveredExercise> {
+    let Some(arr) = cfg.get("exercises").and_then(|e| e.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ex in arr {
+        let Some(name) = ex.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        if let Some(slug) = normalize_slug(name) {
+            if out.iter().any(|e: &DiscoveredExercise| e.slug == slug) {
+                continue;
+            }
+            out.push(DiscoveredExercise {
+                title: title_from_slug(&slug),
+                slug,
+            });
+        }
+    }
+    out
+}
+
+/// Folders that are never exercises (tooling, build output, VCS, deps).
+fn is_ignored_dir(name: &str) -> bool {
+    name.starts_with('.')
+        || matches!(
+            name,
+            "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | "out"
+                | "bin"
+                | "obj"
+                | "vendor"
+                | "__pycache__"
+        )
+}
+
+/// Defines (upserts) the discovered exercises on the course. Requires a teacher
+/// session cookie — `/api/exercises` is a teacher-only route.
+async fn seed_exercises(
+    client: &reqwest::Client,
+    server: &str,
+    cookie: &str,
+    course_slug: &str,
+    exercises: &[DiscoveredExercise],
+) -> Result<()> {
+    let items: Vec<serde_json::Value> = exercises
+        .iter()
+        .enumerate()
+        .map(|(i, e)| serde_json::json!({ "slug": e.slug, "title": e.title, "position": i }))
+        .collect();
+    let body = serde_json::json!({ "course": course_slug, "exercises": items });
+    let resp = client
+        .post(format!("{server}/api/exercises"))
+        .header(reqwest::header::COOKIE, cookie)
+        .json(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        bail!(
+            "course created, but defining its exercises failed ({status}): {}",
+            text.trim()
+        );
     }
     Ok(())
 }
@@ -297,5 +464,38 @@ mod tests {
     fn titles() {
         assert_eq!(title_from_slug("intro-python"), "Intro Python");
         assert_eq!(title_from_slug("cs-101"), "Cs 101");
+    }
+
+    #[test]
+    fn exercises_from_hermione_json() {
+        let cfg = serde_json::json!({
+            "exercises": [
+                { "name": "ex1", "match": "ex1/**" },
+                { "name": "Strings", "match": ["strings/**"] },
+                { "name": "ex1", "match": "dup/**" },
+                { "match": "nameless/**" }
+            ]
+        });
+        let ex = exercises_from_config(&cfg);
+        // Config order preserved; duplicate slug and nameless entry dropped.
+        let slugs: Vec<&str> = ex.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(slugs, ["ex1", "strings"]);
+        assert_eq!(ex[1].title, "Strings");
+    }
+
+    #[test]
+    fn empty_config_yields_nothing() {
+        assert!(exercises_from_config(&serde_json::json!({})).is_empty());
+        assert!(exercises_from_config(&serde_json::json!({ "exercises": [] })).is_empty());
+    }
+
+    #[test]
+    fn ignores_tooling_dirs() {
+        for d in [".git", ".github", "node_modules", "target", "dist", "__pycache__"] {
+            assert!(is_ignored_dir(d), "{d} should be ignored");
+        }
+        for d in ["ex1", "pointers", "week-01"] {
+            assert!(!is_ignored_dir(d), "{d} should count");
+        }
     }
 }

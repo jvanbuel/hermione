@@ -213,6 +213,13 @@ ever shows the selected course's data.
   The command prints the new course's enrollment token. Auth is either a teacher
   sign-in (`--user`, password prompted or `HERMIONE_PASSWORD`) or the
   provisioning secret (`--admin-token` / `HERMIONE_ADMIN_TOKEN`).
+- **A course repo's folders are its exercises.** Since courses are usually a repo
+  of exercise folders, `hermione course create --link` (run inside the repo)
+  seeds the course's exercises from it: the `.hermione.json` exercise list if
+  present (same file the extension reads, order preserved), otherwise each
+  top-level folder (tooling/build/VCS dirs skipped). Opt out with
+  `--no-exercises`. Seeding uses the teacher session, so it applies to the
+  `--user` flow (not `--admin-token`).
 - **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
   admins and grant membership.
 
