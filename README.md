@@ -1,4 +1,4 @@
-# 🔮 Hermione
+<img src="docs/hermione-logo.png" alt="Hermione" height="96" />
 
 **An observability platform for teachers.**
 

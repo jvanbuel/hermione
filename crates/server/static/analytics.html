@@ -12,6 +12,8 @@
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
     } catch (_) {}
   </script>
+  <link rel="icon" type="image/svg+xml" href="/assets/hermione-mark.svg" />
+  <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
   <link rel="stylesheet" href="/tokens.css" />
   <style>
     body {
@@ -34,7 +36,8 @@
       padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
       flex: 0 0 auto;
     }
-    header .logo-mark { width: 22px; height: 22px; color: var(--brand); flex: none; }
+    header .logo-mark { width: 24px; height: 24px; flex: none; border-radius: 50%;
+      object-fit: contain; box-shadow: var(--shadow-1); }
     header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
     header .crumb { color: var(--fg-subtle); font-size: var(--fs-lg); }
     header select {
@@ -44,8 +47,9 @@
     header .spacer { margin-left: auto; }
     header a.nav, header button {
       background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
       display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+      box-shadow: var(--shadow-1); transition: background .12s var(--ease), border-color .12s var(--ease);
     }
     header a.nav:hover, header button:hover { background: var(--border); }
     #theme-toggle { padding: 5px; }
@@ -58,19 +62,19 @@
     .empty { color: var(--fg-muted); padding: 60px 24px; text-align: center; }
 
     .summary-card {
-      display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+      display: flex; align-items: center; gap: 14px; padding: 18px 20px;
       background: var(--surface); border: 1px solid var(--border-subtle);
-      border-radius: 12px; margin-bottom: 22px;
+      border-radius: var(--radius-lg); margin-bottom: 22px; box-shadow: var(--shadow-1);
     }
     .avatar {
       flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
       display: grid; place-items: center; font-size: var(--fs-base); font-weight: 700;
-      color: #fff; user-select: none;
+      color: #fff; user-select: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14);
     }
     .summary-card .who .name { font-weight: 600; font-size: var(--fs-lg); }
     .summary-card .who .sub { color: var(--fg-muted); font-size: var(--fs-sm); }
     .summary-card .total { margin-left: auto; text-align: right; }
-    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; }
+    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; color: var(--accent); }
     .summary-card .total .lbl { color: var(--fg-subtle); font-size: var(--fs-xs);
       text-transform: uppercase; letter-spacing: .04em; }
 
@@ -81,27 +85,40 @@
     }
 
     /* Horizontal bar rows — used for both exercise and file breakdowns. */
-    .bars { display: flex; flex-direction: column; gap: 8px; }
+    .bars { display: flex; flex-direction: column; gap: 2px; }
     .bar-row {
       display: grid; grid-template-columns: minmax(0, 240px) 1fr auto;
-      align-items: center; gap: 12px;
+      align-items: center; gap: 12px; padding: 5px 8px; margin: 0 -8px;
+      border-radius: var(--radius-sm); transition: background .12s var(--ease);
     }
+    .bar-row:hover { background: var(--surface); }
     .bar-row .label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-size: var(--fs-sm);
     }
     .bar-row .label .ex { color: var(--fg-subtle); font-size: var(--fs-xs); }
     .bar-row .label .path { font-family: ui-monospace, monospace; }
-    .bar-track { height: 10px; background: var(--border-subtle); border-radius: 6px; overflow: hidden; }
-    .bar-fill { height: 100%; background: var(--accent); border-radius: 6px; }
-    .bar-row .secs { font-size: var(--fs-sm); color: var(--fg-muted); white-space: nowrap; }
+    /* Bars share a flat left baseline (aligned starts = easy magnitude
+     * comparison) and round only the data-end, per data-viz mark specs. The
+     * track is a recessive "100%" rail behind each fill. */
+    .bar-track { height: 9px; background: var(--border-subtle);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0; overflow: hidden; }
+    /* Magnitude is one measure → one hue; a faint light→saturated gradient adds
+     * depth without inventing a second colour. */
+    .bar-fill {
+      height: 100%; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--accent) 82%, var(--surface)), var(--accent));
+    }
+    .bar-row .secs { font-size: var(--fs-sm); color: var(--fg-muted); white-space: nowrap;
+      font-variant-numeric: tabular-nums; font-weight: 600; }
 
     .note { color: var(--fg-subtle); font-size: var(--fs-sm); margin-top: 18px; }
   </style>
 </head>
 <body>
   <header>
-    <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 17.5h8l1.8 3.5H6.2z" fill="currentColor" opacity="0.55"/><circle cx="12" cy="9.5" r="7.5" fill="currentColor" opacity="0.15"/><circle cx="12" cy="9.5" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.6 7.2a4.4 4.4 0 0 1 3.2-2.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <img class="logo-mark" src="/assets/hermione-mark.svg" alt="" aria-hidden="true" />
     <h1>Hermione</h1>
     <span class="crumb">/ Analytics</span>
     <label class="visually-hidden" for="course">Course</label>

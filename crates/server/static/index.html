@@ -12,6 +12,8 @@
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
     } catch (_) {}
   </script>
+  <link rel="icon" type="image/svg+xml" href="/assets/hermione-mark.svg" />
+  <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
   <link rel="stylesheet" href="/tokens.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
@@ -36,7 +38,8 @@
       padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
       flex: 0 0 auto;
     }
-    header .logo-mark { width: 22px; height: 22px; color: var(--brand); flex: none; }
+    header .logo-mark { width: 24px; height: 24px; flex: none; border-radius: 50%;
+      object-fit: contain; box-shadow: var(--shadow-1); }
     header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
     header select {
       background: var(--bg); color: var(--fg); border: 1px solid var(--border);
@@ -51,24 +54,35 @@
     .freshness.stale { color: var(--amber); }
     .freshness.failed { color: var(--red); }
     .freshness .fdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-    header button {
+    header button, header a.nav {
       background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
-      display: inline-flex; align-items: center; gap: 6px;
-    }
-    header button:hover { background: var(--border); }
-    header a.nav {
-      background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
+      border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
       display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+      box-shadow: var(--shadow-1);
+      transition: background .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease);
     }
-    header a.nav:hover { background: var(--border); }
+    header button:hover, header a.nav:hover { background: var(--border); }
+    /* Broadcast is the header's primary action — filled, so it leads the eye. */
+    #broadcast { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
+    #broadcast:hover { background: var(--green-emphasis); }
+    /* A hairline groups the read-only nav (Analytics/Transcripts) apart from
+     * the write actions (Assistant/Broadcast). */
+    #nav-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--border-subtle); }
     /* Icon-only theme toggle: square, no text. */
     #theme-toggle { padding: 5px; }
     #theme-toggle .ico { width: 16px; height: 16px; }
-    #alert { font-size: var(--fs-sm); color: var(--red); font-weight: 600;
-      display: inline-flex; align-items: center; gap: 5px; }
-    #alert .alert-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+    /* The at-a-glance alarm: a real badge, not just red text. */
+    #alert:not(:empty) { font-size: var(--fs-sm); color: var(--red); font-weight: 600;
+      display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+      background: var(--help-wash); border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+      border-radius: var(--radius-pill); }
+    #alert .alert-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 70%, transparent); animation: alert-pulse 2s var(--ease) infinite; }
+    @keyframes alert-pulse {
+      0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 55%, transparent); }
+      70% { box-shadow: 0 0 0 6px transparent; }
+      100% { box-shadow: 0 0 0 0 transparent; }
+    }
 
     #content { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -79,7 +93,8 @@
     }
     .column {
       flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
-      border-radius: 10px; max-height: 100%; display: flex; flex-direction: column;
+      border-radius: var(--radius); max-height: 100%; display: flex; flex-direction: column;
+      box-shadow: var(--shadow-1);
     }
     .column > h2 {
       font-size: var(--fs-sm); margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle);
@@ -88,8 +103,9 @@
     .column > h2 .col-title { display: inline-flex; align-items: center; gap: 6px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .column.unassigned > h2 { color: var(--fg-muted); }
-    .count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-muted);
-      background: var(--border-subtle); padding: 1px 8px; border-radius: 10px; flex: none; }
+    .count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-muted); font-weight: 600;
+      background: var(--border-subtle); padding: 1px 9px; border-radius: var(--radius-pill); flex: none;
+      min-width: 22px; text-align: center; }
     .summary { padding: 6px 14px 8px; font-size: var(--fs-sm); color: var(--fg-muted);
       border-bottom: 1px solid var(--border-subtle); }
     .summary .warn { color: var(--red); }
@@ -102,16 +118,22 @@
     .card {
       font: inherit; color: inherit; text-align: left; width: 100%;
       display: flex; align-items: center; gap: 10px; padding: 8px;
-      background: transparent; border-radius: 8px; cursor: pointer;
+      background: transparent; border-radius: var(--radius-sm); cursor: pointer;
       border: 1px solid transparent; border-left-width: 3px;
-      transition: background .1s, border-color .1s;
+      transition: background .12s var(--ease), border-color .12s var(--ease),
+        box-shadow .12s var(--ease), transform .06s var(--ease);
     }
-    .card:hover { background: var(--surface-2); border-color: var(--border); }
-    .card.open { border-color: var(--accent); }
-    .card.struggle-help { border-left-color: var(--red); }
-    .card.struggle-watch { border-left-color: var(--amber); }
-    .pill { font-size: var(--fs-xs); padding: 1px 7px; border-radius: 8px; margin-left: 6px;
-      font-weight: 600; flex: none; }
+    .card:hover { background: var(--surface-2); border-color: var(--border); box-shadow: var(--shadow-1); }
+    .card:active { transform: translateY(1px); }
+    .card.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    /* Struggle isn't only a left border — a faint wash makes "needs help" and
+     * "watch" pop out of a full column at a glance, which is the whole job. */
+    .card.struggle-help { border-left-color: var(--red); background: var(--help-wash); }
+    .card.struggle-watch { border-left-color: var(--amber); background: var(--watch-wash); }
+    .card.struggle-help:hover { background: color-mix(in srgb, var(--red) 20%, transparent); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+    .card.struggle-watch:hover { background: color-mix(in srgb, var(--amber) 20%, transparent); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+    .pill { font-size: var(--fs-xs); padding: 1px 8px; border-radius: var(--radius-pill); margin-left: 6px;
+      font-weight: 600; flex: none; letter-spacing: .01em; box-shadow: var(--shadow-1); }
     .pill.help { background: var(--help-bg); color: #fff; }
     .pill.watch { background: var(--watch-bg); color: #fff; }
     .who .reason { font-size: var(--fs-sm); color: var(--amber); margin-top: 2px;
@@ -122,7 +144,7 @@
     .avatar {
       position: relative; flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
       display: grid; place-items: center; font-size: var(--fs-sm); font-weight: 700; color: #fff;
-      user-select: none;
+      user-select: none; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14);
     }
     /* Status differs by FILL, not just hue — readable when colour isn't. */
     .avatar .dot {
@@ -145,8 +167,8 @@
 
     #toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column;
       gap: 8px; z-index: 1000; }
-    .toast { background: var(--accent); color: #fff; padding: 10px 14px; border-radius: 8px;
-      font-size: var(--fs-base); box-shadow: 0 4px 14px rgba(0,0,0,.45); max-width: 320px;
+    .toast { background: var(--accent); color: #fff; padding: 10px 14px; border-radius: var(--radius-sm);
+      font-size: var(--fs-base); box-shadow: var(--shadow-2); max-width: 320px;
       opacity: 0; transform: translateY(8px); transition: opacity .25s, transform .25s; }
     .toast.show { opacity: 1; transform: translateY(0); }
 
@@ -180,8 +202,8 @@
     .modal-backdrop { position: fixed; inset: 0; background: rgba(1,4,9,.6);
       display: grid; place-items: center; z-index: 2000; }
     .modal { width: 440px; max-width: calc(100vw - 32px); background: var(--surface);
-      border: 1px solid var(--border); border-radius: 12px; padding: 20px;
-      box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+      border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px;
+      box-shadow: var(--shadow-3); }
     .modal h2 { margin: 0 0 4px; font-size: var(--fs-lg); }
     .modal .sub { margin: 0 0 14px; color: var(--fg-muted); font-size: var(--fs-sm); }
     .modal textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg);
@@ -215,7 +237,7 @@
 </head>
 <body>
   <header>
-    <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 17.5h8l1.8 3.5H6.2z" fill="currentColor" opacity="0.55"/><circle cx="12" cy="9.5" r="7.5" fill="currentColor" opacity="0.15"/><circle cx="12" cy="9.5" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8.6 7.2a4.4 4.4 0 0 1 3.2-2.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <img class="logo-mark" src="/assets/hermione-mark.svg" alt="" aria-hidden="true" />
     <h1>Hermione</h1>
     <label class="visually-hidden" for="course">Course</label>
     <select id="course" title="Course"></select>
@@ -232,6 +254,7 @@
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v1.3h8V5H4zm0 2.7V9h5V7.7H4z"/></svg>
       Transcripts
     </a>
+    <span id="nav-sep" aria-hidden="true"></span>
     <button id="assistant-settings" type="button" title="Configure the AI teaching assistant for this course">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6 1h4l.4 2.1 1.4.8 2-.8 2 3.4-1.6 1.4v1.6L15.2 11l-2 3.4-2-.8-1.4.8L10 16H6l-.4-2.6-1.4-.8-2 .8L.2 10l1.6-1.4V7L.2 5.6l2-3.4 2 .8 1.4-.8zM8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5z"/></svg>
       Assistant
@@ -416,18 +439,25 @@
     // reads as a shape, not a number you compute by scanning cards.
     function sparkline(students) {
       if (!students.length) return '';
-      const W = 232, H = 22, padX = 3;
+      const W = 232, H = 22, padX = 4;
       const max = Math.max(HELP_SECS, ...students.map(s => s.secondsOnExercise || 0));
       const x = secs => padX + (W - 2 * padX) * Math.min(secs, max) / max;
-      const colorFor = s => s.struggle === 'help' ? 'var(--red)'
-        : s.struggle === 'watch' ? 'var(--amber)' : 'var(--green)';
+      // Severity is ordinal (ok < watch < help), so encode it TWICE: by hue and
+      // by mark size. Red↔amber are indistinguishable under deuteranopia, so the
+      // size ramp is what carries the distinction when colour can't — and it
+      // reads in greyscale/print too. A surface-coloured ring separates dots
+      // that pile up at the same time.
+      const sev = s => s.struggle === 'help' ? 2 : s.struggle === 'watch' ? 1 : 0;
+      const R = [2.8, 3.6, 4.4], COLOR = ['var(--green)', 'var(--amber)', 'var(--red)'];
       const thr = [WATCH_SECS, HELP_SECS]
         .map(t => `<line class="thr" x1="${x(t).toFixed(1)}" y1="1" x2="${x(t).toFixed(1)}" y2="${H - 1}"/>`)
         .join('');
-      const dots = students
-        .map(s => `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="3.2" fill="${colorFor(s)}" fill-opacity="0.85"/>`)
+      // Draw calm dots first so the ones that need attention sit on top.
+      const dots = students.slice().sort((a, b) => sev(a) - sev(b))
+        .map(s => { const k = sev(s);
+          return `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="${R[k]}" fill="${COLOR[k]}" fill-opacity="0.9" stroke="var(--surface)" stroke-width="1"/>`; })
         .join('');
-      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group">${thr}${dots}</svg>`;
+      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group; larger dots are students who need attention">${thr}${dots}</svg>`;
     }
 
     function summaryHtml(st) {
