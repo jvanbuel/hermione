@@ -54,6 +54,21 @@ struct Config {
     #[arg(long, env = "HERMIONE_ADMIN_TOKEN")]
     admin_token: Option<String>,
 
+    /// Username for the admin account seeded on first start.
+    #[arg(
+        long,
+        env = "HERMIONE_BOOTSTRAP_ADMIN_USERNAME",
+        default_value = "admin"
+    )]
+    bootstrap_admin_username: String,
+
+    /// Password for the seeded admin account. When set and no admin accounts
+    /// exist yet, that admin is created at startup and granted access to every
+    /// existing course — which also takes the dashboard out of open dev mode.
+    /// Ignored once any admin exists, so it is safe to leave configured.
+    #[arg(long, env = "HERMIONE_BOOTSTRAP_ADMIN_PASSWORD")]
+    bootstrap_admin_password: Option<String>,
+
     /// Anthropic API key for the AI teaching assistant (Managed Agents). If
     /// unset, the assistant is disabled and courses are unaffected.
     #[arg(long, env = "HERMIONE_ANTHROPIC_API_KEY")]
@@ -91,11 +106,52 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running database migrations")?;
 
-    let has_admins = tenancy::count_admins(&db).await > 0;
+    let mut has_admins = tenancy::count_admins(&db).await > 0;
+
+    // Seeding the first admin here closes the window in which a fresh
+    // deployment serves an unauthenticated dashboard. It only ever runs on an
+    // empty admin table, so restarts and password changes made later through
+    // the UI are never clobbered.
+    if !has_admins {
+        if let Some(password) = config.bootstrap_admin_password.as_deref() {
+            let username = &config.bootstrap_admin_username;
+            match tenancy::create_admin(&db, username, password).await {
+                Ok(admin) => {
+                    // Without membership the admin logs in to an empty course
+                    // switcher, so grant every course that already exists —
+                    // including the seeded `default` one.
+                    match tenancy::all_courses(&db).await {
+                        Ok(courses) => {
+                            for course in &courses {
+                                if let Err(e) =
+                                    tenancy::grant_membership(&db, admin.id, course.id).await
+                                {
+                                    tracing::warn!(
+                                        course = %course.slug,
+                                        "could not grant bootstrap admin access: {e}"
+                                    );
+                                }
+                            }
+                            tracing::info!(
+                                username = %username,
+                                courses = courses.len(),
+                                "seeded bootstrap admin account"
+                            );
+                        }
+                        Err(e) => tracing::warn!("could not list courses for bootstrap admin: {e}"),
+                    }
+                    has_admins = true;
+                }
+                Err(e) => tracing::error!("could not create bootstrap admin: {e}"),
+            }
+        }
+    }
+
     if !has_admins {
         tracing::warn!(
             "No admin accounts exist — the dashboard is OPEN (scoped to the default \
-             course). Create an admin via the provisioning API to lock it down."
+             course). Set HERMIONE_BOOTSTRAP_ADMIN_PASSWORD, or create an admin via \
+             the provisioning API, to lock it down."
         );
     }
     if config.admin_token.is_none() {

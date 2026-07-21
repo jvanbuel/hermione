@@ -92,6 +92,8 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--grpc-addr`     | `HERMIONE_GRPC_ADDR`     | `0.0.0.0:50051`                                       |
 | `--http-addr`     | `HERMIONE_HTTP_ADDR`     | `0.0.0.0:8080`                                        |
 | `--admin-token`   | `HERMIONE_ADMIN_TOKEN`   | none — set it to enable the provisioning API          |
+| `--bootstrap-admin-username` | `HERMIONE_BOOTSTRAP_ADMIN_USERNAME` | `admin`                            |
+| `--bootstrap-admin-password` | `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` | none — set it to seed an admin on first start |
 | `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
 | `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
 
@@ -211,6 +213,11 @@ ever shows the selected course's data.
 - **Open dev mode.** Until the first admin exists, the dashboard is open and
   scoped to a seeded `default` course, and untokened agents land there — so
   local dev is frictionless. Creating an admin locks it down.
+- **Bootstrap admin.** Setting `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` seeds an
+  admin at startup (granted every existing course) so a deployment is never
+  served unauthenticated. It only applies while the admin table is empty, so
+  restarts and later password changes are left alone. See
+  [`infra/`](infra/README.md) for the deployment that uses it.
 
 ## Verified student identity
 
