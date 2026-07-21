@@ -23,7 +23,10 @@ futures = "0.3"
 async-stream = "0.3"
 
 # gRPC / protobuf (pinned to the stable 0.12 / prost 0.13 line)
-tonic = "0.12"
+# `tls` + `tls-webpki-roots` are required for the recorder to dial an https://
+# backend: tonic's default features exclude TLS entirely, so `Endpoint::connect`
+# on an https URI fails at runtime. Deployments terminate TLS at the ingress.
+tonic = { version = "0.12", features = ["tls", "tls-webpki-roots"] }
 tonic-build = "0.12"
 prost = "0.13"
 prost-types = "0.13"

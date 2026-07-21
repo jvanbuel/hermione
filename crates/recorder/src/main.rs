@@ -21,7 +21,22 @@ use hermione_proto::v1::{
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::Request;
+
+/// Dials the backend, enabling TLS when the endpoint is `https://`.
+///
+/// tonic does not infer TLS from the URI scheme — an https endpoint without an
+/// explicit `tls_config` fails to connect. Deployments terminate TLS at the
+/// ingress and forward plaintext HTTP/2 to the server, so the recorder is the
+/// only side that needs this.
+async fn connect_backend(backend: &str) -> Result<IngestClient<Channel>> {
+    let mut endpoint = Endpoint::from_shared(backend.to_string())?;
+    if backend.starts_with("https://") {
+        endpoint = endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())?;
+    }
+    Ok(IngestClient::new(endpoint.connect().await?))
+}
 
 /// Transparent terminal recorder that streams to the Hermione backend.
 #[derive(Parser, Debug)]
@@ -144,7 +159,7 @@ async fn main() -> Result<()> {
         drop(stream);
         None
     } else {
-        match IngestClient::connect(args.backend.clone()).await {
+        match connect_backend(&args.backend).await {
             Ok(mut client) => Some(tokio::spawn(async move {
                 let mut request = Request::new(stream);
                 if let Some(token) = &token {
