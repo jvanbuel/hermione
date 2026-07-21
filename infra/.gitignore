@@ -1,0 +1,16 @@
+# OpenTofu state contains the database password, the Hermione admin token and
+# the identity signing secret in plaintext. It must never be committed.
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+
+# Every tfvars form — environment-named files (prod.tfvars) and the JSON variant
+# are just as likely to hold credentials as terraform.tfvars itself. The example
+# files are placeholders and are meant to be committed.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Written by `make kubeconfig`; contains the cluster CA and an API token.
+kubeconfig

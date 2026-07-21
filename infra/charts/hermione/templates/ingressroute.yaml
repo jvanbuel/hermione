@@ -1,0 +1,57 @@
+{{- if .Values.ingress.enabled -}}
+{{- if not .Values.ingress.domain -}}
+{{- fail "ingress.domain is required when ingress.enabled is true" -}}
+{{- end -}}
+---
+# Dashboard + HTTP API + SSE + WebSocket, all on the server's :8080 listener.
+#
+# No special configuration is needed for /ws or the SSE endpoints: Traefik
+# proxies WebSocket upgrades and streaming responses natively. What does matter
+# is that no timeout upstream cuts them, which is handled in the Traefik release
+# (entrypoint responding timeouts disabled) and on the Scaleway load balancer
+# (timeout-tunnel raised well above the default 10m).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "hermione.fullname" . }}-http
+  labels:
+    {{- include "hermione.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - {{ .Values.ingress.entryPoint }}
+  routes:
+    - match: Host(`{{ .Values.ingress.domain }}`)
+      kind: Rule
+      services:
+        - name: {{ include "hermione.fullname" . }}
+          port: {{ .Values.service.httpPort }}
+  tls:
+    certResolver: {{ .Values.ingress.certResolver }}
+{{- if .Values.ingress.grpcDomain }}
+---
+# gRPC ingest (recorders) and viewer, on a dedicated hostname.
+#
+# `scheme: h2c` is the essential bit: Traefik terminates TLS from the client and
+# then speaks *plaintext* HTTP/2 to the pod, because hermione-server serves
+# tonic without TLS of its own. Without it Traefik would downgrade to HTTP/1.1
+# and every gRPC call would fail.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ include "hermione.fullname" . }}-grpc
+  labels:
+    {{- include "hermione.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - {{ .Values.ingress.entryPoint }}
+  routes:
+    - match: Host(`{{ .Values.ingress.grpcDomain }}`)
+      kind: Rule
+      services:
+        - name: {{ include "hermione.fullname" . }}
+          port: {{ .Values.service.grpcPort }}
+          scheme: h2c
+  tls:
+    certResolver: {{ .Values.ingress.certResolver }}
+{{- end }}
+{{- end }}

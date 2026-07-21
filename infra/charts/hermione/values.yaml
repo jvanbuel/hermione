@@ -1,0 +1,96 @@
+# Default values for the hermione chart.
+# Infrastructure-dependent values (domain, grpcDomain, existingSecret) are
+# injected by OpenTofu through the Argo CD Application; everything here is a
+# sane default that lives in git.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/jvanbuel/hermione
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Not needed while the image comes from a public ghcr.io repository.
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Replicas
+#
+# This is deliberately not configurable, and the deployment hard-codes 1.
+# hermione-server keeps three things in process memory that do not survive
+# being split across pods:
+#   * teacher login sessions      (crates/server/src/auth.rs)
+#   * the live terminal fan-out   (crates/server/src/state.rs)
+#   * the /ws broadcast hub       (crates/server/src/state.rs)
+# A second replica would drop teachers' cookies at random, show empty live
+# terminals, and race the other pod running SeaORM migrations at startup.
+# Scaling out needs a shared session store and a Postgres- or Redis-backed
+# pub/sub first.
+# ---------------------------------------------------------------------------
+
+# Name of an existing Secret holding HERMIONE_DATABASE_URL, HERMIONE_ADMIN_TOKEN
+# and friends. Created by OpenTofu so credentials never enter this repository.
+existingSecret: hermione-secrets
+
+# Extra non-secret environment variables, as a plain map.
+extraEnv: {}
+
+assistant:
+  # HERMIONE_ASSISTANT_MODEL. Only takes effect when the Secret supplies
+  # HERMIONE_ANTHROPIC_API_KEY; otherwise the assistant stays disabled.
+  model: claude-opus-4-8
+
+logLevel: hermione_server=info,tower_http=info
+
+ingress:
+  enabled: true
+  # Base hostname for the dashboard, SSE and WebSocket endpoints (all on :8080).
+  domain: ""
+  # Hostname for the gRPC ingest/viewer endpoint (:50051), used by the recorder.
+  grpcDomain: ""
+  entryPoint: websecure
+  # Traefik ACME resolver defined in the Traefik release.
+  certResolver: letsencrypt
+
+service:
+  type: ClusterIP
+  httpPort: 8080
+  grpcPort: 50051
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    # No CPU limit on purpose: throttling a server that fans out live terminal
+    # output shows up directly as stutter in the teacher's view.
+    memory: 1Gi
+
+# The server writes nothing to disk — static assets are compiled into the binary
+# — so it can run fully locked down. The image has no USER, hence the explicit
+# runAsUser here.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}

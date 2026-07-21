@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "hermione.fullname" . }}
+  labels:
+    {{- include "hermione.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    # Dashboard, static assets, SSE terminal replay and the /ws broadcast socket.
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    # tonic gRPC ingest + viewer. Plaintext HTTP/2 (h2c): TLS is terminated at
+    # Traefik, which reconnects to this port using the h2c scheme.
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: kubernetes.io/h2c
+  selector:
+    {{- include "hermione.selectorLabels" . | nindent 4 }}

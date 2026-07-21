@@ -1,0 +1,24 @@
+# Copy to terraform.tfvars. Only acme_email is required.
+
+acme_email = "you@example.com"
+
+# While iterating, use the staging directory so a misconfiguration cannot
+# exhaust Let's Encrypt's rate limit for a hostname. Certificates will be
+# untrusted by browsers until you switch back.
+# acme_ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+# Leave empty to derive hostnames from the load balancer IP via sslip.io.
+# Set once you own a domain and have pointed it (plus `grpc.` and `argocd.`)
+# at the ingress IP.
+# domain = "hermione.example.edu"
+
+# Prefer a release tag over `latest` so Argo CD has a meaningful diff.
+# image_tag = "v0.1.0"
+
+# Enables the per-course AI teaching assistant. Omit to leave it disabled.
+# anthropic_api_key = "sk-ant-..."
+
+# Enables verified student identity. Once set, Hermione ENFORCES it on ingest.
+# oidc_providers = jsonencode([
+#   { name = "github", kind = "github", clientId = "..." }
+# ])

@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hermione.fullname" . }}
+  labels:
+    {{- include "hermione.labels" . | nindent 4 }}
+spec:
+  # Pinned at 1 — see the note in values.yaml. Not exposed as a value because
+  # raising it silently breaks teacher sessions and live terminal fan-out.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: two pods must never overlap, or they race
+    # each other running SeaORM migrations on startup.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "hermione.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hermione.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # NOTE: the Secret is created outside this chart (by OpenTofu), so the
+      # chart cannot hash its contents to force a rollout. Environment variables
+      # from envFrom are only read at container start, so after rotating the
+      # database password or the Anthropic key you must restart explicitly:
+      #   kubectl -n <ns> rollout restart deploy/<name>
+    spec:
+      serviceAccountName: {{ include "hermione.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          envFrom:
+            # HERMIONE_DATABASE_URL, HERMIONE_ADMIN_TOKEN,
+            # HERMIONE_IDENTITY_SECRET, and optionally
+            # HERMIONE_ANTHROPIC_API_KEY / HERMIONE_OIDC_PROVIDERS.
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          env:
+            - name: HERMIONE_HTTP_ADDR
+              value: "0.0.0.0:8080"
+            - name: HERMIONE_GRPC_ADDR
+              value: "0.0.0.0:50051"
+            - name: HERMIONE_ASSISTANT_MODEL
+              value: {{ .Values.assistant.model | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          # Migrations run in-process before either listener binds, so the first
+          # start on an empty database can take a while. The startup probe gives
+          # it up to 2.5 minutes; liveness only takes over once it passes.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # readOnlyRootFilesystem is on, and Rust/OpenSSL still expect a
+            # writable /tmp.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      # Live terminal streams should be allowed to drain rather than being cut
+      # the instant a rollout starts.
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

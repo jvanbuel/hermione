@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars and adjust. Credentials are NOT set here — they come
+# from the environment that `scw init` configured (SCW_ACCESS_KEY,
+# SCW_SECRET_KEY, SCW_DEFAULT_PROJECT_ID).
+
+name   = "hermione"
+region = "fr-par"
+zone   = "fr-par-1"
+
+# Worker nodes. PRO2-XXS (2 vCPU / 2 GB) is the smallest type Kapsule accepts.
+node_type          = "PRO2-XXS"
+node_pool_min_size = 2
+node_pool_max_size = 4
+
+# Cheapest usable database tier. Move to db-pop2-2c-8g (and set a volume_type of
+# sbs_5k) for anything with real students on it.
+db_node_type     = "db-dev-s"
+db_engine        = "PostgreSQL-16"
+db_is_ha_cluster = false
+
+# Strongly recommended: restrict the Kubernetes API server to your own network.
+# Whatever runs `tofu apply` for stage 02 must be inside this list.
+# api_server_allowed_cidrs = ["203.0.113.4/32"]

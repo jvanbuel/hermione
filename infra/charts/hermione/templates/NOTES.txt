@@ -1,0 +1,41 @@
+Hermione is deployed.
+
+  Dashboard   https://{{ .Values.ingress.domain }}
+{{- if .Values.ingress.grpcDomain }}
+  gRPC ingest https://{{ .Values.ingress.grpcDomain }}
+{{- end }}
+
+1. Log in. The server seeds an admin on first start from the Secret, so the
+   dashboard is never served unauthenticated:
+
+     kubectl -n {{ .Release.Namespace }} get secret {{ .Values.existingSecret }} \
+       -o jsonpath='{.data.HERMIONE_BOOTSTRAP_ADMIN_USERNAME}' | base64 -d; echo
+     kubectl -n {{ .Release.Namespace }} get secret {{ .Values.existingSecret }} \
+       -o jsonpath='{.data.HERMIONE_BOOTSTRAP_ADMIN_PASSWORD}' | base64 -d; echo
+
+   If the Secret has no bootstrap password, Hermione falls back to open dev
+   mode — an unauthenticated dashboard. Check the pod logs for a warning.
+
+2. Create a course. This returns the enrollment token recorders and the VSCode
+   extension present:
+
+     TOKEN=$(kubectl -n {{ .Release.Namespace }} get secret {{ .Values.existingSecret }} \
+       -o jsonpath='{.data.HERMIONE_ADMIN_TOKEN}' | base64 -d)
+
+     curl -X POST https://{{ .Values.ingress.domain }}/api/admin/courses \
+       -H "Authorization: Bearer $TOKEN" \
+       -d '{"slug":"cs101","name":"CS 101"}'
+
+     curl -X POST https://{{ .Values.ingress.domain }}/api/admin/memberships \
+       -H "Authorization: Bearer $TOKEN" \
+       -d '{"username":"admin","courseSlug":"cs101"}'
+
+3. Point students' recorders at the backend:
+
+     HERMIONE_BACKEND=https://{{ .Values.ingress.grpcDomain | default "grpc.<domain>" }}
+     HERMIONE_TOKEN=<course enrollment token>
+
+4. Watch the rollout:
+
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "hermione.fullname" . }}
+     kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "hermione.fullname" . }}
