@@ -79,7 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/analytics", get(analytics_page))
         .route("/transcripts", get(transcripts_page))
-        .route("/api/courses", get(list_courses))
+        .route("/api/courses", get(list_courses).post(create_course_for_teacher))
         .route(
             "/api/assistant/conversations",
             get(crate::assistant::list_conversations),
@@ -582,6 +582,17 @@ async fn authorized_session(
 struct CourseDto {
     slug: String,
     name: String,
+    repo_url: Option<String>,
+}
+
+impl From<hermione_entity::courses::Model> for CourseDto {
+    fn from(c: hermione_entity::courses::Model) -> Self {
+        CourseDto {
+            slug: c.slug,
+            name: c.name,
+            repo_url: c.repo_url,
+        }
+    }
 }
 
 /// Courses the caller may see (all of them in open dev mode).
@@ -595,17 +606,140 @@ async fn list_courses(
     };
     match courses {
         Ok(rows) => {
-            let dtos: Vec<CourseDto> = rows
-                .into_iter()
-                .map(|c| CourseDto {
-                    slug: c.slug,
-                    name: c.name,
-                })
-                .collect();
+            let dtos: Vec<CourseDto> = rows.into_iter().map(CourseDto::from).collect();
             Json(dtos).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+/// Normalizes a course slug to a URL-safe form (`[a-z0-9-]`), collapsing runs of
+/// other characters into single dashes. Returns `None` if nothing usable remains.
+fn normalize_slug(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !out.is_empty() && !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = out.trim_matches('-').to_string();
+    (!slug.is_empty()).then_some(slug)
+}
+
+/// The repository's short name — the last path segment of a git URL, minus any
+/// `.git` suffix. Understands both `https://host/owner/name.git` and
+/// `git@host:owner/name.git` forms. Used to derive a default slug/name.
+fn repo_short_name(repo_url: &str) -> Option<String> {
+    let trimmed = repo_url.trim().trim_end_matches('/');
+    let tail = trimmed.rsplit(['/', ':']).next()?;
+    let name = tail.strip_suffix(".git").unwrap_or(tail).trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Turns a slug into a human-friendly title ("intro-python" → "Intro Python").
+fn title_from_slug(slug: &str) -> String {
+    slug.split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateCourseBody {
+    slug: Option<String>,
+    name: Option<String>,
+    repo_url: Option<String>,
+}
+
+/// The resolved (slug, name, repo_url) for a new course, or a client error
+/// describing what's missing/invalid. A repo URL alone is enough — the slug and
+/// name are derived from it — which is what "link a repo as a course" means.
+fn resolve_new_course(body: &CreateCourseBody) -> Result<(String, String, Option<String>), String> {
+    let repo_url = body
+        .repo_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let slug = match body.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(explicit) => normalize_slug(explicit)
+            .ok_or_else(|| "slug must contain a letter or digit".to_string())?,
+        None => repo_url
+            .as_deref()
+            .and_then(repo_short_name)
+            .and_then(|n| normalize_slug(&n))
+            .ok_or_else(|| "a slug or a repo URL is required".to_string())?,
+    };
+
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| title_from_slug(&slug));
+
+    Ok((slug, name, repo_url))
+}
+
+/// POST /api/courses — a signed-in teacher creates a course (optionally linked to
+/// a git repo) and is automatically granted membership, so it appears in their
+/// switcher right away.
+async fn create_course_for_teacher(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Json(body): Json<CreateCourseBody>,
+) -> Response {
+    let (slug, name, repo_url) = match resolve_new_course(&body) {
+        Ok(parts) => parts,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    if tenancy::course_by_slug(&state.db, &slug).await.is_some() {
+        return (
+            StatusCode::CONFLICT,
+            format!("a course with slug '{slug}' already exists"),
+        )
+            .into_response();
+    }
+
+    let course = match tenancy::create_course(&state.db, &slug, &name, repo_url.as_deref()).await {
+        Ok(course) => course,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    // The creating teacher becomes a member; open-dev callers aren't a specific
+    // admin, so there's nobody to grant (they can already see every course).
+    if let AuthCtx::Admin(admin_id) = ctx {
+        if let Err(e) = tenancy::grant_membership(&state.db, admin_id, course.id).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "slug": course.slug,
+            "name": course.name,
+            "repoUrl": course.repo_url,
+            "enrollmentToken": course.enrollment_token,
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -629,19 +763,28 @@ async fn create_admin_handler(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateCourseRequest {
     slug: String,
     name: String,
+    #[serde(default)]
+    repo_url: Option<String>,
 }
 
 async fn create_course_handler(
     State(state): State<AppState>,
     Json(body): Json<CreateCourseRequest>,
 ) -> Response {
-    match tenancy::create_course(&state.db, &body.slug, &body.name).await {
+    let repo_url = body
+        .repo_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match tenancy::create_course(&state.db, &body.slug, &body.name, repo_url).await {
         Ok(course) => Json(serde_json::json!({
             "slug": course.slug,
             "name": course.name,
+            "repoUrl": course.repo_url,
             "enrollmentToken": course.enrollment_token,
         }))
         .into_response(),

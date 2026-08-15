@@ -90,12 +90,14 @@ pub async fn create_course(
     db: &DatabaseConnection,
     slug: &str,
     name: &str,
+    repo_url: Option<&str>,
 ) -> Result<courses::Model, String> {
     let model = courses::ActiveModel {
         id: Set(Uuid::new_v4()),
         slug: Set(slug.to_string()),
         name: Set(name.to_string()),
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
+        repo_url: Set(repo_url.map(str::to_string)),
         created_at: Set(Utc::now().into()),
     };
     courses::Entity::insert(model)

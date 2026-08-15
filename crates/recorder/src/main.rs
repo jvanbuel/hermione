@@ -6,6 +6,7 @@
 //! Hermione backend over gRPC, both for live observation and long-term storage.
 
 mod auth;
+mod course;
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,6 +93,17 @@ impl Drop for RawModeGuard {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Subcommand dispatch: `hermione course …` manages courses over HTTP. It's
+    // handled before the recorder's clap parser so the transparent
+    // `hermione -- <cmd>` recording path (which slurps trailing args) is
+    // untouched. To record a program literally named `course`, use
+    // `hermione -- course`.
+    let mut argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("course") {
+        argv.remove(1);
+        return course::run(argv).await;
+    }
+
     let args = Args::parse();
 
     // When sign-in is configured, get a verified identity token; the verified,

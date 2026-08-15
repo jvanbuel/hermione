@@ -13,6 +13,7 @@ mod m20240101_000008_create_exercises;
 mod m20240101_000009_file_event_provenance;
 mod m20240101_000010_index_sessions_course_started;
 mod m20240101_000011_assistant;
+mod m20240101_000012_course_repo;
 
 pub struct Migrator;
 
@@ -31,6 +32,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000009_file_event_provenance::Migration),
             Box::new(m20240101_000010_index_sessions_course_started::Migration),
             Box::new(m20240101_000011_assistant::Migration),
+            Box::new(m20240101_000012_course_repo::Migration),
         ]
     }
 }

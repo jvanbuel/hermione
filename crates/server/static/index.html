@@ -71,6 +71,9 @@
     /* Icon-only theme toggle: square, no text. */
     #theme-toggle { padding: 5px; }
     #theme-toggle .ico { width: 16px; height: 16px; }
+    /* Icon-only "new course" button, sits with the course switcher. */
+    #new-course { padding: 5px; }
+    #new-course .ico { width: 15px; height: 15px; }
     /* The at-a-glance alarm: a real badge, not just red text. */
     #alert:not(:empty) { font-size: var(--fs-sm); color: var(--red); font-weight: 600;
       display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
@@ -228,6 +231,7 @@
       border-radius: 8px; padding: 8px 10px; font: inherit; font-size: var(--fs-base);
     }
     .modal textarea.mono { font-family: ui-monospace, monospace; min-height: 64px; }
+    .modal input.mono { font-family: ui-monospace, monospace; }
     .modal .toggle { display: flex; align-items: center; gap: 8px; font-size: var(--fs-base); cursor: pointer; }
     .modal .toggle input { width: 16px; height: 16px; }
     .modal .notice { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: var(--fs-sm);
@@ -241,6 +245,9 @@
     <h1>Hermione</h1>
     <label class="visually-hidden" for="course">Course</label>
     <select id="course" title="Course"></select>
+    <button id="new-course" type="button" title="Create a new course or link a repo" aria-label="Create a new course">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8.75 2.5a.75.75 0 0 0-1.5 0v4.75H2.5a.75.75 0 0 0 0 1.5h4.75v4.75a.75.75 0 0 0 1.5 0V8.75h4.75a.75.75 0 0 0 0-1.5H8.75V2.5z"/></svg>
+    </button>
     <span id="alert" aria-live="assertive"></span>
     <span class="spacer"></span>
     <span id="freshness" class="freshness">Connecting…</span>
@@ -522,23 +529,44 @@
 
     let currentCourse = null;
 
-    async function loadCourses() {
-      let courses;
-      try {
-        const res = await fetch('/api/courses');
-        if (res.status === 401) { window.location.href = '/login'; return; }
-        courses = await res.json();
-      } catch (_) { return; }
+    async function fetchCourses() {
+      const res = await fetch('/api/courses');
+      if (res.status === 401) { window.location.href = '/login'; return null; }
+      return res.json();
+    }
+
+    function populateCourses(courses, selectSlug) {
       const sel = document.getElementById('course');
       sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
-      currentCourse = courses[0]?.slug || null;
-      sel.addEventListener('change', () => {
-        currentCourse = sel.value;
+      const want = (selectSlug && courses.some(c => c.slug === selectSlug))
+        ? selectSlug : (courses[0]?.slug || null);
+      if (want) sel.value = want;
+      currentCourse = want;
+    }
+
+    async function loadCourses() {
+      let courses;
+      try { courses = await fetchCourses(); } catch (_) { return; }
+      if (!courses) return;
+      populateCourses(courses);
+      document.getElementById('course').addEventListener('change', () => {
+        currentCourse = document.getElementById('course').value;
         [...openPanes.keys()].forEach(closeTerminal); // terminals belong to a course
         connectMessages();
         refresh();
       });
       connectMessages();
+    }
+
+    // After creating a course, refresh the switcher and jump straight to it.
+    async function reloadCourses(selectSlug) {
+      let courses;
+      try { courses = await fetchCourses(); } catch (_) { return; }
+      if (!courses) return;
+      populateCourses(courses, selectSlug);
+      [...openPanes.keys()].forEach(closeTerminal);
+      connectMessages();
+      refresh();
     }
 
     // ---- live messages (WebSocket) ----
@@ -771,6 +799,110 @@
       });
     }
 
+    // ---- create / link a course ----
+    function openNewCourse() {
+      const opener = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nc-title">
+          <h2 id="nc-title">New course</h2>
+          <p class="sub">Create a course, or link an existing git repo as one.</p>
+          <div class="field">
+            <label for="nc-name">Name</label>
+            <input type="text" id="nc-name" placeholder="Intro to Python" />
+          </div>
+          <div class="field">
+            <label for="nc-repo">Repository <span class="desc">— optional; links a repo to this course</span></label>
+            <input type="text" id="nc-repo" placeholder="https://github.com/org/intro-python" />
+          </div>
+          <div class="field">
+            <label for="nc-slug">Slug <span class="desc">— optional; derived from the name or repo</span></label>
+            <input type="text" id="nc-slug" placeholder="intro-python" />
+          </div>
+          <div class="row">
+            <span class="ct" id="nc-msg"></span>
+            <button class="btn" id="nc-cancel" type="button">Cancel</button>
+            <button class="btn primary" id="nc-create" type="button">Create</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#nc-cancel').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+      const name = backdrop.querySelector('#nc-name');
+      name.focus();
+
+      const create = backdrop.querySelector('#nc-create');
+      const msg = backdrop.querySelector('#nc-msg');
+      create.addEventListener('click', async () => {
+        const payload = {
+          name: name.value.trim(),
+          slug: backdrop.querySelector('#nc-slug').value.trim(),
+          repoUrl: backdrop.querySelector('#nc-repo').value.trim(),
+        };
+        if (!payload.name && !payload.slug && !payload.repoUrl) {
+          msg.textContent = 'Enter a name, slug, or repo'; return;
+        }
+        msg.textContent = ''; create.disabled = true; create.textContent = 'Creating…';
+        try {
+          const res = await fetch('/api/courses', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (res.ok) {
+            const c = await res.json();
+            await reloadCourses(c.slug);
+            close();
+            toast(`Course “${c.name}” created`);
+            showEnrollmentToken(c);
+          } else {
+            const t = await res.text();
+            create.disabled = false; create.textContent = 'Create';
+            msg.textContent = t || 'Failed to create course';
+          }
+        } catch (_) {
+          create.disabled = false; create.textContent = 'Create';
+          msg.textContent = 'Failed to create course';
+        }
+      });
+    }
+
+    // A course is only useful once students can enroll into it, so surface the
+    // freshly minted enrollment token with a one-click copy.
+    function showEnrollmentToken(c) {
+      const opener = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="et-title">
+          <h2 id="et-title">Course created</h2>
+          <p class="sub">Share this enrollment token so students (recorder / extension) can join ${esc(c.name)}.</p>
+          <div class="field">
+            <label for="et-token">Enrollment token</label>
+            <input type="text" id="et-token" class="mono" readonly value="${esc(c.enrollmentToken || '')}" />
+          </div>
+          <div class="row">
+            <span class="ct" id="et-msg"></span>
+            <button class="btn" id="et-copy" type="button">Copy</button>
+            <button class="btn primary" id="et-done" type="button">Done</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#et-done').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+      const field = backdrop.querySelector('#et-token');
+      field.focus(); field.select();
+      backdrop.querySelector('#et-copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(c.enrollmentToken || ''); backdrop.querySelector('#et-msg').textContent = 'Copied'; }
+        catch (_) { field.select(); backdrop.querySelector('#et-msg').textContent = 'Press ⌘/Ctrl+C'; }
+      });
+    }
+
     // ---- AI assistant settings ----
     // Skills/MCP are edited as plain lines and parsed to the API's shapes.
     function parseSkills(text) {
@@ -871,6 +1003,7 @@
       window.location.href = '/login';
     });
     document.getElementById('broadcast').addEventListener('click', openBroadcast);
+    document.getElementById('new-course').addEventListener('click', openNewCourse);
     document.getElementById('assistant-settings').addEventListener('click', openAssistantSettings);
     document.getElementById('theme-toggle').addEventListener('click', () =>
       setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));

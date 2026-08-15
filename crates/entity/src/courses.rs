@@ -15,6 +15,10 @@ pub struct Model {
     /// Secret presented by recorders/the extension to enroll into this course.
     #[sea_orm(unique)]
     pub enrollment_token: String,
+    /// The git repository this course is linked to, if any (the assignment or
+    /// template repo it was created from). Used for provenance and to derive a
+    /// default slug/name.
+    pub repo_url: Option<String>,
     pub created_at: DateTimeWithTimeZone,
 }
 

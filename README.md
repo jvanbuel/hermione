@@ -171,6 +171,9 @@ cd vscode-extension && npm install && npm run compile
   student has open right now).
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
+- `GET /api/courses` / `POST /api/courses` — list the courses the signed-in
+  teacher may access / create one (optionally linking a git repo). The creator is
+  automatically enrolled, so it appears in their switcher immediately. See below.
 - `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
   a course's exercises (title + order). The dashboard shows all of them, even
   ones nobody has started, with per-exercise stats.
@@ -195,11 +198,35 @@ ever shows the selected course's data.
 - **Admin accounts + membership.** Named admin accounts log in at `/login`;
   each may be granted access to one or more courses (the dashboard has a course
   switcher). Passwords are Argon2-hashed.
+- **Teachers create their own courses.** A signed-in teacher can create a course
+  straight from the dashboard (the **＋** next to the course switcher) — give it a
+  name, and optionally link a git repository as the course. They're enrolled
+  automatically. Slug and name are derived from the repo/name when omitted. The
+  same is available over the API (`POST /api/courses`) and the CLI:
+
+  ```bash
+  # link the current git repo as a course, signing in as a teacher
+  hermione course create --link --user prof --server http://localhost:8080
+
+  # or name it explicitly (repo optional)
+  hermione course create cs101 --name "CS 101" --repo https://github.com/org/cs101
+  ```
+
+  The command prints the new course's enrollment token. Auth is either a teacher
+  sign-in (`--user`, password prompted or `HERMIONE_PASSWORD`) or the
+  provisioning secret (`--admin-token` / `HERMIONE_ADMIN_TOKEN`).
+- **A course repo's folders are its exercises.** Since courses are usually a repo
+  of exercise folders, `hermione course create --link` (run inside the repo)
+  seeds the course's exercises from it: the `.hermione.json` exercise list if
+  present (same file the extension reads, order preserved), otherwise each
+  top-level folder (tooling/build/VCS dirs skipped). Opt out with
+  `--no-exercises`. Seeding uses the teacher session, so it applies to the
+  `--user` flow (not `--admin-token`).
 - **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
   admins and grant membership.
 
   ```bash
-  # returns the course's enrollment token
+  # returns the course's enrollment token (repoUrl is optional)
   curl -X POST localhost:8080/api/admin/courses   -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"slug":"cs101","name":"CS 101"}'
   curl -X POST localhost:8080/api/admin/admins    -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","password":"…"}'
   curl -X POST localhost:8080/api/admin/memberships -H "Authorization: Bearer $HERMIONE_ADMIN_TOKEN" -d '{"username":"prof","courseSlug":"cs101"}'
