@@ -597,6 +597,8 @@ struct CourseDto {
     name: String,
     repo_url: Option<String>,
     archived: bool,
+    /// Included so the switcher can show it as a tooltip.
+    description: Option<String>,
 }
 
 impl From<hermione_entity::courses::Model> for CourseDto {
@@ -606,6 +608,7 @@ impl From<hermione_entity::courses::Model> for CourseDto {
             name: c.name,
             repo_url: c.repo_url,
             archived: c.archived_at.is_some(),
+            description: c.description,
         }
     }
 }
@@ -689,6 +692,19 @@ struct CreateCourseBody {
     /// Seed the course's exercises from the linked repo's folders (GitHub only).
     /// Defaults to true when a GitHub repo is linked.
     seed_exercises: Option<bool>,
+    // Optional profile fields, set at creation.
+    description: Option<String>,
+    term: Option<String>,
+    institution: Option<String>,
+    level: Option<String>,
+}
+
+/// A create-body profile field as a patch value: trimmed, empty ⇒ unset.
+fn profile_field(v: &Option<String>) -> Option<Option<String>> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| Some(s.to_string()))
 }
 
 /// The resolved (slug, name, repo_url) for a new course, or a client error
@@ -761,6 +777,20 @@ async fn create_course_for_teacher(
     // admin, so there's nobody to grant (they can already see every course).
     if let AuthCtx::Admin(admin_id) = ctx {
         if let Err(e) = tenancy::grant_membership(&state.db, admin_id, course.id).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+
+    // Apply any profile fields supplied at creation.
+    let profile = tenancy::CoursePatch {
+        description: profile_field(&body.description),
+        term: profile_field(&body.term),
+        institution: profile_field(&body.institution),
+        level: profile_field(&body.level),
+        ..Default::default()
+    };
+    if !profile.is_empty() {
+        if let Err(e) = tenancy::update_course(&state.db, course.id, &profile).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     }
@@ -855,6 +885,10 @@ struct CourseDetailDto {
     enrollment_token: String,
     archived: bool,
     members: Vec<String>,
+    description: Option<String>,
+    term: Option<String>,
+    institution: Option<String>,
+    level: Option<String>,
 }
 
 /// GET /api/courses/{slug} — full detail incl. the enrollment token and members,
@@ -879,6 +913,10 @@ async fn get_course(
         enrollment_token: course.enrollment_token,
         archived: course.archived_at.is_some(),
         members,
+        description: course.description,
+        term: course.term,
+        institution: course.institution,
+        level: course.level,
     })
     .into_response()
 }
@@ -891,9 +929,30 @@ struct UpdateCourseBody {
     #[serde(default, deserialize_with = "double_option")]
     repo_url: Option<Option<String>>,
     archived: Option<bool>,
+    // Profile fields: present ⇒ set, `null`/empty ⇒ clear.
+    #[serde(default, deserialize_with = "double_option")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    term: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    institution: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    level: Option<Option<String>>,
 }
 
-/// PATCH /api/courses/{slug} — rename, relink the repo, or (un)archive.
+/// A PATCH field (double-option): outer present ⇒ set/clear; trims, empty ⇒ clear.
+fn patch_field(v: &Option<Option<String>>) -> Option<Option<String>> {
+    v.as_ref().map(|inner| {
+        inner
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// PATCH /api/courses/{slug} — rename, relink the repo, edit the profile, or
+/// (un)archive.
 async fn patch_course(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
@@ -905,18 +964,22 @@ async fn patch_course(
         Err(resp) => return resp,
     };
 
-    let name = body
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let repo_url = body
-        .repo_url
-        .as_ref()
-        .map(|inner| inner.as_deref().map(str::trim).filter(|s| !s.is_empty()));
+    let patch = tenancy::CoursePatch {
+        name: body
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        repo_url: patch_field(&body.repo_url),
+        description: patch_field(&body.description),
+        term: patch_field(&body.term),
+        institution: patch_field(&body.institution),
+        level: patch_field(&body.level),
+    };
 
-    if name.is_some() || repo_url.is_some() {
-        if let Err(e) = tenancy::update_course(&state.db, course.id, name, repo_url).await {
+    if !patch.is_empty() {
+        if let Err(e) = tenancy::update_course(&state.db, course.id, &patch).await {
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     }
@@ -1041,6 +1104,14 @@ struct CreateCourseRequest {
     name: String,
     #[serde(default)]
     repo_url: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    term: Option<String>,
+    #[serde(default)]
+    institution: Option<String>,
+    #[serde(default)]
+    level: Option<String>,
 }
 
 async fn create_course_handler(
@@ -1052,16 +1123,29 @@ async fn create_course_handler(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    match tenancy::create_course(&state.db, &body.slug, &body.name, repo_url).await {
-        Ok(course) => Json(serde_json::json!({
-            "slug": course.slug,
-            "name": course.name,
-            "repoUrl": course.repo_url,
-            "enrollmentToken": course.enrollment_token,
-        }))
-        .into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    let course = match tenancy::create_course(&state.db, &body.slug, &body.name, repo_url).await {
+        Ok(course) => course,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let profile = tenancy::CoursePatch {
+        description: profile_field(&body.description),
+        term: profile_field(&body.term),
+        institution: profile_field(&body.institution),
+        level: profile_field(&body.level),
+        ..Default::default()
+    };
+    if !profile.is_empty() {
+        if let Err(e) = tenancy::update_course(&state.db, course.id, &profile).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
     }
+    Json(serde_json::json!({
+        "slug": course.slug,
+        "name": course.name,
+        "repoUrl": course.repo_url,
+        "enrollmentToken": course.enrollment_token,
+    }))
+    .into_response()
 }
 
 #[derive(Deserialize)]
