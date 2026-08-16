@@ -185,8 +185,10 @@ cd vscode-extension && npm install && npm run compile
   removes one (the last member cannot be removed). A co-teacher is any existing
   admin. All scoped to a member.
 - `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
-  a course's exercises (title + order). The dashboard shows all of them, even
-  ones nobody has started, with per-exercise stats.
+  a course's exercises (title + order); `"replace": true` sets the list exactly
+  (removing omitted ones), which backs the dashboard's exercises editor. The
+  dashboard shows all of them, even ones nobody has started, with per-exercise
+  stats.
 - `POST /api/messages` — teacher broadcasts a message to a course (persisted).
 - `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
   token (`?token=`) or the session cookie (`?course=`); pass `?since=<id>` to
@@ -247,8 +249,9 @@ ever shows the selected course's data.
   opens *Course settings*: rename it, link/unlink its repo, copy or **rotate** the
   enrollment token (if it leaks), add/remove **co-teachers** (any existing admin,
   no super-admin secret needed), and **archive** it (keeps all data, drops it from
-  the switcher; restore from *New course*). The header also links straight to the
-  linked repo.
+  the switcher; restore from *New course*), and **edit its exercises** (rename,
+  reorder, add, remove). The header also links straight to the linked repo. A
+  teacher with no courses yet gets a *Create your first course* prompt.
 - **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
   admins and grant membership.
 

@@ -71,6 +71,11 @@ pub async fn list(
 pub struct DefineRequest {
     course: Option<String>,
     exercises: Vec<ExerciseIn>,
+    /// When true, exercises not present in `exercises` are deleted — turning the
+    /// bulk upsert into "set the course's exercises to exactly this list" (used
+    /// by the dashboard editor). Defaults to false (pure upsert).
+    #[serde(default)]
+    replace: bool,
 }
 
 #[derive(Deserialize)]
@@ -107,10 +112,32 @@ pub async fn define(
         })
         .collect();
 
-    match upsert(&state.db, course_id, &items).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    if let Err(e) = upsert(&state.db, course_id, &items).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    if body.replace {
+        let keep: Vec<String> = items.iter().map(|(slug, _, _)| slug.clone()).collect();
+        if let Err(e) = delete_missing(&state.db, course_id, &keep).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Deletes a course's exercise definitions whose slug isn't in `keep`. Only the
+/// teacher's definitions are removed; recorded activity keeps its `exercise` slug.
+pub async fn delete_missing(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    keep: &[String],
+) -> Result<(), sea_orm::DbErr> {
+    let mut cond =
+        exercises::Entity::delete_many().filter(exercises::Column::CourseId.eq(course_id));
+    if !keep.is_empty() {
+        cond = cond.filter(exercises::Column::Slug.is_not_in(keep.iter().cloned()));
+    }
+    cond.exec(db).await?;
+    Ok(())
 }
 
 /// Upserts a course's exercises by `(course_id, slug)`, updating title/position

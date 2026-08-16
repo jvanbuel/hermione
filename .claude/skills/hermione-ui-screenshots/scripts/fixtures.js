@@ -22,6 +22,13 @@ function buildFixtures(now) {
     { slug: 'algo', name: 'Algorithms (Fall)', repoUrl: null, archived: false },
   ];
 
+  // A course's defined exercises (GET /api/exercises?course=…).
+  const courseExercises = [
+    { slug: 'ex1-pointers', title: 'Exercise 1 — Pointers & memory', position: 0 },
+    { slug: 'ex2-strings', title: 'Exercise 2 — Strings', position: 1 },
+    { slug: 'ex3-trees', title: 'Exercise 3 — Binary trees', position: 2 },
+  ];
+
   // Full detail for the course-settings panel (GET /api/courses/{slug}).
   const courseDetail = {
     slug: 'cs101',
@@ -169,6 +176,6 @@ function buildFixtures(now) {
     mcpServers: [{ name: 'docs', url: 'https://mcp.example.com/sse' }],
   };
 
-  return { courses, courseDetail, overview, analytics, conversations, messages, sessions, activity, assistant };
+  return { courses, courseDetail, courseExercises, overview, analytics, conversations, messages, sessions, activity, assistant };
 }
 module.exports = { buildFixtures };

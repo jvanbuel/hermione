@@ -190,6 +190,9 @@
     .time .sep { color: var(--border); margin: 0 5px; }
 
     .empty { margin: auto; color: var(--fg-muted); padding: 40px; text-align: center; }
+    .empty.first-run { max-width: 420px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .empty.first-run h2 { margin: 0; font-size: var(--fs-lg); color: var(--fg); font-weight: 600; }
+    .empty.first-run p { margin: 0 0 8px; font-size: var(--fs-base); }
 
     #toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column;
       gap: 8px; z-index: 1000; }
@@ -274,7 +277,7 @@
     <button id="course-settings" type="button" title="Course settings — repo, enrollment token, teachers" aria-label="Course settings">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 4.5h6.1a2 2 0 0 0 3.8 0H14V3h-2.1a2 2 0 0 0-3.8 0H2v1.5zM2 8.75h2.1a2 2 0 0 0 3.8 0H14v-1.5H7.9a2 2 0 0 0-3.8 0H2v1.5zM2 13h6.1a2 2 0 0 0 3.8 0H14v-1.5h-2.1a2 2 0 0 0-3.8 0H2V13z"/></svg>
     </button>
-    <a id="course-repo" class="course-repo" target="_blank" rel="noopener" title="Open the linked repository" hidden>
+    <a id="course-repo" class="course-repo" target="_blank" rel="noopener" title="Open the linked repository" style="display:none">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.5 1a4.5 4.5 0 0 0-1.4 8.8c.2 0 .3-.1.3-.3v-1c-1.3.3-1.6-.6-1.6-.6-.2-.5-.5-.7-.5-.7-.4-.3 0-.3 0-.3.5 0 .7.5.7.5.4.7 1.1.5 1.4.4 0-.3.2-.5.3-.7-1-.1-2.1-.5-2.1-2.3 0-.5.2-.9.5-1.2 0-.2-.2-.6 0-1.2 0 0 .4-.1 1.3.5a4.4 4.4 0 0 1 2.4 0c.9-.6 1.3-.5 1.3-.5.2.6.1 1 0 1.2.3.3.5.7.5 1.2 0 1.8-1.1 2.2-2.1 2.3.2.2.3.5.3.9v1.3c0 .2.1.3.4.3A4.5 4.5 0 0 0 5.5 1z"/></svg>
       <span id="course-repo-name"></span>
     </a>
@@ -589,7 +592,9 @@
     function updateCourseRepo() {
       const c = courseList.find(c => c.slug === currentCourse);
       const link = document.getElementById('course-repo');
-      if (!c || !c.repoUrl) { link.hidden = true; return; }
+      // Toggle style.display, not [hidden]: the .course-repo rule sets
+      // display:inline-flex, which would override the hidden attribute.
+      if (!c || !c.repoUrl) { link.style.display = 'none'; return; }
       document.getElementById('course-repo-name').textContent = repoLabel(c.repoUrl);
       const href = safeHttpUrl(c.repoUrl);
       if (href) {
@@ -600,7 +605,7 @@
         link.removeAttribute('href');
         link.classList.add('unlinked');
       }
-      link.hidden = false;
+      link.style.display = '';
     }
 
     function populateCourses(courses, selectSlug) {
@@ -612,7 +617,22 @@
       if (want) sel.value = want;
       currentCourse = want;
       document.getElementById('course-settings').disabled = !want;
+      document.getElementById('course').style.display = courses.length ? '' : 'none';
       updateCourseRepo();
+      if (!courses.length) showNoCourses();
+    }
+
+    // First-run: a teacher with no courses yet. Prompt them to create one rather
+    // than leaving the board on a perpetual "Loading…".
+    function showNoCourses() {
+      const board = document.getElementById('board');
+      const el = document.createElement('div');
+      el.className = 'empty first-run';
+      el.innerHTML = `<h2>No courses yet</h2>
+        <p>Create a course — or link an existing git repo as one — to start watching students.</p>
+        <button class="btn primary" id="fr-create" type="button">Create your first course</button>`;
+      board.replaceChildren(el);
+      board.querySelector('#fr-create').addEventListener('click', openNewCourse);
     }
 
     async function loadCourses() {
@@ -1063,6 +1083,10 @@
             </div>
             <span class="ct" id="cs-member-msg"></span>
           </div>
+          <div class="field">
+            <label>Exercises</label>
+            <button class="btn" id="cs-exercises" type="button">Edit exercises…</button>
+          </div>
           <hr>
           <div class="row">
             <button class="btn danger" id="cs-archive" type="button">Archive course</button>
@@ -1128,6 +1152,8 @@
         } catch (_) { backdrop.querySelector('#cs-token-msg').textContent = 'Failed to rotate'; }
       });
 
+      backdrop.querySelector('#cs-exercises').addEventListener('click', () => openExercisesEditor(slug, c.name));
+
       backdrop.querySelector('#cs-archive').addEventListener('click', async () => {
         if (!confirm(`Archive “${c.name}”? It keeps all its data but drops out of the switcher. You can restore it from New course.`)) return;
         const ok = await patchCourse(slug, { archived: true });
@@ -1144,6 +1170,80 @@
         });
         if (ok) { close(); await reloadCourses(slug); toast('Course settings saved'); }
         else { save.disabled = false; save.textContent = 'Save'; backdrop.querySelector('#cs-msg').textContent = 'Failed to save'; }
+      });
+    }
+
+    // ---- exercises editor ----
+    // Exercises are edited as plain lines "slug: Title" (one per line); line order
+    // is the display order. Saving replaces the course's exercise list exactly.
+    function parseExerciseLines(text) {
+      return text.split('\n').map(l => l.trim()).filter(Boolean).map((line, i) => {
+        const idx = line.indexOf(':');
+        const slug = (idx < 0 ? line : line.slice(0, idx)).trim();
+        const title = idx < 0 ? '' : line.slice(idx + 1).trim();
+        return { slug, title: title || slug, position: i };
+      }).filter(e => e.slug);
+    }
+    function exercisesToLines(list) {
+      return (list || []).map(e => e.title && e.title !== e.slug ? `${e.slug}: ${e.title}` : e.slug).join('\n');
+    }
+
+    async function openExercisesEditor(slug, courseName) {
+      let list;
+      try {
+        const res = await fetch(`/api/exercises?course=${encodeURIComponent(slug)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) { toast('Failed to load exercises'); return; }
+        list = await res.json();
+      } catch (_) { toast('Failed to load exercises'); return; }
+
+      const opener = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ex-title">
+          <h2 id="ex-title">Exercises</h2>
+          <p class="sub">For ${esc(courseName || slug)} — one per line, in order. Matches the names in the repo's <code>.hermione.json</code>.</p>
+          <div class="field">
+            <label for="ex-text">Exercises <span class="desc">— slug: Title (title optional)</span></label>
+            <textarea id="ex-text" class="mono" placeholder="ex1: Pointers &amp; memory&#10;ex2: Strings">${esc(exercisesToLines(list))}</textarea>
+          </div>
+          <div class="row">
+            <span class="ct" id="ex-msg"></span>
+            <button class="btn" id="ex-cancel" type="button">Cancel</button>
+            <button class="btn primary" id="ex-save" type="button">Save</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#ex-cancel').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+      const ta = backdrop.querySelector('#ex-text');
+      ta.focus();
+
+      const save = backdrop.querySelector('#ex-save');
+      save.addEventListener('click', async () => {
+        save.disabled = true; save.textContent = 'Saving…';
+        const exercises = parseExerciseLines(ta.value);
+        try {
+          const res = await fetch('/api/exercises', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ course: slug, exercises, replace: true }),
+          });
+          if (res.ok) {
+            close();
+            toast(`Exercises saved (${exercises.length})`);
+            if (slug === currentCourse) refresh();
+          } else {
+            const t = await res.text();
+            save.disabled = false; save.textContent = 'Save';
+            backdrop.querySelector('#ex-msg').textContent = t || 'Failed to save';
+          }
+        } catch (_) {
+          save.disabled = false; save.textContent = 'Save';
+          backdrop.querySelector('#ex-msg').textContent = 'Failed to save';
+        }
       });
     }
 
