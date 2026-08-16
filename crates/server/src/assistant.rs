@@ -114,12 +114,17 @@ impl Assistant {
     }
 
     fn key(&self) -> Result<&str, String> {
-        self.api_key
-            .as_deref()
-            .ok_or_else(|| "assistant not configured (HERMIONE_ANTHROPIC_API_KEY unset)".to_string())
+        self.api_key.as_deref().ok_or_else(|| {
+            "assistant not configured (HERMIONE_ANTHROPIC_API_KEY unset)".to_string()
+        })
     }
 
-    async fn api(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
+    async fn api(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, String> {
         let key = self.key()?;
         let mut req = self
             .client
@@ -130,7 +135,10 @@ impl Assistant {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let resp = req.send().await.map_err(|e| format!("request failed: {e}"))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
@@ -221,7 +229,9 @@ impl Assistant {
                 .map(|s| {
                     let mut m = json!({ "type": s.kind, "skill_id": s.skill_id });
                     if let Some(v) = &s.version {
-                        m.as_object_mut().unwrap().insert("version".into(), json!(v));
+                        m.as_object_mut()
+                            .unwrap()
+                            .insert("version".into(), json!(v));
                     }
                     m
                 })
@@ -291,7 +301,12 @@ impl Assistant {
                     }
                     match ev.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                         "agent.message" => {
-                            for block in ev.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+                            for block in ev
+                                .get("content")
+                                .and_then(|c| c.as_array())
+                                .into_iter()
+                                .flatten()
+                            {
                                 if block.get("type").and_then(|t| t.as_str()) == Some("text") {
                                     if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
                                         reply.push_str(t);
@@ -408,16 +423,25 @@ impl Assistant {
             while let Some(i) = buf.find('\n') {
                 let line = buf[..i].trim_end().to_string();
                 buf.drain(..=i);
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data.is_empty() {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<Value>(data) else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
                 match v.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                     "agent.message" => {
                         let mut msg = String::new();
-                        for b in v.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+                        for b in v
+                            .get("content")
+                            .and_then(|c| c.as_array())
+                            .into_iter()
+                            .flatten()
+                        {
                             if b.get("type").and_then(|t| t.as_str()) == Some("text") {
                                 if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                     msg.push_str(t);
@@ -439,7 +463,9 @@ impl Assistant {
                         let _ = tx.send(TurnEvent::Status(format!("running {name}…"))).await;
                     }
                     "agent.mcp_tool_use" => {
-                        let _ = tx.send(TurnEvent::Status("using a connected tool…".into())).await;
+                        let _ = tx
+                            .send(TurnEvent::Status("using a connected tool…".into()))
+                            .await;
                     }
                     "session.status_idle" => {
                         let kind = v
@@ -473,9 +499,15 @@ enum TurnEvent {
 impl TurnEvent {
     fn into_event(self) -> Event {
         match self {
-            TurnEvent::Message(t) => Event::default().event("message").data(json!({ "text": t }).to_string()),
-            TurnEvent::Status(t) => Event::default().event("status").data(json!({ "text": t }).to_string()),
-            TurnEvent::Error(t) => Event::default().event("error").data(json!({ "text": t }).to_string()),
+            TurnEvent::Message(t) => Event::default()
+                .event("message")
+                .data(json!({ "text": t }).to_string()),
+            TurnEvent::Status(t) => Event::default()
+                .event("status")
+                .data(json!({ "text": t }).to_string()),
+            TurnEvent::Error(t) => Event::default()
+                .event("error")
+                .data(json!({ "text": t }).to_string()),
             TurnEvent::Done => Event::default().event("done").data("{}"),
         }
     }
@@ -600,7 +632,11 @@ pub async fn put_config(
 
     // Sync (create/update) the Agent only when the assistant is enabled.
     let (mut agent_id, mut agent_version, mut environment_id) = match &existing {
-        Some(m) => (m.agent_id.clone(), m.agent_version.clone(), m.environment_id.clone()),
+        Some(m) => (
+            m.agent_id.clone(),
+            m.agent_version.clone(),
+            m.environment_id.clone(),
+        ),
         None => (None, None, None),
     };
     if body.enabled {
@@ -628,7 +664,9 @@ pub async fn put_config(
                 agent_version = Some(version);
                 environment_id = state.assistant.environment_id.read().await.clone();
             }
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("agent sync failed: {e}")).into_response(),
+            Err(e) => {
+                return (StatusCode::BAD_GATEWAY, format!("agent sync failed: {e}")).into_response()
+            }
         }
     }
 
@@ -691,9 +729,15 @@ impl ActiveModelFrom {
             updated_at: Set(Utc::now().into()),
         };
         let res = if self.existed {
-            course_assistants::Entity::update(active).exec(db).await.map(|_| ())
+            course_assistants::Entity::update(active)
+                .exec(db)
+                .await
+                .map(|_| ())
         } else {
-            course_assistants::Entity::insert(active).exec(db).await.map(|_| ())
+            course_assistants::Entity::insert(active)
+                .exec(db)
+                .await
+                .map(|_| ())
         };
         res.map_err(|e| e.to_string())
     }
@@ -914,15 +958,26 @@ async fn prepare_turn(
         return Err((StatusCode::BAD_REQUEST, "missing student").into_response());
     };
 
-    let row = match course_assistants::Entity::find_by_id(course_id).one(&state.db).await {
+    let row = match course_assistants::Entity::find_by_id(course_id)
+        .one(&state.db)
+        .await
+    {
         Ok(row) => row,
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
     };
     let Some(row) = row else {
-        return Err((StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response());
+        return Err((
+            StatusCode::NOT_FOUND,
+            "assistant not enabled for this course",
+        )
+            .into_response());
     };
     if !row.enabled || row.agent_id.is_none() || !state.assistant.enabled() {
-        return Err((StatusCode::NOT_FOUND, "assistant not enabled for this course").into_response());
+        return Err((
+            StatusCode::NOT_FOUND,
+            "assistant not enabled for this course",
+        )
+            .into_response());
     }
     let agent_id = row.agent_id.unwrap();
 
@@ -936,12 +991,18 @@ async fn prepare_turn(
 
     // Ground the turn with light editor context, if provided.
     let prompt = match (&body.file, &body.language) {
-        (Some(f), Some(l)) if !f.is_empty() => format!("[Student is editing `{f}` ({l})]\n\n{message}"),
+        (Some(f), Some(l)) if !f.is_empty() => {
+            format!("[Student is editing `{f}` ({l})]\n\n{message}")
+        }
         (Some(f), _) if !f.is_empty() => format!("[Student is editing `{f}`]\n\n{message}"),
         _ => message,
     };
 
-    Ok(PreparedTurn { conversation, agent_id, prompt })
+    Ok(PreparedTurn {
+        conversation,
+        agent_id,
+        prompt,
+    })
 }
 
 /// POST /api/assistant/chat — one turn with the course assistant (non-streaming).
@@ -956,9 +1017,18 @@ pub async fn chat(
         Err(resp) => return resp,
     };
 
-    let reply = match run_with_session(&state, &prepared.conversation, &prepared.agent_id, &prepared.prompt).await {
+    let reply = match run_with_session(
+        &state,
+        &prepared.conversation,
+        &prepared.agent_id,
+        &prepared.prompt,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, format!("assistant error: {e}")).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_GATEWAY, format!("assistant error: {e}")).into_response()
+        }
     };
 
     if let Err(e) = insert_message(&state, prepared.conversation.id, "assistant", &reply).await {
@@ -986,7 +1056,11 @@ pub async fn chat_stream(
     let st = state.clone();
     tokio::spawn(async move {
         let assistant = st.assistant.clone();
-        let PreparedTurn { conversation, agent_id, prompt } = prepared;
+        let PreparedTurn {
+            conversation,
+            agent_id,
+            prompt,
+        } = prepared;
 
         // Ensure a session, streaming the turn — re-opening once if it's stale.
         let session_id = match &conversation.session_id {
@@ -997,23 +1071,33 @@ pub async fn chat_stream(
                     s
                 }
                 Err(e) => {
-                    let _ = tx.send(TurnEvent::Error(format!("could not start a session: {e}"))).await;
+                    let _ = tx
+                        .send(TurnEvent::Error(format!("could not start a session: {e}")))
+                        .await;
                     let _ = tx.send(TurnEvent::Done).await;
                     return;
                 }
             },
         };
 
-        let mut reply = match assistant.run_streaming_turn(&session_id, &prompt, &tx).await {
+        let mut reply = match assistant
+            .run_streaming_turn(&session_id, &prompt, &tx)
+            .await
+        {
             Ok(r) => r,
             // Open/send failed (e.g. session expired) — retry on a fresh one.
             Err(_) => match assistant.open_session(&agent_id).await {
                 Ok(fresh) => {
                     let _ = set_session(&st, conversation.id, &fresh).await;
-                    assistant.run_streaming_turn(&fresh, &prompt, &tx).await.unwrap_or_default()
+                    assistant
+                        .run_streaming_turn(&fresh, &prompt, &tx)
+                        .await
+                        .unwrap_or_default()
                 }
                 Err(e) => {
-                    let _ = tx.send(TurnEvent::Error(format!("assistant unavailable: {e}"))).await;
+                    let _ = tx
+                        .send(TurnEvent::Error(format!("assistant unavailable: {e}")))
+                        .await;
                     String::new()
                 }
             },
@@ -1021,7 +1105,11 @@ pub async fn chat_stream(
 
         reply = reply.trim().to_string();
         if reply.is_empty() {
-            let _ = tx.send(TurnEvent::Error("The assistant didn't return a response.".into())).await;
+            let _ = tx
+                .send(TurnEvent::Error(
+                    "The assistant didn't return a response.".into(),
+                ))
+                .await;
         } else {
             let _ = insert_message(&st, conversation.id, "assistant", &reply).await;
         }
@@ -1029,7 +1117,9 @@ pub async fn chat_stream(
     });
 
     let stream = ReceiverStream::new(rx).map(|ev| Ok::<Event, Infallible>(ev.into_event()));
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// Runs a turn, transparently opening a session (or re-opening a stale one).
@@ -1153,7 +1243,11 @@ async fn find_or_create_conversation(
         .map_err(|e| e.to_string())
 }
 
-async fn set_session(state: &AppState, conversation_id: Uuid, session_id: &str) -> Result<(), String> {
+async fn set_session(
+    state: &AppState,
+    conversation_id: Uuid,
+    session_id: &str,
+) -> Result<(), String> {
     let model = assistant_conversations::ActiveModel {
         id: Set(conversation_id),
         session_id: Set(Some(session_id.to_string())),

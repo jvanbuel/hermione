@@ -53,7 +53,21 @@ const server = http.createServer((req, res) => {
   const p = url.pathname;
 
   // ---- fake API (every endpoint the pages fetch) ----
-  if (p === '/api/courses') return sendJson(res, F.courses);
+  if (p === '/api/courses') {
+    // ?archived=1 lists archived courses (none in the fixtures).
+    const archived = /[?&]archived=(1|true|yes)/.test(url.search);
+    return sendJson(res, archived ? [] : F.courses);
+  }
+  // GET /api/courses/{slug} → detail for the settings panel; writes 204 otherwise.
+  if (/^\/api\/courses\/[^/]+$/.test(p)) {
+    if (req.method === 'GET') return sendJson(res, F.courseDetail);
+    res.writeHead(204); return res.end();
+  }
+  // Rotate-token mirrors production: 200 + a fresh token (the UI reads it back).
+  if (/^\/api\/courses\/[^/]+\/rotate-token$/.test(p)) {
+    return sendJson(res, { enrollmentToken: 'enroll-rotated-3f21b8d0c95e4a17' });
+  }
+  if (p.startsWith('/api/courses/')) { res.writeHead(204); return res.end(); }
   if (p === '/api/overview') return sendJson(res, F.overview);
   if (p === '/api/analytics/time-per-file') return sendJson(res, F.analytics);
   if (p === '/api/sessions') return sendJson(res, F.sessions);

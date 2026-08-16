@@ -18,9 +18,19 @@ function buildFixtures(now) {
   const mins = m => now - m * 60_000;
 
   const courses = [
-    { slug: 'cs101', name: 'CS101 · Intro to Systems' },
-    { slug: 'algo', name: 'Algorithms (Fall)' },
+    { slug: 'cs101', name: 'CS101 · Intro to Systems', repoUrl: 'https://github.com/acme/cs101', archived: false },
+    { slug: 'algo', name: 'Algorithms (Fall)', repoUrl: null, archived: false },
   ];
+
+  // Full detail for the course-settings panel (GET /api/courses/{slug}).
+  const courseDetail = {
+    slug: 'cs101',
+    name: 'CS101 · Intro to Systems',
+    repoUrl: 'https://github.com/acme/cs101',
+    enrollmentToken: 'enroll-9904ff7c7aec4f9c',
+    archived: false,
+    members: ['ada', 'grace', 'linus'],
+  };
 
   const overview = {
     exercises: [
@@ -159,6 +169,6 @@ function buildFixtures(now) {
     mcpServers: [{ name: 'docs', url: 'https://mcp.example.com/sse' }],
   };
 
-  return { courses, overview, analytics, conversations, messages, sessions, activity, assistant };
+  return { courses, courseDetail, overview, analytics, conversations, messages, sessions, activity, assistant };
 }
 module.exports = { buildFixtures };

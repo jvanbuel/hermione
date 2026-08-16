@@ -14,7 +14,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Redirect, Response,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -79,7 +79,17 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/analytics", get(analytics_page))
         .route("/transcripts", get(transcripts_page))
-        .route("/api/courses", get(list_courses).post(create_course_for_teacher))
+        .route(
+            "/api/courses",
+            get(list_courses).post(create_course_for_teacher),
+        )
+        .route("/api/courses/{slug}", get(get_course).patch(patch_course))
+        .route("/api/courses/{slug}/rotate-token", post(rotate_token))
+        .route("/api/courses/{slug}/members", post(add_member))
+        .route(
+            "/api/courses/{slug}/members/{username}",
+            delete(remove_member),
+        )
         .route(
             "/api/assistant/conversations",
             get(crate::assistant::list_conversations),
@@ -132,7 +142,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/inbox", get(crate::messages::inbox))
         .route("/api/assistant/status", get(crate::assistant::status))
         .route("/api/assistant/chat", post(crate::assistant::chat))
-        .route("/api/assistant/chat/stream", post(crate::assistant::chat_stream))
+        .route(
+            "/api/assistant/chat/stream",
+            post(crate::assistant::chat_stream),
+        )
         .route("/api/assistant/history", get(crate::assistant::history))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -583,6 +596,7 @@ struct CourseDto {
     slug: String,
     name: String,
     repo_url: Option<String>,
+    archived: bool,
 }
 
 impl From<hermione_entity::courses::Model> for CourseDto {
@@ -591,18 +605,28 @@ impl From<hermione_entity::courses::Model> for CourseDto {
             slug: c.slug,
             name: c.name,
             repo_url: c.repo_url,
+            archived: c.archived_at.is_some(),
         }
     }
 }
 
-/// Courses the caller may see (all of them in open dev mode).
+/// `?archived=1` (or `true`) lists archived courses instead of active ones.
+#[derive(Deserialize)]
+struct ListCoursesQuery {
+    archived: Option<String>,
+}
+
+/// Courses the caller may see (all of them in open dev mode). Active by default;
+/// `?archived=1` returns archived ones (for the restore UI).
 async fn list_courses(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
+    Query(q): Query<ListCoursesQuery>,
 ) -> Response {
+    let archived = matches!(q.archived.as_deref(), Some("1" | "true" | "yes"));
     let courses = match ctx {
-        AuthCtx::OpenDev => tenancy::all_courses(&state.db).await,
-        AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id).await,
+        AuthCtx::OpenDev => tenancy::all_courses(&state.db, archived).await,
+        AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id, archived).await,
     };
     match courses {
         Ok(rows) => {
@@ -615,7 +639,7 @@ async fn list_courses(
 
 /// Normalizes a course slug to a URL-safe form (`[a-z0-9-]`), collapsing runs of
 /// other characters into single dashes. Returns `None` if nothing usable remains.
-fn normalize_slug(raw: &str) -> Option<String> {
+pub(crate) fn normalize_slug(raw: &str) -> Option<String> {
     let mut out = String::new();
     let mut prev_dash = false;
     for ch in raw.trim().chars() {
@@ -642,7 +666,7 @@ fn repo_short_name(repo_url: &str) -> Option<String> {
 }
 
 /// Turns a slug into a human-friendly title ("intro-python" → "Intro Python").
-fn title_from_slug(slug: &str) -> String {
+pub(crate) fn title_from_slug(slug: &str) -> String {
     slug.split(['-', '_'])
         .filter(|w| !w.is_empty())
         .map(|w| {
@@ -662,6 +686,9 @@ struct CreateCourseBody {
     slug: Option<String>,
     name: Option<String>,
     repo_url: Option<String>,
+    /// Seed the course's exercises from the linked repo's folders (GitHub only).
+    /// Defaults to true when a GitHub repo is linked.
+    seed_exercises: Option<bool>,
 }
 
 /// The resolved (slug, name, repo_url) for a new course, or a client error
@@ -675,14 +702,22 @@ fn resolve_new_course(body: &CreateCourseBody) -> Result<(String, String, Option
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    let slug = match body.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    // Slug precedence: an explicit slug, else the repo's short name, else the
+    // course name — so any one of the three fields is enough to create a course.
+    let slug = match body
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(explicit) => normalize_slug(explicit)
             .ok_or_else(|| "slug must contain a letter or digit".to_string())?,
         None => repo_url
             .as_deref()
             .and_then(repo_short_name)
             .and_then(|n| normalize_slug(&n))
-            .ok_or_else(|| "a slug or a repo URL is required".to_string())?,
+            .or_else(|| body.name.as_deref().and_then(normalize_slug))
+            .ok_or_else(|| "a name, slug, or repo URL is required".to_string())?,
     };
 
     let name = body
@@ -730,6 +765,44 @@ async fn create_course_for_teacher(
         }
     }
 
+    // Best-effort: seed exercises from the linked repo's folders (GitHub only).
+    // Failures here never fail course creation — they're reported as a note.
+    let mut exercises_seeded = 0usize;
+    let mut seed_note: Option<String> = None;
+    let want_seed = body.seed_exercises.unwrap_or(true);
+    if want_seed {
+        if let Some(repo) = course.repo_url.as_deref() {
+            match crate::repo::parse_github(repo) {
+                Some((owner, name)) => {
+                    match crate::repo::discover_exercises(
+                        &owner,
+                        &name,
+                        state.github_token.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(found) if !found.is_empty() => {
+                            let items: Vec<(String, String, i32)> = found
+                                .iter()
+                                .enumerate()
+                                .map(|(i, e)| (e.slug.clone(), e.title.clone(), i as i32))
+                                .collect();
+                            match crate::exercises::upsert(&state.db, course.id, &items).await {
+                                Ok(()) => exercises_seeded = items.len(),
+                                Err(e) => {
+                                    seed_note = Some(format!("could not save exercises: {e}"))
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => seed_note = Some(e),
+                    }
+                }
+                None => seed_note = Some("exercise seeding supports GitHub repos only".to_string()),
+            }
+        }
+    }
+
     (
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -737,9 +810,202 @@ async fn create_course_for_teacher(
             "name": course.name,
             "repoUrl": course.repo_url,
             "enrollmentToken": course.enrollment_token,
+            "exercisesSeeded": exercises_seeded,
+            "seedNote": seed_note,
         })),
     )
         .into_response()
+}
+
+// --- course detail, update, membership -------------------------------------
+
+/// Resolves a course by slug and checks the caller may access it, returning the
+/// full model (unlike `resolve_course`, which returns just the id).
+async fn authorized_course(
+    state: &AppState,
+    ctx: AuthCtx,
+    slug: &str,
+) -> Result<hermione_entity::courses::Model, Response> {
+    let Some(course) = tenancy::course_by_slug(&state.db, slug).await else {
+        return Err((StatusCode::NOT_FOUND, "no such course").into_response());
+    };
+    match ctx {
+        AuthCtx::OpenDev => Ok(course),
+        AuthCtx::Admin(admin_id) if tenancy::is_member(&state.db, admin_id, course.id).await => {
+            Ok(course)
+        }
+        AuthCtx::Admin(_) => {
+            Err((StatusCode::FORBIDDEN, "not a member of this course").into_response())
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CourseDetailDto {
+    slug: String,
+    name: String,
+    repo_url: Option<String>,
+    enrollment_token: String,
+    archived: bool,
+    members: Vec<String>,
+}
+
+/// GET /api/courses/{slug} — full detail incl. the enrollment token and members,
+/// for the course-settings panel.
+async fn get_course(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(slug): Path<String>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let members = match tenancy::admins_for_course(&state.db, course.id).await {
+        Ok(rows) => rows.into_iter().map(|a| a.username).collect(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    Json(CourseDetailDto {
+        slug: course.slug,
+        name: course.name,
+        repo_url: course.repo_url,
+        enrollment_token: course.enrollment_token,
+        archived: course.archived_at.is_some(),
+        members,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCourseBody {
+    name: Option<String>,
+    /// Present ⇒ set the linked repo; `null`/empty ⇒ clear it.
+    #[serde(default, deserialize_with = "double_option")]
+    repo_url: Option<Option<String>>,
+    archived: Option<bool>,
+}
+
+/// PATCH /api/courses/{slug} — rename, relink the repo, or (un)archive.
+async fn patch_course(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(slug): Path<String>,
+    Json(body): Json<UpdateCourseBody>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let repo_url = body
+        .repo_url
+        .as_ref()
+        .map(|inner| inner.as_deref().map(str::trim).filter(|s| !s.is_empty()));
+
+    if name.is_some() || repo_url.is_some() {
+        if let Err(e) = tenancy::update_course(&state.db, course.id, name, repo_url).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    if let Some(archived) = body.archived {
+        if let Err(e) = tenancy::set_course_archived(&state.db, course.id, archived).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// POST /api/courses/{slug}/rotate-token — issue a fresh enrollment token.
+async fn rotate_token(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(slug): Path<String>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    match tenancy::rotate_enrollment_token(&state.db, course.id).await {
+        Ok(token) => Json(serde_json::json!({ "enrollmentToken": token })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddMemberBody {
+    username: String,
+}
+
+/// POST /api/courses/{slug}/members — grant another existing admin access.
+async fn add_member(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(slug): Path<String>,
+    Json(body): Json<AddMemberBody>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let username = body.username.trim();
+    let Some(admin_id) = tenancy::admin_by_username(&state.db, username).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("no admin account named '{username}'"),
+        )
+            .into_response();
+    };
+    match tenancy::grant_membership(&state.db, admin_id, course.id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// DELETE /api/courses/{slug}/members/{username} — revoke access. Refuses to
+/// remove the last member (which would orphan the course).
+async fn remove_member(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path((slug, username)): Path<(String, String)>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let Some(admin_id) = tenancy::admin_by_username(&state.db, username.trim()).await else {
+        return (StatusCode::NOT_FOUND, "no such admin").into_response();
+    };
+    // Atomic: locks the membership rows so concurrent removals can't both slip
+    // past the last-member check and orphan the course.
+    match tenancy::revoke_membership_checked(&state.db, admin_id, course.id).await {
+        Ok(tenancy::RevokeOutcome::Removed) => StatusCode::NO_CONTENT.into_response(),
+        Ok(tenancy::RevokeOutcome::NotAMember) => {
+            (StatusCode::NOT_FOUND, "not a member of this course").into_response()
+        }
+        Ok(tenancy::RevokeOutcome::LastMember) => (
+            StatusCode::CONFLICT,
+            "cannot remove the last member of a course",
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// serde helper: distinguishes an absent field from an explicit `null`, so PATCH
+/// can tell "leave the repo alone" from "clear the repo".
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(de)?))
 }
 
 #[derive(Deserialize)]

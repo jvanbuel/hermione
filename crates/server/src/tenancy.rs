@@ -6,7 +6,7 @@ use chrono::Utc;
 use hermione_entity::{admins, course_admins, courses};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter,
+    QueryFilter, QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -86,6 +86,15 @@ pub async fn admin_by_username(db: &DatabaseConnection, username: &str) -> Optio
 
 // --- courses ---------------------------------------------------------------
 
+/// Filters courses by archived state: active (`archived_at IS NULL`) or archived.
+fn archived_filter(archived: bool) -> sea_orm::sea_query::SimpleExpr {
+    if archived {
+        courses::Column::ArchivedAt.is_not_null()
+    } else {
+        courses::Column::ArchivedAt.is_null()
+    }
+}
+
 pub async fn create_course(
     db: &DatabaseConnection,
     slug: &str,
@@ -98,12 +107,64 @@ pub async fn create_course(
         name: Set(name.to_string()),
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
         repo_url: Set(repo_url.map(str::to_string)),
+        archived_at: Set(None),
         created_at: Set(Utc::now().into()),
     };
     courses::Entity::insert(model)
         .exec_with_returning(db)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Updates a course's name and/or linked repo. `name` is applied when `Some`;
+/// `repo_url` is applied when `Some` (inner `None` clears the link).
+pub async fn update_course(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    name: Option<&str>,
+    repo_url: Option<Option<&str>>,
+) -> Result<courses::Model, DbErr> {
+    let mut model = courses::ActiveModel {
+        id: Set(course_id),
+        ..Default::default()
+    };
+    if let Some(name) = name {
+        model.name = Set(name.to_string());
+    }
+    if let Some(repo_url) = repo_url {
+        model.repo_url = Set(repo_url.map(str::to_string));
+    }
+    courses::Entity::update(model).exec(db).await
+}
+
+/// Archives or restores a course. Archived courses drop out of the active
+/// switcher but keep all their data.
+pub async fn set_course_archived(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    archived: bool,
+) -> Result<courses::Model, DbErr> {
+    let model = courses::ActiveModel {
+        id: Set(course_id),
+        archived_at: Set(archived.then(|| Utc::now().into())),
+        ..Default::default()
+    };
+    courses::Entity::update(model).exec(db).await
+}
+
+/// Issues a fresh enrollment token for a course (invalidating the old one).
+pub async fn rotate_enrollment_token(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+) -> Result<String, DbErr> {
+    let token = Uuid::new_v4().simple().to_string();
+    let model = courses::ActiveModel {
+        id: Set(course_id),
+        enrollment_token: Set(token.clone()),
+        ..Default::default()
+    };
+    courses::Entity::update(model).exec(db).await?;
+    Ok(token)
 }
 
 pub async fn course_by_slug(db: &DatabaseConnection, slug: &str) -> Option<courses::Model> {
@@ -155,10 +216,75 @@ pub async fn is_member(db: &DatabaseConnection, admin_id: Uuid, course_id: Uuid)
         .is_some()
 }
 
-/// Courses an admin may access.
+/// The admins with access to a course, ordered by username.
+pub async fn admins_for_course(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+) -> Result<Vec<admins::Model>, DbErr> {
+    let admin_ids: Vec<Uuid> = course_admins::Entity::find()
+        .filter(course_admins::Column::CourseId.eq(course_id))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|m| m.admin_id)
+        .collect();
+    if admin_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = admins::Entity::find()
+        .filter(admins::Column::Id.is_in(admin_ids))
+        .all(db)
+        .await?;
+    rows.sort_by(|a, b| a.username.cmp(&b.username));
+    Ok(rows)
+}
+
+/// Outcome of a checked membership revocation.
+pub enum RevokeOutcome {
+    /// The admin was removed.
+    Removed,
+    /// The admin isn't a member of this course.
+    NotAMember,
+    /// The admin is the course's only member — removal refused.
+    LastMember,
+}
+
+/// Revokes an admin's membership, refusing to remove the last member (which would
+/// orphan the course). Runs in one transaction with the membership rows locked
+/// `FOR UPDATE`, so concurrent removals can't both pass the last-member check and
+/// leave the course with zero members.
+pub async fn revoke_membership_checked(
+    db: &DatabaseConnection,
+    admin_id: Uuid,
+    course_id: Uuid,
+) -> Result<RevokeOutcome, DbErr> {
+    let txn = db.begin().await?;
+    let members = course_admins::Entity::find()
+        .filter(course_admins::Column::CourseId.eq(course_id))
+        .lock_exclusive()
+        .all(&txn)
+        .await?;
+    if !members.iter().any(|m| m.admin_id == admin_id) {
+        txn.rollback().await?;
+        return Ok(RevokeOutcome::NotAMember);
+    }
+    if members.len() <= 1 {
+        txn.rollback().await?;
+        return Ok(RevokeOutcome::LastMember);
+    }
+    course_admins::Entity::delete_by_id((admin_id, course_id))
+        .exec(&txn)
+        .await?;
+    txn.commit().await?;
+    Ok(RevokeOutcome::Removed)
+}
+
+/// Courses an admin may access. `archived` selects active (false) or archived
+/// (true) courses.
 pub async fn courses_for_admin(
     db: &DatabaseConnection,
     admin_id: Uuid,
+    archived: bool,
 ) -> Result<Vec<courses::Model>, DbErr> {
     let course_ids: Vec<Uuid> = course_admins::Entity::find()
         .filter(course_admins::Column::AdminId.eq(admin_id))
@@ -172,10 +298,17 @@ pub async fn courses_for_admin(
     }
     courses::Entity::find()
         .filter(courses::Column::Id.is_in(course_ids))
+        .filter(archived_filter(archived))
         .all(db)
         .await
 }
 
-pub async fn all_courses(db: &DatabaseConnection) -> Result<Vec<courses::Model>, DbErr> {
-    courses::Entity::find().all(db).await
+pub async fn all_courses(
+    db: &DatabaseConnection,
+    archived: bool,
+) -> Result<Vec<courses::Model>, DbErr> {
+    courses::Entity::find()
+        .filter(archived_filter(archived))
+        .all(db)
+        .await
 }

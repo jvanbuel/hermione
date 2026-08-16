@@ -70,6 +70,7 @@ async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Ro
         open_dev: Arc::new(AtomicBool::new(false)),
         assistant: crate::assistant::Assistant::new(None, None),
         assistant_default_model: "claude-opus-4-8".to_string(),
+        github_token: None,
     };
     let router = http::router(state.clone());
     (state, router)
@@ -114,12 +115,31 @@ async fn post_json_with_cookie(
     cookie: &str,
     body: &str,
 ) -> axum::response::Response {
-    let req = Request::post(uri)
-        .header(header::COOKIE, cookie)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    app.clone().oneshot(req).await.unwrap()
+    req_with_cookie(app, "POST", uri, cookie, Some(body)).await
+}
+
+async fn req_with_cookie(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    cookie: &str,
+    body: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::COOKIE, cookie);
+    let body = match body {
+        Some(b) => {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(b.to_string())
+        }
+        None => Body::empty(),
+    };
+    app.clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -332,7 +352,8 @@ async fn teacher_creates_course_and_is_enrolled() {
 
     // Create a course by linking a repo, letting the server derive the slug.
     let repo = format!("https://github.com/org/course{s}.git");
-    let body = format!(r#"{{"name":"My Course {s}","repoUrl":"{repo}"}}"#);
+    // seedExercises:false keeps the test hermetic (no live GitHub call).
+    let body = format!(r#"{{"name":"My Course {s}","repoUrl":"{repo}","seedExercises":false}}"#);
     let resp = post_json_with_cookie(&app, "/api/courses", &cookie, &body).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
     let created: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
@@ -340,14 +361,19 @@ async fn teacher_creates_course_and_is_enrolled() {
     assert_eq!(slug, format!("course{s}"), "slug derived from repo");
     assert_eq!(created["repoUrl"], repo);
     assert!(
-        created["enrollmentToken"].as_str().is_some_and(|t| !t.is_empty()),
+        created["enrollmentToken"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
         "enrollment token returned"
     );
 
     // The creator is now a member, so the course is scoped to them...
     let resp = get_with_cookie(&app, "/api/courses", &cookie).await;
     let listed = body_string(resp).await;
-    assert!(listed.contains(&slug), "new course visible to creator: {listed}");
+    assert!(
+        listed.contains(&slug),
+        "new course visible to creator: {listed}"
+    );
 
     // ...and its data endpoints are accessible.
     let resp = get_with_cookie(&app, &format!("/api/overview?course={slug}"), &cookie).await;
@@ -361,6 +387,218 @@ async fn teacher_creates_course_and_is_enrolled() {
     // A course needs at least a slug, name, or repo.
     let resp = post_json_with_cookie(&app, "/api/courses", &cookie, "{}").await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn teacher_manages_course_settings() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("mgmt{s}"), "Mgmt", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("owner{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("owner{s}"), "pw").await.unwrap();
+    let uri = format!("/api/courses/mgmt{s}");
+
+    // Detail carries the enrollment token and the member list.
+    let resp = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let detail: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let original_token = detail["enrollmentToken"].as_str().unwrap().to_string();
+    assert!(detail["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m == &format!("owner{s}")));
+
+    // Rename + link a repo.
+    let patch = r#"{"name":"Renamed","repoUrl":"https://github.com/org/x"}"#;
+    let resp = req_with_cookie(&app, "PATCH", &uri, &cookie, Some(patch)).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let updated = tenancy::course_by_slug(&state.db, &format!("mgmt{s}"))
+        .await
+        .unwrap();
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(
+        updated.repo_url.as_deref(),
+        Some("https://github.com/org/x")
+    );
+
+    // Clearing the repo (explicit null) unlinks it.
+    let resp = req_with_cookie(&app, "PATCH", &uri, &cookie, Some(r#"{"repoUrl":null}"#)).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let cleared = tenancy::course_by_slug(&state.db, &format!("mgmt{s}"))
+        .await
+        .unwrap();
+    assert_eq!(cleared.repo_url, None);
+
+    // Rotating the token changes it.
+    let resp = req_with_cookie(
+        &app,
+        "POST",
+        &format!("/api/courses/mgmt{s}/rotate-token"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rotated: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    assert_ne!(rotated["enrollmentToken"].as_str().unwrap(), original_token);
+
+    // A non-member cannot touch it.
+    tenancy::create_admin(&state.db, &format!("outsider{s}"), "pw")
+        .await
+        .unwrap();
+    let outsider = login(&app, &format!("outsider{s}"), "pw").await.unwrap();
+    let resp = req_with_cookie(&app, "PATCH", &uri, &outsider, Some(r#"{"name":"nope"}"#)).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn teacher_manages_co_teachers() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("team{s}"), "Team", None)
+        .await
+        .unwrap();
+    let owner = tenancy::create_admin(&state.db, &format!("o{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, owner.id, course.id)
+        .await
+        .unwrap();
+    tenancy::create_admin(&state.db, &format!("colleague{s}"), "pw")
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("o{s}"), "pw").await.unwrap();
+    let members_uri = format!("/api/courses/team{s}/members");
+
+    // Add an existing admin as a co-teacher.
+    let body = format!(r#"{{"username":"colleague{s}"}}"#);
+    let resp = post_json_with_cookie(&app, &members_uri, &cookie, &body).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // They can now see the course.
+    let colleague = login(&app, &format!("colleague{s}"), "pw").await.unwrap();
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=team{s}"), &colleague).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Adding an unknown user is a 404.
+    let resp = post_json_with_cookie(&app, &members_uri, &cookie, r#"{"username":"ghost"}"#).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Remove the co-teacher.
+    let resp = req_with_cookie(
+        &app,
+        "DELETE",
+        &format!("/api/courses/team{s}/members/colleague{s}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=team{s}"), &colleague).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Removing an admin who isn't a member is a 404 (not a last-member conflict).
+    let resp = req_with_cookie(
+        &app,
+        "DELETE",
+        &format!("/api/courses/team{s}/members/colleague{s}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // The last remaining member cannot be removed.
+    let resp = req_with_cookie(
+        &app,
+        "DELETE",
+        &format!("/api/courses/team{s}/members/o{s}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn archived_courses_leave_the_active_list() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("arch{s}"), "Arch", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("aa{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("aa{s}"), "pw").await.unwrap();
+
+    // Archive it.
+    let resp = req_with_cookie(
+        &app,
+        "PATCH",
+        &format!("/api/courses/arch{s}"),
+        &cookie,
+        Some(r#"{"archived":true}"#),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Gone from the active list, present in the archived list.
+    let active = body_string(get_with_cookie(&app, "/api/courses", &cookie).await).await;
+    assert!(
+        !active.contains(&format!("arch{s}")),
+        "archived hidden: {active}"
+    );
+    let archived =
+        body_string(get_with_cookie(&app, "/api/courses?archived=1", &cookie).await).await;
+    assert!(
+        archived.contains(&format!("arch{s}")),
+        "archived listed: {archived}"
+    );
+
+    // Restore it.
+    let resp = req_with_cookie(
+        &app,
+        "PATCH",
+        &format!("/api/courses/arch{s}"),
+        &cookie,
+        Some(r#"{"archived":false}"#),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let active = body_string(get_with_cookie(&app, "/api/courses", &cookie).await).await;
+    assert!(
+        active.contains(&format!("arch{s}")),
+        "restored to active: {active}"
+    );
+}
+
+#[tokio::test]
+async fn course_can_be_created_from_name_alone() {
+    let (state, app) = app().await;
+    let s = rnd();
+    tenancy::create_admin(&state.db, &format!("n{s}"), "pw")
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("n{s}"), "pw").await.unwrap();
+
+    // Name only (no slug, no repo): the slug is derived from the name.
+    let body = format!(r#"{{"name":"Intro Rust {s}"}}"#);
+    let resp = post_json_with_cookie(&app, "/api/courses", &cookie, &body).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    assert_eq!(created["slug"], format!("intro-rust-{s}"));
 }
 
 #[tokio::test]

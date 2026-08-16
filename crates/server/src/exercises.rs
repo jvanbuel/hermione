@@ -91,31 +91,52 @@ pub async fn define(
         Err(resp) => return resp,
     };
 
-    for (idx, ex) in body.exercises.iter().enumerate() {
-        let slug = ex.slug.trim();
-        if slug.is_empty() {
-            continue;
-        }
+    let items: Vec<(String, String, i32)> = body
+        .exercises
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, ex)| {
+            let slug = ex.slug.trim();
+            (!slug.is_empty()).then(|| {
+                (
+                    slug.to_string(),
+                    ex.title.clone().unwrap_or_else(|| slug.to_string()),
+                    ex.position.unwrap_or(idx as i32),
+                )
+            })
+        })
+        .collect();
+
+    match upsert(&state.db, course_id, &items).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Upserts a course's exercises by `(course_id, slug)`, updating title/position
+/// when one already exists. Shared by the define endpoint and repo seeding.
+pub async fn upsert(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    items: &[(String, String, i32)],
+) -> Result<(), sea_orm::DbErr> {
+    for (slug, title, position) in items {
         let model = exercises::ActiveModel {
             id: Set(Uuid::new_v4()),
             course_id: Set(course_id),
-            slug: Set(slug.to_string()),
-            title: Set(ex.title.clone().unwrap_or_else(|| slug.to_string())),
-            position: Set(ex.position.unwrap_or(idx as i32)),
+            slug: Set(slug.clone()),
+            title: Set(title.clone()),
+            position: Set(*position),
             created_at: Set(Utc::now().into()),
         };
-        // Upsert on (course_id, slug): update title/position if it already exists.
-        let res = exercises::Entity::insert(model)
+        exercises::Entity::insert(model)
             .on_conflict(
                 OnConflict::columns([exercises::Column::CourseId, exercises::Column::Slug])
                     .update_columns([exercises::Column::Title, exercises::Column::Position])
                     .to_owned(),
             )
-            .exec(&state.db)
-            .await;
-        if let Err(e) = res {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+            .exec(db)
+            .await?;
     }
-    StatusCode::NO_CONTENT.into_response()
+    Ok(())
 }

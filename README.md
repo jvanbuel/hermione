@@ -96,6 +96,7 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--bootstrap-admin-password` | `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` | none — set it to seed an admin on first start |
 | `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
 | `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
+| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises. Use a **read-only, minimally-scoped** token: teachers can point a course at any repo the token can read (see note below) |
 
 ### 3. Record a session (on the student's machine)
 
@@ -173,7 +174,15 @@ cd vscode-extension && npm install && npm run compile
   file and per exercise for one student.
 - `GET /api/courses` / `POST /api/courses` — list the courses the signed-in
   teacher may access / create one (optionally linking a git repo). The creator is
-  automatically enrolled, so it appears in their switcher immediately. See below.
+  automatically enrolled, so it appears in their switcher immediately. `?archived=1`
+  lists archived courses. See below.
+- `GET /api/courses/{slug}` — course detail (repo, enrollment token, teachers).
+  `PATCH /api/courses/{slug}` — rename, relink the repo (`repoUrl: null` unlinks),
+  or `archived: true/false`. `POST /api/courses/{slug}/rotate-token` — issue a
+  fresh enrollment token. `POST /api/courses/{slug}/members` adds a co-teacher
+  (body `{"username":"…"}`); `DELETE /api/courses/{slug}/members/{username}`
+  removes one (the last member cannot be removed). A co-teacher is any existing
+  admin. All scoped to a member.
 - `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
   a course's exercises (title + order). The dashboard shows all of them, even
   ones nobody has started, with per-exercise stats.
@@ -216,12 +225,28 @@ ever shows the selected course's data.
   sign-in (`--user`, password prompted or `HERMIONE_PASSWORD`) or the
   provisioning secret (`--admin-token` / `HERMIONE_ADMIN_TOKEN`).
 - **A course repo's folders are its exercises.** Since courses are usually a repo
-  of exercise folders, `hermione course create --link` (run inside the repo)
-  seeds the course's exercises from it: the `.hermione.json` exercise list if
-  present (same file the extension reads, order preserved), otherwise each
-  top-level folder (tooling/build/VCS dirs skipped). Opt out with
-  `--no-exercises`. Seeding uses the teacher session, so it applies to the
-  `--user` flow (not `--admin-token`).
+  of exercise folders, both create paths seed the course's exercises from the
+  repo: prefer the `.hermione.json` exercise list (the same file the extension
+  reads, order preserved), otherwise each top-level folder (tooling/build/VCS
+  dirs skipped).
+    - **Dashboard "New course"** fetches the linked GitHub repo's folders over
+      the API (set `HERMIONE_GITHUB_TOKEN` for private repos / rate limits);
+      untick *Seed exercises* to skip. Best-effort — seeding never blocks course
+      creation. Only folder **names** are read (not contents). Because a teacher
+      can link any repo URL, `HERMIONE_GITHUB_TOKEN` should be read-only and
+      scoped to just the repos teachers may seed from (e.g. a fine-grained PAT or
+      a repo-scoped GitHub App installation) so it can't disclose folder names of
+      unrelated private repos.
+    - **`hermione course create --link`** (run inside the repo) seeds from the
+      local checkout, so it needs no token and works for private repos; opt out
+      with `--no-exercises`. Seeding uses the teacher session, so it applies to
+      the `--user` flow (not `--admin-token`).
+- **Manage a course from the dashboard.** The gear next to the course switcher
+  opens *Course settings*: rename it, link/unlink its repo, copy or **rotate** the
+  enrollment token (if it leaks), add/remove **co-teachers** (any existing admin,
+  no super-admin secret needed), and **archive** it (keeps all data, drops it from
+  the switcher; restore from *New course*). The header also links straight to the
+  linked repo.
 - **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
   admins and grant membership.
 
