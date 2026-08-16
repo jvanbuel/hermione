@@ -22,6 +22,11 @@ pub struct DiscoveredExercise {
 
 /// Parses `(owner, repo)` from a GitHub URL in https or ssh form. Returns `None`
 /// for non-GitHub or unparseable URLs (seeding is then simply skipped).
+///
+/// Both segments are validated to be safe GitHub identifiers (see
+/// [`is_safe_segment`]) so the `owner`/`repo` we later interpolate into an API
+/// URL can't smuggle query/fragment characters or percent-encoded separators
+/// that would redirect the request to a different resource.
 pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     let s = repo_url.trim();
     let rest = s
@@ -31,10 +36,23 @@ pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
         .or_else(|| s.strip_prefix("git@github.com:"))?;
     let rest = rest.trim_end_matches('/');
     let mut parts = rest.splitn(3, '/');
-    let owner = parts.next().filter(|p| !p.is_empty())?;
-    let repo = parts.next().filter(|p| !p.is_empty())?;
+    let owner = parts.next()?;
+    let repo = parts.next()?;
     let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    (!repo.is_empty()).then(|| (owner.to_string(), repo.to_string()))
+    (is_safe_segment(owner) && is_safe_segment(repo)).then(|| (owner.to_string(), repo.to_string()))
+}
+
+/// Whether `s` is a GitHub owner/repo path segment safe to interpolate into an
+/// API URL: non-empty, not `.`/`..` (which a URL parser could treat as path
+/// traversal), and only `[A-Za-z0-9._-]`. This rejects `?`, `#`, and `%`
+/// (so percent-encoded slashes/separators can't sneak through) — anything that
+/// could otherwise steer the request off the `owner/repo` we validated.
+fn is_safe_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Whether `owner`'s repos may be read with the server's GitHub token. The token
@@ -220,6 +238,20 @@ mod tests {
         );
         assert_eq!(parse_github("https://gitlab.com/acme/repo"), None);
         assert_eq!(parse_github("not a url"), None);
+    }
+
+    #[test]
+    fn rejects_repos_with_url_significant_chars() {
+        // A crafted repo segment must not carry query/fragment characters or
+        // percent-encoded separators into the API URL we later interpolate.
+        assert_eq!(parse_github("https://github.com/acme/repo?x=1"), None);
+        assert_eq!(parse_github("https://github.com/acme/repo#frag"), None);
+        assert_eq!(parse_github("https://github.com/acme/repo%2Fevil"), None);
+        assert_eq!(parse_github("https://github.com/ac%2Fme/repo"), None);
+        assert_eq!(parse_github("https://github.com/acme/.."), None);
+        assert_eq!(parse_github("https://github.com/./repo"), None);
+        // A leading slash yields an empty owner segment, which is rejected.
+        assert_eq!(parse_github("https://github.com//repo"), None);
     }
 
     #[test]
