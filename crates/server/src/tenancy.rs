@@ -95,11 +95,35 @@ fn archived_filter(archived: bool) -> sea_orm::sea_query::SimpleExpr {
     }
 }
 
+/// A course's profile fields, set at creation.
+#[derive(Default)]
+pub struct CourseProfile {
+    pub description: Option<String>,
+    pub term: Option<String>,
+    pub institution: Option<String>,
+    pub level: Option<String>,
+}
+
+/// Convenience wrapper (no profile), used by the integration tests; the server
+/// always creates a course together with its profile.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn create_course(
     db: &DatabaseConnection,
     slug: &str,
     name: &str,
     repo_url: Option<&str>,
+) -> Result<courses::Model, String> {
+    create_course_with_profile(db, slug, name, repo_url, &CourseProfile::default()).await
+}
+
+/// Creates a course with its profile in a single INSERT, so a course is never
+/// persisted without the profile the caller asked for.
+pub async fn create_course_with_profile(
+    db: &DatabaseConnection,
+    slug: &str,
+    name: &str,
+    repo_url: Option<&str>,
+    profile: &CourseProfile,
 ) -> Result<courses::Model, String> {
     let model = courses::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -108,6 +132,10 @@ pub async fn create_course(
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
         repo_url: Set(repo_url.map(str::to_string)),
         archived_at: Set(None),
+        description: Set(profile.description.clone()),
+        term: Set(profile.term.clone()),
+        institution: Set(profile.institution.clone()),
+        level: Set(profile.level.clone()),
         created_at: Set(Utc::now().into()),
     };
     courses::Entity::insert(model)
@@ -116,23 +144,57 @@ pub async fn create_course(
         .map_err(|e| e.to_string())
 }
 
-/// Updates a course's name and/or linked repo. `name` is applied when `Some`;
-/// `repo_url` is applied when `Some` (inner `None` clears the link).
+/// A partial update to a course. Each field is applied only when `Some`; an inner
+/// `None` clears that column (e.g. unlink the repo, blank a profile field).
+#[derive(Default)]
+pub struct CoursePatch {
+    pub name: Option<String>,
+    pub repo_url: Option<Option<String>>,
+    pub description: Option<Option<String>>,
+    pub term: Option<Option<String>>,
+    pub institution: Option<Option<String>>,
+    pub level: Option<Option<String>>,
+}
+
+impl CoursePatch {
+    /// True when no field is set — nothing to update.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.repo_url.is_none()
+            && self.description.is_none()
+            && self.term.is_none()
+            && self.institution.is_none()
+            && self.level.is_none()
+    }
+}
+
+/// Applies a partial update to a course (name, linked repo, and profile fields).
 pub async fn update_course(
     db: &DatabaseConnection,
     course_id: Uuid,
-    name: Option<&str>,
-    repo_url: Option<Option<&str>>,
+    patch: &CoursePatch,
 ) -> Result<courses::Model, DbErr> {
     let mut model = courses::ActiveModel {
         id: Set(course_id),
         ..Default::default()
     };
-    if let Some(name) = name {
-        model.name = Set(name.to_string());
+    if let Some(name) = &patch.name {
+        model.name = Set(name.clone());
     }
-    if let Some(repo_url) = repo_url {
-        model.repo_url = Set(repo_url.map(str::to_string));
+    if let Some(repo_url) = &patch.repo_url {
+        model.repo_url = Set(repo_url.clone());
+    }
+    if let Some(description) = &patch.description {
+        model.description = Set(description.clone());
+    }
+    if let Some(term) = &patch.term {
+        model.term = Set(term.clone());
+    }
+    if let Some(institution) = &patch.institution {
+        model.institution = Set(institution.clone());
+    }
+    if let Some(level) = &patch.level {
+        model.level = Set(level.clone());
     }
     courses::Entity::update(model).exec(db).await
 }

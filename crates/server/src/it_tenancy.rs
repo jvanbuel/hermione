@@ -461,6 +461,55 @@ async fn teacher_manages_course_settings() {
 }
 
 #[tokio::test]
+async fn course_profile_is_set_on_create_and_editable() {
+    let (state, app) = app().await;
+    let s = rnd();
+    tenancy::create_admin(&state.db, &format!("p{s}"), "pw")
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("p{s}"), "pw").await.unwrap();
+
+    // Create with profile fields.
+    let body = format!(
+        r#"{{"slug":"prof{s}","name":"Prof","seedExercises":false,
+             "description":"All about pointers","term":"Fall 2026",
+             "institution":"Acme U","level":"Beginner"}}"#
+    );
+    let resp = post_json_with_cookie(&app, "/api/courses", &cookie, &body).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let uri = format!("/api/courses/prof{s}");
+    let detail: serde_json::Value =
+        serde_json::from_str(&body_string(get_with_cookie(&app, &uri, &cookie).await).await)
+            .unwrap();
+    assert_eq!(detail["description"], "All about pointers");
+    assert_eq!(detail["term"], "Fall 2026");
+    assert_eq!(detail["institution"], "Acme U");
+    assert_eq!(detail["level"], "Beginner");
+
+    // Edit one field and clear another (explicit null).
+    let patch = r#"{"level":"Advanced","term":null}"#;
+    let resp = req_with_cookie(&app, "PATCH", &uri, &cookie, Some(patch)).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let detail: serde_json::Value =
+        serde_json::from_str(&body_string(get_with_cookie(&app, &uri, &cookie).await).await)
+            .unwrap();
+    assert_eq!(detail["level"], "Advanced");
+    assert!(detail["term"].is_null(), "term cleared");
+    assert_eq!(
+        detail["description"], "All about pointers",
+        "untouched field kept"
+    );
+
+    // The switcher list carries the description (for the tooltip).
+    let list = body_string(get_with_cookie(&app, "/api/courses", &cookie).await).await;
+    assert!(
+        list.contains("All about pointers"),
+        "description in list: {list}"
+    );
+}
+
+#[tokio::test]
 async fn teacher_manages_co_teachers() {
     let (state, app) = app().await;
     let s = rnd();
