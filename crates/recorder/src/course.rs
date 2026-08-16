@@ -197,16 +197,20 @@ fn init(args: InitArgs) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let path = dir.join(".hermione.json");
-    if path.exists() && !args.force {
-        bail!(
-            "{} already exists — pass --force to overwrite",
-            path.display()
-        );
-    }
 
     let mut folders = scan_exercise_folders(&dir)?;
     folders.sort();
-    let rules = exercise_rules_for_folders(&folders);
+    // A folder whose name contains a glob wildcard (`*`/`?`) can't be written as a
+    // literal `match` in .hermione.json's glob grammar, so skip it (with a note)
+    // rather than emit a pattern that would also match unrelated folders.
+    let (usable, skipped): (Vec<String>, Vec<String>) =
+        folders.into_iter().partition(|f| !f.contains(['*', '?']));
+    for f in &skipped {
+        eprintln!("Skipping {f:?}: folder name contains a glob wildcard (* or ?).");
+    }
+
+    let mut rules = exercise_rules_for_folders(&usable);
+    rules.sort_by(|a, b| a.name.cmp(&b.name));
     if rules.is_empty() {
         bail!(
             "no exercise folders found in {} — create a folder per exercise, then re-run",
@@ -216,7 +220,7 @@ fn init(args: InitArgs) -> Result<()> {
 
     // Serialize from the struct (not a json! Value) so keys read name-then-match.
     let text = serde_json::to_string_pretty(&HermioneConfig { exercises: &rules })? + "\n";
-    std::fs::write(&path, text)?;
+    write_config(&path, &text, args.force)?;
     let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
     println!(
         "Wrote {} with {} exercise(s): {}",
@@ -225,6 +229,38 @@ fn init(args: InitArgs) -> Result<()> {
         names.join(", ")
     );
     println!("  Commit it, then: hermione course create --link --user <you>");
+    Ok(())
+}
+
+/// Writes the config without following a symlink out of the target directory.
+/// Without `--force`, uses `O_EXCL` (create-new) so an existing path — a dangling
+/// `.hermione.json` symlink included — fails cleanly instead of redirecting the
+/// write. With `--force`, refuses to overwrite a symlink but replaces a file.
+fn write_config(path: &Path, text: &str, force: bool) -> Result<()> {
+    use std::io::Write;
+    if force {
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.file_type().is_symlink() {
+                bail!("{} is a symlink — refusing to overwrite it", path.display());
+            }
+        }
+        std::fs::write(path, text)?;
+    } else {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(mut f) => f.write_all(text.as_bytes())?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                bail!(
+                    "{} already exists — pass --force to overwrite",
+                    path.display()
+                );
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
     Ok(())
 }
 
@@ -580,6 +616,59 @@ mod tests {
         // Serializes with name before match, and only these keys.
         let json = serde_json::to_string(&rules[0]).unwrap();
         assert_eq!(json, r#"{"name":"ex1-arrays","match":"ex1-arrays/**"}"#);
+    }
+
+    /// A unique scratch directory for a filesystem test.
+    fn scratch(tag: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("hermione-init-{}-{tag}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn init_writes_sorted_and_skips_wildcard_folders() {
+        let dir = scratch("sorted");
+        for f in ["Zebra", "apple", "ex*"] {
+            std::fs::create_dir_all(dir.join(f)).unwrap();
+        }
+        init(InitArgs {
+            dir: Some(dir.to_string_lossy().into_owned()),
+            force: false,
+        })
+        .unwrap();
+
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(".hermione.json")).unwrap()).unwrap();
+        let names: Vec<&str> = doc["exercises"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        // Sorted by slug; the `ex*` folder (glob wildcard) is skipped.
+        assert_eq!(names, ["apple", "zebra"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_refuses_to_write_through_a_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("symlink");
+        std::fs::create_dir_all(dir.join("ex1")).unwrap();
+        let target = dir.join("outside-target.json");
+        symlink(&target, dir.join(".hermione.json")).unwrap();
+
+        let res = init(InitArgs {
+            dir: Some(dir.to_string_lossy().into_owned()),
+            force: false,
+        });
+        assert!(res.is_err(), "must refuse to follow a dangling symlink");
+        assert!(!target.exists(), "must not create the symlink target");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
