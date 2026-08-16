@@ -66,8 +66,14 @@ pub async fn discover_exercises(
     repo: &str,
     token: Option<&str>,
 ) -> Result<Vec<DiscoveredExercise>, String> {
+    // No automatic redirects: GitHub 301-redirects renamed/transferred repos on
+    // api.github.com, and reqwest keeps the Authorization header on same-host
+    // redirects — so following one could send the token to a different (not
+    // allow-listed) owner. Refusing to follow keeps the token on the exact URL
+    // whose owner we validated. A redirecting repo just isn't seeded.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
 
