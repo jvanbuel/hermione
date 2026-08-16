@@ -95,11 +95,35 @@ fn archived_filter(archived: bool) -> sea_orm::sea_query::SimpleExpr {
     }
 }
 
+/// A course's profile fields, set at creation.
+#[derive(Default)]
+pub struct CourseProfile {
+    pub description: Option<String>,
+    pub term: Option<String>,
+    pub institution: Option<String>,
+    pub level: Option<String>,
+}
+
+/// Convenience wrapper (no profile), used by the integration tests; the server
+/// always creates a course together with its profile.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn create_course(
     db: &DatabaseConnection,
     slug: &str,
     name: &str,
     repo_url: Option<&str>,
+) -> Result<courses::Model, String> {
+    create_course_with_profile(db, slug, name, repo_url, &CourseProfile::default()).await
+}
+
+/// Creates a course with its profile in a single INSERT, so a course is never
+/// persisted without the profile the caller asked for.
+pub async fn create_course_with_profile(
+    db: &DatabaseConnection,
+    slug: &str,
+    name: &str,
+    repo_url: Option<&str>,
+    profile: &CourseProfile,
 ) -> Result<courses::Model, String> {
     let model = courses::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -108,10 +132,10 @@ pub async fn create_course(
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
         repo_url: Set(repo_url.map(str::to_string)),
         archived_at: Set(None),
-        description: Set(None),
-        term: Set(None),
-        institution: Set(None),
-        level: Set(None),
+        description: Set(profile.description.clone()),
+        term: Set(profile.term.clone()),
+        institution: Set(profile.institution.clone()),
+        level: Set(profile.level.clone()),
         created_at: Set(Utc::now().into()),
     };
     courses::Entity::insert(model)
