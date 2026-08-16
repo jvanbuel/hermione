@@ -774,13 +774,11 @@ async fn create_course_for_teacher(
         if let Some(repo) = course.repo_url.as_deref() {
             match crate::repo::parse_github(repo) {
                 Some((owner, name)) => {
-                    match crate::repo::discover_exercises(
-                        &owner,
-                        &name,
-                        state.github_token.as_deref(),
-                    )
-                    .await
-                    {
+                    // Only send the token to allow-listed owners, so a teacher
+                    // can't disclose an unrelated private repo's folders through it.
+                    let allowed = crate::repo::owner_allowed(&owner, &state.github_allowed_owners);
+                    let token = state.github_token.as_deref().filter(|_| allowed);
+                    match crate::repo::discover_exercises(&owner, &name, token).await {
                         Ok(found) if !found.is_empty() => {
                             let items: Vec<(String, String, i32)> = found
                                 .iter()
@@ -795,6 +793,14 @@ async fn create_course_for_teacher(
                             }
                         }
                         Ok(_) => {}
+                        // When a token exists but this owner isn't allow-listed, say
+                        // so — otherwise the failure looks like a missing token.
+                        Err(e) if state.github_token.is_some() && !allowed => {
+                            seed_note = Some(format!(
+                                "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS, \
+                                 so the GitHub token was not used"
+                            ))
+                        }
                         Err(e) => seed_note = Some(e),
                     }
                 }

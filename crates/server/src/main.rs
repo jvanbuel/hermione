@@ -90,9 +90,17 @@ struct Config {
 
     /// GitHub token used to read a linked repo's folders when seeding a course's
     /// exercises from the dashboard. Optional — needed only for private repos and
-    /// to ease rate limits; public repos work without it.
+    /// to ease rate limits; public repos work without it. The token is only sent
+    /// to owners in `--github-allowed-owners`.
     #[arg(long, env = "HERMIONE_GITHUB_TOKEN")]
     github_token: Option<String>,
+
+    /// Comma-separated GitHub owners/orgs whose repos may be read with
+    /// `--github-token`. The token is never sent to any other owner, so a teacher
+    /// can't point a course at an arbitrary private repo and disclose its folder
+    /// names. Empty ⇒ token-backed seeding is off (public repos still seed).
+    #[arg(long, env = "HERMIONE_GITHUB_ALLOWED_OWNERS", value_delimiter = ',')]
+    github_allowed_owners: Vec<String>,
 }
 
 #[tokio::main]
@@ -204,6 +212,12 @@ async fn main() -> anyhow::Result<()> {
         assistant,
         assistant_default_model: config.assistant_model.clone(),
         github_token: config.github_token.clone(),
+        github_allowed_owners: config
+            .github_allowed_owners
+            .iter()
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty())
+            .collect(),
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;

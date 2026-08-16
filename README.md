@@ -96,7 +96,8 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--bootstrap-admin-password` | `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` | none — set it to seed an admin on first start |
 | `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
 | `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
-| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises. Use a **read-only, minimally-scoped** token: teachers can point a course at any repo the token can read (see note below) |
+| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises. Only sent to owners in `--github-allowed-owners`; use a **read-only, minimally-scoped** token (see note below) |
+| `--github-allowed-owners` | `HERMIONE_GITHUB_ALLOWED_OWNERS` | empty — comma-separated GitHub owners/orgs whose repos may be read with the token. Empty ⇒ token-backed seeding off (public repos still seed) |
 
 ### 3. Record a session (on the student's machine)
 
@@ -233,10 +234,11 @@ ever shows the selected course's data.
       the API (set `HERMIONE_GITHUB_TOKEN` for private repos / rate limits);
       untick *Seed exercises* to skip. Best-effort — seeding never blocks course
       creation. Only folder **names** are read (not contents). Because a teacher
-      can link any repo URL, `HERMIONE_GITHUB_TOKEN` should be read-only and
-      scoped to just the repos teachers may seed from (e.g. a fine-grained PAT or
-      a repo-scoped GitHub App installation) so it can't disclose folder names of
-      unrelated private repos.
+      can link any repo URL, the token is **only ever sent to owners listed in
+      `HERMIONE_GITHUB_ALLOWED_OWNERS`** — so it can't disclose folder names of
+      unrelated private repos. Public repos seed with or without a token; private
+      repos need both the token and their owner allow-listed. Keep the token
+      read-only and minimally scoped even so.
     - **`hermione course create --link`** (run inside the repo) seeds from the
       local checkout, so it needs no token and works for private repos; opt out
       with `--no-exercises`. Seeding uses the teacher session, so it applies to

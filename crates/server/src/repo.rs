@@ -37,6 +37,15 @@ pub fn parse_github(repo_url: &str) -> Option<(String, String)> {
     (!repo.is_empty()).then(|| (owner.to_string(), repo.to_string()))
 }
 
+/// Whether `owner`'s repos may be read with the server's GitHub token. The token
+/// is only ever sent to allow-listed owners, so a teacher can't point a course at
+/// an arbitrary private repo and have the shared token disclose its folder names.
+/// An empty allow-list authorizes no owner (token-backed seeding is opt-in).
+pub fn owner_allowed(owner: &str, allowed: &[String]) -> bool {
+    let owner = owner.trim();
+    allowed.iter().any(|a| a.trim().eq_ignore_ascii_case(owner))
+}
+
 #[derive(Deserialize)]
 struct ContentEntry {
     #[serde(rename = "type")]
@@ -205,6 +214,17 @@ mod tests {
         );
         assert_eq!(parse_github("https://gitlab.com/acme/repo"), None);
         assert_eq!(parse_github("not a url"), None);
+    }
+
+    #[test]
+    fn owner_allowlist_is_case_insensitive_and_opt_in() {
+        let allowed = vec!["acme".to_string(), "Widgets-Inc".to_string()];
+        assert!(owner_allowed("acme", &allowed));
+        assert!(owner_allowed("ACME", &allowed));
+        assert!(owner_allowed("widgets-inc", &allowed));
+        assert!(!owner_allowed("other", &allowed));
+        // Empty allow-list authorizes nobody.
+        assert!(!owner_allowed("acme", &[]));
     }
 
     #[test]

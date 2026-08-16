@@ -94,4 +94,7 @@ pub struct AppState {
     /// GitHub token for reading a linked repo's folders when seeding exercises.
     /// `None` still works for public repos.
     pub github_token: Option<String>,
+    /// Owners/orgs whose repos may be read with `github_token`. The token is
+    /// never sent to any other owner (guards against cross-repo disclosure).
+    pub github_allowed_owners: Vec<String>,
 }
