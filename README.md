@@ -96,8 +96,10 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--bootstrap-admin-password` | `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` | none — set it to seed an admin on first start |
 | `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
 | `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
-| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises. Only sent to owners in `--github-allowed-owners`; use a **read-only, minimally-scoped** token (see note below) |
-| `--github-allowed-owners` | `HERMIONE_GITHUB_ALLOWED_OWNERS` | empty — comma-separated GitHub owners/orgs whose repos may be read with the token. Empty ⇒ token-backed seeding off (public repos still seed) |
+| `--github-app-id` | `HERMIONE_GITHUB_APP_ID` | none — GitHub App id used to mint **repository-scoped** seeding tokens (preferred; see note below). Needs `--github-app-private-key-path` too |
+| `--github-app-private-key-path` | `HERMIONE_GITHUB_APP_PRIVATE_KEY_PATH` | none — path to the GitHub App's PEM private key file |
+| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — fallback PAT that reads a linked repo's folders to seed exercises. Only sent to owners in `--github-allowed-owners`; use a **read-only, minimally-scoped** token (see note below) |
+| `--github-allowed-owners` | `HERMIONE_GITHUB_ALLOWED_OWNERS` | empty — comma-separated GitHub owners/orgs whose repos may be read with the PAT. Empty ⇒ PAT-backed seeding off (public repos still seed) |
 
 ### 3. Record a session (on the student's machine)
 
@@ -235,14 +237,25 @@ ever shows the selected course's data.
   reads, order preserved), otherwise each top-level folder (tooling/build/VCS
   dirs skipped).
     - **Dashboard "New course"** fetches the linked GitHub repo's folders over
-      the API (set `HERMIONE_GITHUB_TOKEN` for private repos / rate limits);
-      untick *Seed exercises* to skip. Best-effort — seeding never blocks course
-      creation. Only folder **names** are read (not contents). Because a teacher
-      can link any repo URL, the token is **only ever sent to owners listed in
-      `HERMIONE_GITHUB_ALLOWED_OWNERS`** — so it can't disclose folder names of
-      unrelated private repos. Public repos seed with or without a token; private
-      repos need both the token and their owner allow-listed. Keep the token
-      read-only and minimally scoped even so.
+      the API; untick *Seed exercises* to skip. Best-effort — seeding never blocks
+      course creation. Only folder **names** are read (not contents). Because a
+      teacher can link *any* repo URL, private-repo seeding must be authorized so
+      one course can't disclose another repo's folder names. Two ways, in order of
+      preference:
+        - **GitHub App (recommended).** Configure `HERMIONE_GITHUB_APP_ID` +
+          `HERMIONE_GITHUB_APP_PRIVATE_KEY_PATH`. For each seeding request the
+          server mints a short-lived installation token scoped to *only* that
+          repo (read-only `contents`/`metadata`), so the authorization boundary
+          is enforced by GitHub: the token can read nothing else. Install the App
+          on just the org/repos teachers may seed from. Repos the App isn't
+          installed on fall back to the PAT (below) or public seeding.
+        - **Fallback PAT.** `HERMIONE_GITHUB_TOKEN` is a shared token sent **only
+          to owners listed in `HERMIONE_GITHUB_ALLOWED_OWNERS`** — a coarser
+          allow-list guard for when a full App isn't set up. Keep it read-only and
+          minimally scoped.
+
+      Public repos seed with or without either; a private repo needs the App
+      installed on it, or its owner allow-listed with the PAT.
     - **`hermione course create --link`** (run inside the repo) seeds from the
       local checkout, so it needs no token and works for private repos; opt out
       with `--no-exercises`. Seeding uses the teacher session, so it applies to

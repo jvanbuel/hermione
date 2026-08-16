@@ -5,6 +5,7 @@ mod assistant;
 mod auth;
 mod exercises;
 mod files;
+mod github_app;
 mod grpc;
 mod http;
 mod identity;
@@ -17,6 +18,7 @@ mod text;
 #[cfg(test)]
 mod it_tenancy;
 
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -101,6 +103,20 @@ struct Config {
     /// names. Empty ⇒ token-backed seeding is off (public repos still seed).
     #[arg(long, env = "HERMIONE_GITHUB_ALLOWED_OWNERS", value_delimiter = ',')]
     github_allowed_owners: Vec<String>,
+
+    /// GitHub App id used to mint repository-scoped installation tokens for
+    /// exercise seeding. Paired with `--github-app-private-key-path`, this is the
+    /// preferred, most secure option: each seeding request gets a token scoped to
+    /// only the linked repo, so a teacher can never disclose an unrelated repo's
+    /// folder names. Takes precedence over `--github-token` when the app is
+    /// installed on the repo.
+    #[arg(long, env = "HERMIONE_GITHUB_APP_ID")]
+    github_app_id: Option<String>,
+
+    /// Path to the GitHub App's PEM private key file (pairs with
+    /// `--github-app-id`). Both must be set for the app to be used.
+    #[arg(long, env = "HERMIONE_GITHUB_APP_PRIVATE_KEY_PATH")]
+    github_app_private_key_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -201,6 +217,44 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // A GitHub App (id + private key) mints repo-scoped seeding tokens; it needs
+    // both parts and a readable, valid key, else it stays off (public/PAT paths
+    // still work).
+    let github_app = match (
+        config.github_app_id.as_deref(),
+        config.github_app_private_key_path.as_deref(),
+    ) {
+        (Some(id), Some(path)) => match std::fs::read_to_string(path) {
+            Ok(pem) => match github_app::GithubApp::new(id, &pem) {
+                Ok(app) => {
+                    tracing::info!(
+                        "GitHub App configured — exercise seeding uses repo-scoped tokens"
+                    );
+                    Some(app)
+                }
+                Err(e) => {
+                    tracing::error!("GitHub App disabled: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::error!(
+                    "GitHub App disabled — could not read private key {}: {e}",
+                    path.display()
+                );
+                None
+            }
+        },
+        (None, None) => None,
+        _ => {
+            tracing::warn!(
+                "GitHub App ignored — set both HERMIONE_GITHUB_APP_ID and \
+                 HERMIONE_GITHUB_APP_PRIVATE_KEY_PATH to enable repo-scoped seeding"
+            );
+            None
+        }
+    };
+
     let state = AppState {
         db,
         hub: Hub::default(),
@@ -218,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
             .map(|o| o.trim().to_string())
             .filter(|o| !o.is_empty())
             .collect(),
+        github_app,
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;
