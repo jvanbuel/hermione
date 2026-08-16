@@ -1,8 +1,9 @@
 //! File-activity ingest and analytics for the VSCode extension.
 //!
-//! The extension POSTs lightweight JSON events (focus changes + periodic
-//! heartbeats). We persist them and expose: the latest activity per student
-//! (for live intervention) and time-on-task aggregates (for offline analysis).
+//! The extension POSTs lightweight JSON events (focus changes, periodic
+//! heartbeats, and coalesced edit bursts). We persist them and expose: the
+//! latest activity per student (for live intervention) and time-on-task
+//! aggregates (for offline analysis).
 
 use axum::{
     extract::{Extension, Query, State},
@@ -47,6 +48,11 @@ pub struct FileEventIn {
     pub student_source: Option<String>,
     pub repo: Option<String>,
     pub kind: String,
+    /// Document changes coalesced into an "edit" event. Absent from clients
+    /// that predate edit reporting.
+    pub edits: Option<i32>,
+    /// 1-based cursor line, when the file was the one on screen.
+    pub line: Option<i32>,
     pub at_unix_ms: i64,
 }
 
@@ -76,6 +82,8 @@ pub async fn ingest(
             student_source: Set(e.student_source),
             repo: Set(e.repo),
             kind: Set(e.kind),
+            edits: Set(e.edits),
+            line: Set(e.line),
             at: Set(unix_ms_to_dt(e.at_unix_ms)),
             created_at: Set(Utc::now().into()),
             ..Default::default()
@@ -255,6 +263,69 @@ pub async fn time_per_file(
     .into_response()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stalled_for(secs: i64) -> EditActivity {
+        EditActivity {
+            recent: 0,
+            since_last_secs: Some(secs),
+        }
+    }
+
+    #[test]
+    fn typing_students_are_not_flagged() {
+        let edits = EditActivity {
+            recent: 40,
+            since_last_secs: Some(5),
+        };
+        let (level, _) = assess(Signals::default(), WATCH_SECS + 60, edits);
+        // Long time on the exercise still warrants a look, but steady typing
+        // must not escalate it.
+        assert_eq!(level, "watch");
+    }
+
+    #[test]
+    fn silence_on_a_long_exercise_is_a_stall() {
+        let (level, reasons) = assess(
+            Signals::default(),
+            WATCH_SECS + 60,
+            stalled_for(STALL_SECS + 60),
+        );
+        assert_eq!(level, "watch");
+        assert!(reasons.iter().any(|r| r.starts_with("no edits for")));
+    }
+
+    #[test]
+    fn a_stall_plus_a_failure_escalates_to_help() {
+        let sig = Signals {
+            errors: 1,
+            failed_runs: 0,
+        };
+        let (level, _) = assess(sig, WATCH_SECS + 60, stalled_for(STALL_SECS + 60));
+        assert_eq!(level, "help");
+    }
+
+    #[test]
+    fn clients_without_edit_reporting_never_stall() {
+        // `since_last_secs: None` is what an older extension produces; it must
+        // read exactly as it did before the signal existed.
+        let quiet = EditActivity::default();
+        let (with, reasons) = assess(Signals::default(), WATCH_SECS + 60, quiet);
+        let (without, _) = assess(Signals::default(), WATCH_SECS + 60, EditActivity::default());
+        assert_eq!(with, without);
+        assert!(!reasons.iter().any(|r| r.starts_with("no edits")));
+    }
+
+    #[test]
+    fn a_stall_early_in_an_exercise_is_not_a_signal() {
+        // Thinking for five minutes at the start of a problem is normal.
+        let (level, _) = assess(Signals::default(), 60, stalled_for(STALL_SECS + 60));
+        assert_eq!(level, "ok");
+    }
+}
+
 fn unix_ms_to_dt(ms: i64) -> sea_orm::prelude::DateTimeWithTimeZone {
     DateTime::<Utc>::from_timestamp_millis(ms)
         .unwrap_or_else(Utc::now)
@@ -295,17 +366,39 @@ struct OverviewStudent {
     errors: i32,
     /// Recent sessions that exited non-zero.
     failed_runs: i32,
+    /// Document changes in the last `EDIT_WINDOW_SECS` — whether they're typing.
+    edits_recent: i32,
+    /// When the student last typed, if their client reports edits at all.
+    last_edit_unix_ms: Option<i64>,
 }
 
 /// Time-on-exercise thresholds (seconds) that contribute to struggle level.
 const WATCH_SECS: i64 = 10 * 60;
 const HELP_SECS: i64 = 25 * 60;
 
+/// A present student who has been on the same exercise a while but hasn't typed
+/// for this long is more likely stuck than working.
+const STALL_SECS: i64 = 5 * 60;
+
+/// Window over which recent edit volume is summed for the dashboard.
+const EDIT_WINDOW_SECS: i64 = 5 * 60;
+
 /// Per-student error/failure tallies from recent terminal sessions.
 #[derive(Default, Clone, Copy)]
 struct Signals {
     errors: i32,
     failed_runs: i32,
+}
+
+/// How much the student has actually been typing, as opposed to how long the
+/// file has been on screen.
+#[derive(Default, Clone, Copy)]
+struct EditActivity {
+    /// Document changes reported within `EDIT_WINDOW_SECS`.
+    recent: i32,
+    /// Seconds since the last reported edit. `None` when the signal cannot be
+    /// trusted — the student is away, or their client never reports edits.
+    since_last_secs: Option<i64>,
 }
 
 fn struggle_rank(level: &str) -> u8 {
@@ -317,7 +410,7 @@ fn struggle_rank(level: &str) -> u8 {
 }
 
 /// Combines signals into a struggle level and the reasons for it.
-fn assess(sig: Signals, seconds_on_exercise: i64) -> (String, Vec<String>) {
+fn assess(sig: Signals, seconds_on_exercise: i64, edits: EditActivity) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     if sig.errors > 0 {
         reasons.push(format!(
@@ -337,8 +430,21 @@ fn assess(sig: Signals, seconds_on_exercise: i64) -> (String, Vec<String>) {
         reasons.push(format!("{} min on this exercise", seconds_on_exercise / 60));
     }
 
-    let help = sig.errors >= 3 || sig.failed_runs >= 2 || seconds_on_exercise >= HELP_SECS;
-    let watch = sig.errors >= 1 || sig.failed_runs >= 1 || seconds_on_exercise >= WATCH_SECS;
+    // Time-on-task alone is ambiguous: a student steadily writing code for 20
+    // minutes looks identical to one who has been staring at the same screen.
+    // A long stretch with no typing is what separates them.
+    let stalled = seconds_on_exercise >= WATCH_SECS
+        && matches!(edits.since_last_secs, Some(s) if s >= STALL_SECS);
+    if let (true, Some(s)) = (stalled, edits.since_last_secs) {
+        reasons.push(format!("no edits for {} min", s / 60));
+    }
+
+    let help = sig.errors >= 3
+        || sig.failed_runs >= 2
+        || seconds_on_exercise >= HELP_SECS
+        || (stalled && (sig.errors >= 1 || sig.failed_runs >= 1));
+    let watch =
+        stalled || sig.errors >= 1 || sig.failed_runs >= 1 || seconds_on_exercise >= WATCH_SECS;
     let level = if help {
         "help"
     } else if watch {
@@ -501,9 +607,35 @@ pub async fn overview(
         } else {
             "idle"
         };
+
+        // Typing activity. `last_edit` stays `None` for clients that never send
+        // edit events, which keeps students on an older extension from all
+        // looking stalled.
+        let mut edits_recent = 0i32;
+        let mut last_edit: Option<i64> = None;
+        for ev in &evs {
+            if ev.kind != "edit" {
+                continue;
+            }
+            let t = ev.at.timestamp();
+            last_edit = Some(last_edit.map_or(t, |prev: i64| prev.max(t)));
+            if now - t <= EDIT_WINDOW_SECS {
+                edits_recent += ev.edits.unwrap_or(0);
+            }
+        }
+        let edit_activity = EditActivity {
+            recent: edits_recent,
+            // Someone who walked away isn't stuck, they're gone — so the
+            // "hasn't typed" signal only counts while they're present.
+            since_last_secs: match (status, last_edit) {
+                ("active", Some(t)) => Some(now - t),
+                _ => None,
+            },
+        };
+
         let terminal = terminals.get(&student);
         let sig = signals.get(&student).copied().unwrap_or_default();
-        let (struggle, struggle_reasons) = assess(sig, seconds_on_exercise);
+        let (struggle, struggle_reasons) = assess(sig, seconds_on_exercise, edit_activity);
 
         students.push(OverviewStudent {
             student: student.clone(),
@@ -525,6 +657,8 @@ pub async fn overview(
             struggle_reasons,
             errors: sig.errors,
             failed_runs: sig.failed_runs,
+            edits_recent: edit_activity.recent,
+            last_edit_unix_ms: last_edit.map(|t| t * 1000),
         });
     }
 

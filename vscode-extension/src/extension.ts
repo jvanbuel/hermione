@@ -41,14 +41,25 @@ interface FileEvent {
     relativePath?: string;
     language?: string;
     exercise?: string;
-    kind: 'focus' | 'heartbeat' | 'close';
+    kind: 'focus' | 'heartbeat' | 'close' | 'edit';
+    /** Document changes coalesced into this event ('edit' only). */
+    edits?: number;
+    /** 1-based cursor line, when the file was the one on screen. */
+    line?: number;
     atUnixMs: number;
 }
 
 /**
+ * Individual keystrokes are far too noisy to report, so document changes are
+ * counted and flushed as one 'edit' event per window.
+ */
+const EDIT_WINDOW_MS = 5000;
+
+/**
  * Watches which file the student has active and reports it to the Hermione
- * backend — on focus changes and via periodic heartbeats (so we can measure
- * time-on-task). Events are queued and flushed with retry so transient backend
+ * backend — on focus changes, via periodic heartbeats (so we can measure
+ * time-on-task), and on edit bursts (so time-on-task can be told apart from
+ * time-stuck). Events are queued and flushed with retry so transient backend
  * outages don't lose data or disrupt the editor.
  */
 class Reporter {
@@ -64,8 +75,10 @@ class Reporter {
 
     private exercises = new ExerciseMap();
     private queue: FileEvent[] = [];
+    private pendingEdits = new Map<string, { doc: vscode.TextDocument; count: number }>();
     private heartbeatTimer?: NodeJS.Timeout;
     private flushTimer?: NodeJS.Timeout;
+    private editTimer?: NodeJS.Timeout;
     private socket?: WebSocket;
     private reconnectTimer?: NodeJS.Timeout;
     private lastMessageId = 0;
@@ -89,6 +102,7 @@ class Reporter {
             vscode.window.onDidChangeWindowState((s) => {
                 this.windowFocused = s.focused;
             }),
+            vscode.workspace.onDidChangeTextDocument((e) => this.onEdit(e)),
             vscode.workspace.onDidCloseTextDocument((doc) => this.onClose(doc)),
             vscode.workspace.onDidChangeWorkspaceFolders(async () => {
                 await this.loadConfig();
@@ -117,6 +131,11 @@ class Reporter {
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
         }
+        if (this.editTimer) {
+            clearTimeout(this.editTimer);
+            this.editTimer = undefined;
+        }
+        this.pendingEdits.clear();
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
@@ -472,8 +491,54 @@ class Reporter {
         }
     }
 
+    /**
+     * Counts a typing burst. Reporting every change would flood the backend and
+     * say little, so changes are accumulated per document and flushed once per
+     * window. What the teacher needs is whether the student is writing code at
+     * all — time-on-task alone can't distinguish working from stuck.
+     */
+    private onEdit(e: vscode.TextDocumentChangeEvent): void {
+        if (!this.enabled || e.document.uri.scheme !== 'file' || e.contentChanges.length === 0) {
+            return;
+        }
+        const entry = this.pendingEdits.get(e.document.uri.fsPath);
+        if (entry) {
+            entry.count += e.contentChanges.length;
+        } else {
+            this.pendingEdits.set(e.document.uri.fsPath, {
+                doc: e.document,
+                count: e.contentChanges.length,
+            });
+        }
+        if (!this.editTimer) {
+            this.editTimer = setTimeout(() => this.flushEdits(), EDIT_WINDOW_MS);
+        }
+    }
+
+    private flushEdits(): void {
+        if (this.editTimer) {
+            clearTimeout(this.editTimer);
+            this.editTimer = undefined;
+        }
+        for (const { doc, count } of this.pendingEdits.values()) {
+            const event = this.buildEvent('edit', doc, doc.languageId, this.cursorLine(doc));
+            event.edits = count;
+            this.enqueue(event);
+        }
+        this.pendingEdits.clear();
+    }
+
+    /** 1-based cursor line, but only when the document is the one on screen. */
+    private cursorLine(doc: vscode.TextDocument): number | undefined {
+        const editor = vscode.window.activeTextEditor;
+        return editor && editor.document === doc ? editor.selection.active.line + 1 : undefined;
+    }
+
     private onClose(doc: vscode.TextDocument): void {
         if (this.enabled && doc.uri.scheme === 'file') {
+            // Flush first so a final typing burst isn't lost, and so the close
+            // stays last in the stream.
+            this.flushEdits();
             this.enqueue(this.buildEvent('close', doc, undefined));
         }
     }
@@ -482,13 +547,21 @@ class Reporter {
         if (!editor || editor.document.uri.scheme !== 'file') {
             return;
         }
-        this.enqueue(this.buildEvent(kind, editor.document, editor.document.languageId));
+        this.enqueue(
+            this.buildEvent(
+                kind,
+                editor.document,
+                editor.document.languageId,
+                this.cursorLine(editor.document),
+            ),
+        );
     }
 
     private buildEvent(
         kind: FileEvent['kind'],
         doc: vscode.TextDocument,
         language: string | undefined,
+        line?: number,
     ): FileEvent {
         const uri = doc.uri;
         const folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -503,6 +576,7 @@ class Reporter {
             language,
             exercise: this.exercises.resolve(relativePath),
             kind,
+            line,
             atUnixMs: Date.now(),
         };
     }

@@ -59,7 +59,7 @@ A Rust workspace with five crates:
   window, backed by an index; session history is replayed in pages so long
   sessions never load entirely into memory.
 - **Editor activity: HTTP/JSON, not gRPC.** The VSCode extension is a Node
-  process, so it reports file-focus and heartbeat events as plain JSON to the
+  process, so it reports file-focus, heartbeat, and edit-burst events as plain JSON to the
   Axum server (`POST /api/file-events`). Far less machinery than gRPC in a
   TypeScript extension, and it still lands in the same Postgres.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
@@ -132,8 +132,10 @@ Recorder options:
 Open **http://localhost:8080**. The board groups students by the exercise
 they're on, with time-on-task; click an avatar to open their terminal (multiple
 tile side by side). Students who look stuck — errors or failed runs in their
-terminal, or a long time on one exercise — are flagged **needs help** and sorted
-to the top, with a count in the header.
+terminal, a long time on one exercise, or a long stretch on it without typing
+anything — are flagged **needs help** and sorted to the top, with a count in the
+header. Students who are still actively editing show a **typing** marker, so a
+big number on the clock isn't mistaken for being stuck.
 
 ### 5. (Optional) Report editor activity
 

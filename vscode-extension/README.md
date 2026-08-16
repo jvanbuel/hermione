@@ -6,8 +6,13 @@ time-on-task per file and per exercise can be analyzed offline.
 
 It is **passive and transparent**: it never changes the student's editor. It
 sends a small JSON event when the active file changes, a periodic heartbeat
-while a file stays focused (paused when the window is unfocused), and a `close`
-event when a file is closed.
+while a file stays focused (paused when the window is unfocused), an `edit`
+event summarizing each burst of typing, and a `close` event when a file is
+closed.
+
+Edits are reported as a **count of changes, never their content** — enough to
+tell a student who is writing code from one who is stuck on the same screen,
+without shipping their work off the machine.
 
 ## What it sends
 
@@ -21,7 +26,9 @@ event when a file is closed.
   "relativePath": "ex1/main.py",
   "language": "python",
   "exercise": "ex1",          // resolved from .hermione.json, if any
-  "kind": "focus",            // "focus" | "heartbeat" | "close"
+  "kind": "focus",            // "focus" | "heartbeat" | "edit" | "close"
+  "edits": 12,                // "edit" only: changes coalesced into this event
+  "line": 42,                 // 1-based cursor line, when the file is on screen
   "atUnixMs": 1718200000000
 }
 ```

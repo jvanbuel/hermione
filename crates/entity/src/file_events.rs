@@ -1,6 +1,7 @@
 //! A point-in-time observation of which file a student has open/active in their
-//! editor. A stream of these (focus changes + periodic heartbeats) lets us show
-//! live activity and compute time-on-task per file and per exercise.
+//! editor. A stream of these (focus changes, periodic heartbeats, and coalesced
+//! edit bursts) lets us show live activity, compute time-on-task per file and
+//! per exercise, and tell a student who is typing from one who is stuck.
 
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,14 @@ pub struct Model {
     pub student_source: Option<String>,
     /// The git repo the activity came from (owner/name), for provenance.
     pub repo: Option<String>,
-    /// "focus" (became active), "heartbeat" (still active), or "close".
+    /// "focus" (became active), "heartbeat" (still active), "edit" (typed), or
+    /// "close".
     pub kind: String,
+    /// Document changes coalesced into this event. Only set on "edit" events;
+    /// clients that predate edit reporting never send it.
+    pub edits: Option<i32>,
+    /// 1-based cursor line at the time of the event, when the file was on screen.
+    pub line: Option<i32>,
     /// When the event happened on the client.
     pub at: DateTimeWithTimeZone,
     pub created_at: DateTimeWithTimeZone,
