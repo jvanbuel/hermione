@@ -86,6 +86,15 @@ pub async fn admin_by_username(db: &DatabaseConnection, username: &str) -> Optio
 
 // --- courses ---------------------------------------------------------------
 
+/// Filters courses by archived state: active (`archived_at IS NULL`) or archived.
+fn archived_filter(archived: bool) -> sea_orm::sea_query::SimpleExpr {
+    if archived {
+        courses::Column::ArchivedAt.is_not_null()
+    } else {
+        courses::Column::ArchivedAt.is_null()
+    }
+}
+
 pub async fn create_course(
     db: &DatabaseConnection,
     slug: &str,
@@ -98,12 +107,64 @@ pub async fn create_course(
         name: Set(name.to_string()),
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
         repo_url: Set(repo_url.map(str::to_string)),
+        archived_at: Set(None),
         created_at: Set(Utc::now().into()),
     };
     courses::Entity::insert(model)
         .exec_with_returning(db)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Updates a course's name and/or linked repo. `name` is applied when `Some`;
+/// `repo_url` is applied when `Some` (inner `None` clears the link).
+pub async fn update_course(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    name: Option<&str>,
+    repo_url: Option<Option<&str>>,
+) -> Result<courses::Model, DbErr> {
+    let mut model = courses::ActiveModel {
+        id: Set(course_id),
+        ..Default::default()
+    };
+    if let Some(name) = name {
+        model.name = Set(name.to_string());
+    }
+    if let Some(repo_url) = repo_url {
+        model.repo_url = Set(repo_url.map(str::to_string));
+    }
+    courses::Entity::update(model).exec(db).await
+}
+
+/// Archives or restores a course. Archived courses drop out of the active
+/// switcher but keep all their data.
+pub async fn set_course_archived(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+    archived: bool,
+) -> Result<courses::Model, DbErr> {
+    let model = courses::ActiveModel {
+        id: Set(course_id),
+        archived_at: Set(archived.then(|| Utc::now().into())),
+        ..Default::default()
+    };
+    courses::Entity::update(model).exec(db).await
+}
+
+/// Issues a fresh enrollment token for a course (invalidating the old one).
+pub async fn rotate_enrollment_token(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+) -> Result<String, DbErr> {
+    let token = Uuid::new_v4().simple().to_string();
+    let model = courses::ActiveModel {
+        id: Set(course_id),
+        enrollment_token: Set(token.clone()),
+        ..Default::default()
+    };
+    courses::Entity::update(model).exec(db).await?;
+    Ok(token)
 }
 
 pub async fn course_by_slug(db: &DatabaseConnection, slug: &str) -> Option<courses::Model> {
@@ -155,10 +216,55 @@ pub async fn is_member(db: &DatabaseConnection, admin_id: Uuid, course_id: Uuid)
         .is_some()
 }
 
-/// Courses an admin may access.
+/// Removes an admin's access to a course. Idempotent.
+pub async fn revoke_membership(
+    db: &DatabaseConnection,
+    admin_id: Uuid,
+    course_id: Uuid,
+) -> Result<(), DbErr> {
+    course_admins::Entity::delete_by_id((admin_id, course_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// The admins with access to a course, ordered by username.
+pub async fn admins_for_course(
+    db: &DatabaseConnection,
+    course_id: Uuid,
+) -> Result<Vec<admins::Model>, DbErr> {
+    let admin_ids: Vec<Uuid> = course_admins::Entity::find()
+        .filter(course_admins::Column::CourseId.eq(course_id))
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|m| m.admin_id)
+        .collect();
+    if admin_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = admins::Entity::find()
+        .filter(admins::Column::Id.is_in(admin_ids))
+        .all(db)
+        .await?;
+    rows.sort_by(|a, b| a.username.cmp(&b.username));
+    Ok(rows)
+}
+
+/// How many admins have access to a course.
+pub async fn count_course_admins(db: &DatabaseConnection, course_id: Uuid) -> Result<u64, DbErr> {
+    course_admins::Entity::find()
+        .filter(course_admins::Column::CourseId.eq(course_id))
+        .count(db)
+        .await
+}
+
+/// Courses an admin may access. `archived` selects active (false) or archived
+/// (true) courses.
 pub async fn courses_for_admin(
     db: &DatabaseConnection,
     admin_id: Uuid,
+    archived: bool,
 ) -> Result<Vec<courses::Model>, DbErr> {
     let course_ids: Vec<Uuid> = course_admins::Entity::find()
         .filter(course_admins::Column::AdminId.eq(admin_id))
@@ -172,10 +278,14 @@ pub async fn courses_for_admin(
     }
     courses::Entity::find()
         .filter(courses::Column::Id.is_in(course_ids))
+        .filter(archived_filter(archived))
         .all(db)
         .await
 }
 
-pub async fn all_courses(db: &DatabaseConnection) -> Result<Vec<courses::Model>, DbErr> {
-    courses::Entity::find().all(db).await
+pub async fn all_courses(db: &DatabaseConnection, archived: bool) -> Result<Vec<courses::Model>, DbErr> {
+    courses::Entity::find()
+        .filter(archived_filter(archived))
+        .all(db)
+        .await
 }

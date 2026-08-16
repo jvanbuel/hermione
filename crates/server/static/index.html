@@ -71,9 +71,30 @@
     /* Icon-only theme toggle: square, no text. */
     #theme-toggle { padding: 5px; }
     #theme-toggle .ico { width: 16px; height: 16px; }
-    /* Icon-only "new course" button, sits with the course switcher. */
-    #new-course { padding: 5px; }
-    #new-course .ico { width: 15px; height: 15px; }
+    /* Icon-only "new course" + "course settings" buttons, with the switcher. */
+    #new-course, #course-settings { padding: 5px; }
+    #new-course .ico, #course-settings .ico { width: 15px; height: 15px; }
+    /* Linked-repo chip next to the switcher. */
+    .course-repo { font-size: var(--fs-sm); color: var(--fg-muted); text-decoration: none;
+      display: inline-flex; align-items: center; gap: 5px; max-width: 220px; }
+    .course-repo:hover { color: var(--fg); text-decoration: underline; }
+    .course-repo .ico { width: 14px; height: 14px; flex: none; }
+    .course-repo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Members editor in the course-settings modal. */
+    .members { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .members li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; background: var(--bg); }
+    .members li .who { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .members li .you { color: var(--fg-subtle); font-size: var(--fs-xs); }
+    .members li button { background: none; border: none; color: var(--fg-subtle); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-base); }
+    .members li button:hover { color: var(--red); background: var(--surface-2); }
+    .add-member { display: flex; gap: 8px; margin-top: 8px; }
+    .add-member input { flex: 1 1 auto; }
+    .modal .archived-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .modal .archived-list li { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
+    .modal .archived-list li .who { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .modal .danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+    .modal .danger:hover { background: var(--help-wash); }
+    .modal hr { border: none; border-top: 1px solid var(--border-subtle); margin: 16px 0 4px; }
     /* The at-a-glance alarm: a real badge, not just red text. */
     #alert:not(:empty) { font-size: var(--fs-sm); color: var(--red); font-weight: 600;
       display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
@@ -248,6 +269,13 @@
     <button id="new-course" type="button" title="Create a new course or link a repo" aria-label="Create a new course">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8.75 2.5a.75.75 0 0 0-1.5 0v4.75H2.5a.75.75 0 0 0 0 1.5h4.75v4.75a.75.75 0 0 0 1.5 0V8.75h4.75a.75.75 0 0 0 0-1.5H8.75V2.5z"/></svg>
     </button>
+    <button id="course-settings" type="button" title="Course settings — repo, enrollment token, teachers" aria-label="Course settings">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 4.5h6.1a2 2 0 0 0 3.8 0H14V3h-2.1a2 2 0 0 0-3.8 0H2v1.5zM2 8.75h2.1a2 2 0 0 0 3.8 0H14v-1.5H7.9a2 2 0 0 0-3.8 0H2v1.5zM2 13h6.1a2 2 0 0 0 3.8 0H14v-1.5h-2.1a2 2 0 0 0-3.8 0H2V13z"/></svg>
+    </button>
+    <a id="course-repo" class="course-repo" target="_blank" rel="noopener" title="Open the linked repository" hidden>
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.5 1a4.5 4.5 0 0 0-1.4 8.8c.2 0 .3-.1.3-.3v-1c-1.3.3-1.6-.6-1.6-.6-.2-.5-.5-.7-.5-.7-.4-.3 0-.3 0-.3.5 0 .7.5.7.5.4.7 1.1.5 1.4.4 0-.3.2-.5.3-.7-1-.1-2.1-.5-2.1-2.3 0-.5.2-.9.5-1.2 0-.2-.2-.6 0-1.2 0 0 .4-.1 1.3.5a4.4 4.4 0 0 1 2.4 0c.9-.6 1.3-.5 1.3-.5.2.6.1 1 0 1.2.3.3.5.7.5 1.2 0 1.8-1.1 2.2-2.1 2.3.2.2.3.5.3.9v1.3c0 .2.1.3.4.3A4.5 4.5 0 0 0 5.5 1z"/></svg>
+      <span id="course-repo-name"></span>
+    </a>
     <span id="alert" aria-live="assertive"></span>
     <span class="spacer"></span>
     <span id="freshness" class="freshness">Connecting…</span>
@@ -528,6 +556,7 @@
     }
 
     let currentCourse = null;
+    let courseList = []; // last-fetched active courses (slug, name, repoUrl, archived)
 
     async function fetchCourses() {
       const res = await fetch('/api/courses');
@@ -535,13 +564,39 @@
       return res.json();
     }
 
+    // A repo URL shown as a compact "owner/name" chip; falls back to the host path.
+    function repoLabel(url) {
+      try {
+        const u = new URL(url);
+        return u.pathname.replace(/^\/+|\/+$|\.git$/g, '') || u.host;
+      } catch (_) {
+        const m = url.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?\/?$/);
+        return m ? m[1] : url;
+      }
+    }
+
+    function updateCourseRepo() {
+      const c = courseList.find(c => c.slug === currentCourse);
+      const link = document.getElementById('course-repo');
+      if (c && c.repoUrl) {
+        link.href = c.repoUrl;
+        document.getElementById('course-repo-name').textContent = repoLabel(c.repoUrl);
+        link.hidden = false;
+      } else {
+        link.hidden = true;
+      }
+    }
+
     function populateCourses(courses, selectSlug) {
+      courseList = courses;
       const sel = document.getElementById('course');
       sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
       const want = (selectSlug && courses.some(c => c.slug === selectSlug))
         ? selectSlug : (courses[0]?.slug || null);
       if (want) sel.value = want;
       currentCourse = want;
+      document.getElementById('course-settings').disabled = !want;
+      updateCourseRepo();
     }
 
     async function loadCourses() {
@@ -551,6 +606,7 @@
       populateCourses(courses);
       document.getElementById('course').addEventListener('change', () => {
         currentCourse = document.getElementById('course').value;
+        updateCourseRepo();
         [...openPanes.keys()].forEach(closeTerminal); // terminals belong to a course
         connectMessages();
         refresh();
@@ -558,7 +614,7 @@
       connectMessages();
     }
 
-    // After creating a course, refresh the switcher and jump straight to it.
+    // After creating/archiving a course, refresh the switcher and jump to a course.
     async function reloadCourses(selectSlug) {
       let courses;
       try { courses = await fetchCourses(); } catch (_) { return; }
@@ -820,11 +876,15 @@
             <label for="nc-slug">Slug <span class="desc">— optional; derived from the name or repo</span></label>
             <input type="text" id="nc-slug" placeholder="intro-python" />
           </div>
+          <div class="field">
+            <label class="toggle"><input type="checkbox" id="nc-seed" checked /> Seed exercises from the repo's folders <span class="desc">(GitHub)</span></label>
+          </div>
           <div class="row">
             <span class="ct" id="nc-msg"></span>
             <button class="btn" id="nc-cancel" type="button">Cancel</button>
             <button class="btn primary" id="nc-create" type="button">Create</button>
           </div>
+          <div id="nc-archived"></div>
         </div>`;
       document.body.appendChild(backdrop);
 
@@ -834,6 +894,7 @@
       backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       const name = backdrop.querySelector('#nc-name');
       name.focus();
+      renderArchivedCourses(backdrop.querySelector('#nc-archived'));
 
       const create = backdrop.querySelector('#nc-create');
       const msg = backdrop.querySelector('#nc-msg');
@@ -842,6 +903,7 @@
           name: name.value.trim(),
           slug: backdrop.querySelector('#nc-slug').value.trim(),
           repoUrl: backdrop.querySelector('#nc-repo').value.trim(),
+          seedExercises: backdrop.querySelector('#nc-seed').checked,
         };
         if (!payload.name && !payload.slug && !payload.repoUrl) {
           msg.textContent = 'Enter a name, slug, or repo'; return;
@@ -856,7 +918,9 @@
             const c = await res.json();
             await reloadCourses(c.slug);
             close();
-            toast(`Course “${c.name}” created`);
+            const seeded = c.exercisesSeeded ? ` · ${c.exercisesSeeded} exercise${c.exercisesSeeded === 1 ? '' : 's'} seeded` : '';
+            toast(`Course “${c.name}” created${seeded}`);
+            if (c.seedNote) toast(`Exercises not seeded: ${c.seedNote}`);
             showEnrollmentToken(c);
           } else {
             const t = await res.text();
@@ -868,6 +932,41 @@
           msg.textContent = 'Failed to create course';
         }
       });
+    }
+
+    // Lists archived courses (if any) with one-click restore, inside the New
+    // course modal — the natural place to manage the course catalog.
+    async function renderArchivedCourses(host) {
+      let archived;
+      try {
+        const res = await fetch('/api/courses?archived=1');
+        if (!res.ok) return;
+        archived = await res.json();
+      } catch (_) { return; }
+      if (!archived.length) return;
+      host.innerHTML = `<hr><div class="field"><label>Archived courses</label>
+        <ul class="archived-list">${archived.map(c =>
+          `<li><span class="who">${esc(c.name)}</span><button class="btn" data-slug="${esc(c.slug)}" type="button">Restore</button></li>`
+        ).join('')}</ul></div>`;
+      host.querySelectorAll('button[data-slug]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true; btn.textContent = 'Restoring…';
+          const ok = await patchCourse(btn.dataset.slug, { archived: false });
+          if (ok) { btn.closest('li').remove(); await reloadCourses(btn.dataset.slug); toast('Course restored'); }
+          else { btn.disabled = false; btn.textContent = 'Restore'; toast('Failed to restore'); }
+        });
+      });
+    }
+
+    // Shared PATCH /api/courses/{slug}. Returns true on success.
+    async function patchCourse(slug, body) {
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(slug)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return res.ok;
+      } catch (_) { return false; }
     }
 
     // A course is only useful once students can enroll into it, so surface the
@@ -900,6 +999,135 @@
       backdrop.querySelector('#et-copy').addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(c.enrollmentToken || ''); backdrop.querySelector('#et-msg').textContent = 'Copied'; }
         catch (_) { field.select(); backdrop.querySelector('#et-msg').textContent = 'Press ⌘/Ctrl+C'; }
+      });
+    }
+
+    // ---- course settings (repo, enrollment token, teachers, archive) ----
+    async function openCourseSettings() {
+      if (!currentCourse) return;
+      const slug = currentCourse;
+      let c;
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(slug)}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) { toast('Failed to load course settings'); return; }
+        c = await res.json();
+      } catch (_) { toast('Failed to load course settings'); return; }
+
+      const opener = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="cs-title">
+          <h2 id="cs-title">Course settings</h2>
+          <p class="sub">${esc(c.name)}</p>
+          <div class="field">
+            <label for="cs-name">Name</label>
+            <input type="text" id="cs-name" value="${esc(c.name || '')}" />
+          </div>
+          <div class="field">
+            <label for="cs-repo">Repository <span class="desc">— empty to unlink</span></label>
+            <input type="text" id="cs-repo" value="${esc(c.repoUrl || '')}" placeholder="https://github.com/org/repo" />
+          </div>
+          <div class="field">
+            <label for="cs-token">Enrollment token</label>
+            <input type="text" id="cs-token" class="mono" readonly value="${esc(c.enrollmentToken || '')}" />
+            <div class="add-member">
+              <button class="btn" id="cs-copy" type="button">Copy</button>
+              <button class="btn" id="cs-rotate" type="button">Rotate…</button>
+              <span class="ct" id="cs-token-msg"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label>Teachers</label>
+            <ul class="members" id="cs-members"></ul>
+            <div class="add-member">
+              <input type="text" id="cs-add" placeholder="username to add" />
+              <button class="btn" id="cs-add-btn" type="button">Add</button>
+            </div>
+            <span class="ct" id="cs-member-msg"></span>
+          </div>
+          <hr>
+          <div class="row">
+            <button class="btn danger" id="cs-archive" type="button">Archive course</button>
+            <span class="ct" id="cs-msg"></span>
+            <button class="btn" id="cs-cancel" type="button">Close</button>
+            <button class="btn primary" id="cs-save" type="button">Save</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector('#cs-cancel').addEventListener('click', close);
+      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+      backdrop.querySelector('#cs-name').focus();
+
+      // Members list, re-rendered after add/remove.
+      let members = c.members || [];
+      const memberMsg = backdrop.querySelector('#cs-member-msg');
+      function renderMembers() {
+        const ul = backdrop.querySelector('#cs-members');
+        ul.innerHTML = members.map(u =>
+          `<li><span class="who">${esc(u)}</span><button data-user="${esc(u)}" type="button" title="Remove ${esc(u)}" aria-label="Remove ${esc(u)}">✕</button></li>`
+        ).join('');
+        ul.querySelectorAll('button[data-user]').forEach(btn => btn.addEventListener('click', async () => {
+          const user = btn.dataset.user;
+          if (members.length <= 1) { memberMsg.textContent = "Can't remove the last teacher"; return; }
+          btn.disabled = true;
+          try {
+            const res = await fetch(`/api/courses/${encodeURIComponent(slug)}/members/${encodeURIComponent(user)}`, { method: 'DELETE' });
+            if (res.ok) { members = members.filter(m => m !== user); renderMembers(); memberMsg.textContent = ''; }
+            else { btn.disabled = false; memberMsg.textContent = (await res.text()) || 'Failed to remove'; }
+          } catch (_) { btn.disabled = false; memberMsg.textContent = 'Failed to remove'; }
+        }));
+      }
+      renderMembers();
+
+      backdrop.querySelector('#cs-add-btn').addEventListener('click', async () => {
+        const input = backdrop.querySelector('#cs-add');
+        const username = input.value.trim();
+        if (!username) return;
+        memberMsg.textContent = '';
+        try {
+          const res = await fetch(`/api/courses/${encodeURIComponent(slug)}/members`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username }),
+          });
+          if (res.ok) { if (!members.includes(username)) members.push(username); members.sort(); renderMembers(); input.value = ''; }
+          else { memberMsg.textContent = (await res.text()) || 'Failed to add'; }
+        } catch (_) { memberMsg.textContent = 'Failed to add'; }
+      });
+
+      const tokenField = backdrop.querySelector('#cs-token');
+      backdrop.querySelector('#cs-copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(tokenField.value); backdrop.querySelector('#cs-token-msg').textContent = 'Copied'; }
+        catch (_) { tokenField.select(); backdrop.querySelector('#cs-token-msg').textContent = 'Press ⌘/Ctrl+C'; }
+      });
+      backdrop.querySelector('#cs-rotate').addEventListener('click', async () => {
+        if (!confirm('Rotate the enrollment token? Students using the old token will need the new one.')) return;
+        try {
+          const res = await fetch(`/api/courses/${encodeURIComponent(slug)}/rotate-token`, { method: 'POST' });
+          if (res.ok) { const j = await res.json(); tokenField.value = j.enrollmentToken; backdrop.querySelector('#cs-token-msg').textContent = 'Rotated'; }
+          else { backdrop.querySelector('#cs-token-msg').textContent = 'Failed to rotate'; }
+        } catch (_) { backdrop.querySelector('#cs-token-msg').textContent = 'Failed to rotate'; }
+      });
+
+      backdrop.querySelector('#cs-archive').addEventListener('click', async () => {
+        if (!confirm(`Archive “${c.name}”? It keeps all its data but drops out of the switcher. You can restore it from New course.`)) return;
+        const ok = await patchCourse(slug, { archived: true });
+        if (ok) { close(); await reloadCourses(null); toast('Course archived'); }
+        else { toast('Failed to archive'); }
+      });
+
+      const save = backdrop.querySelector('#cs-save');
+      save.addEventListener('click', async () => {
+        save.disabled = true; save.textContent = 'Saving…';
+        const ok = await patchCourse(slug, {
+          name: backdrop.querySelector('#cs-name').value.trim(),
+          repoUrl: backdrop.querySelector('#cs-repo').value.trim(),
+        });
+        if (ok) { close(); await reloadCourses(slug); toast('Course settings saved'); }
+        else { save.disabled = false; save.textContent = 'Save'; backdrop.querySelector('#cs-msg').textContent = 'Failed to save'; }
       });
     }
 
@@ -1004,6 +1232,7 @@
     });
     document.getElementById('broadcast').addEventListener('click', openBroadcast);
     document.getElementById('new-course').addEventListener('click', openNewCourse);
+    document.getElementById('course-settings').addEventListener('click', openCourseSettings);
     document.getElementById('assistant-settings').addEventListener('click', openAssistantSettings);
     document.getElementById('theme-toggle').addEventListener('click', () =>
       setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));

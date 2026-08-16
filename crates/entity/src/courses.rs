@@ -19,6 +19,9 @@ pub struct Model {
     /// template repo it was created from). Used for provenance and to derive a
     /// default slug/name.
     pub repo_url: Option<String>,
+    /// When the course was archived (dropped from the active switcher). `None`
+    /// while the course is active.
+    pub archived_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
 }
 

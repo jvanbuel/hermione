@@ -9,6 +9,7 @@ mod grpc;
 mod http;
 mod identity;
 mod messages;
+mod repo;
 mod state;
 mod tenancy;
 mod text;
@@ -86,6 +87,12 @@ struct Config {
     /// shared `hermione-assistant` one lazily.
     #[arg(long, env = "HERMIONE_ASSISTANT_ENVIRONMENT_ID")]
     assistant_environment_id: Option<String>,
+
+    /// GitHub token used to read a linked repo's folders when seeding a course's
+    /// exercises from the dashboard. Optional — needed only for private repos and
+    /// to ease rate limits; public repos work without it.
+    #[arg(long, env = "HERMIONE_GITHUB_TOKEN")]
+    github_token: Option<String>,
 }
 
 #[tokio::main]
@@ -120,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
                     // Without membership the admin logs in to an empty course
                     // switcher, so grant every course that already exists —
                     // including the seeded `default` one.
-                    match tenancy::all_courses(&db).await {
+                    match tenancy::all_courses(&db, false).await {
                         Ok(courses) => {
                             for course in &courses {
                                 if let Err(e) =
@@ -196,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         open_dev: Arc::new(AtomicBool::new(!has_admins)),
         assistant,
         assistant_default_model: config.assistant_model.clone(),
+        github_token: config.github_token.clone(),
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;

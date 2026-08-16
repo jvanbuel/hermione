@@ -91,4 +91,7 @@ pub struct AppState {
     pub assistant: crate::assistant::Assistant,
     /// Default model for newly configured course assistants.
     pub assistant_default_model: String,
+    /// GitHub token for reading a linked repo's folders when seeding exercises.
+    /// `None` still works for public repos.
+    pub github_token: Option<String>,
 }
