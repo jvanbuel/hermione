@@ -37,6 +37,10 @@ function buildFixtures(now) {
     enrollmentToken: 'enroll-9904ff7c7aec4f9c',
     archived: false,
     members: ['ada', 'grace', 'linus'],
+    description: 'Systems programming in C: memory, pointers, and data structures.',
+    term: 'Fall 2026',
+    institution: 'Acme University',
+    level: 'Intermediate',
   };
 
   const overview = {

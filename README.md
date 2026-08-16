@@ -179,9 +179,11 @@ cd vscode-extension && npm install && npm run compile
   teacher may access / create one (optionally linking a git repo). The creator is
   automatically enrolled, so it appears in their switcher immediately. `?archived=1`
   lists archived courses. See below.
-- `GET /api/courses/{slug}` — course detail (repo, enrollment token, teachers).
-  `PATCH /api/courses/{slug}` — rename, relink the repo (`repoUrl: null` unlinks),
-  or `archived: true/false`. `POST /api/courses/{slug}/rotate-token` — issue a
+- `GET /api/courses/{slug}` — course detail (repo, enrollment token, teachers,
+  and the profile). `PATCH /api/courses/{slug}` — rename, relink the repo
+  (`repoUrl: null` unlinks), edit the **profile** (`description`, `term`,
+  `institution`, `level`; `null` clears a field), or `archived: true/false`.
+  `POST /api/courses/{slug}/rotate-token` — issue a
   fresh enrollment token. `POST /api/courses/{slug}/members` adds a co-teacher
   (body `{"username":"…"}`); `DELETE /api/courses/{slug}/members/{username}`
   removes one (the last member cannot be removed). A co-teacher is any existing
@@ -252,12 +254,15 @@ ever shows the selected course's data.
       repo and the extension can read it. Commit it, then
       `hermione course create --link`. (`--force` overwrites an existing file.)
 - **Manage a course from the dashboard.** The gear next to the course switcher
-  opens *Course settings*: rename it, link/unlink its repo, copy or **rotate** the
-  enrollment token (if it leaks), add/remove **co-teachers** (any existing admin,
-  no super-admin secret needed), and **archive** it (keeps all data, drops it from
-  the switcher; restore from *New course*), and **edit its exercises** (rename,
-  reorder, add, remove). The header also links straight to the linked repo. A
-  teacher with no courses yet gets a *Create your first course* prompt.
+  opens *Course settings*: rename it, link/unlink its repo, edit its **profile**
+  (description, term, institution, level), copy or **rotate** the enrollment token
+  (if it leaks), add/remove **co-teachers** (any existing admin, no super-admin
+  secret needed), **archive** it (keeps all data, drops it from the switcher;
+  restore from *New course*), and **edit its exercises** (rename, reorder, add,
+  remove). The header also links straight to the linked repo, and the switcher
+  shows a course's description on hover. A teacher with no courses yet gets a
+  *Create your first course* prompt. Profile fields can also be set at creation
+  (`POST /api/courses` and `hermione course create --description/--term/…`).
 - **Provisioning API** (guarded by `HERMIONE_ADMIN_TOKEN`): create courses and
   admins and grant membership.
 

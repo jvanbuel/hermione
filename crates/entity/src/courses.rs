@@ -22,6 +22,15 @@ pub struct Model {
     /// When the course was archived (dropped from the active switcher). `None`
     /// while the course is active.
     pub archived_at: Option<DateTimeWithTimeZone>,
+    // --- descriptive profile (all optional) ---
+    /// What the course is about.
+    pub description: Option<String>,
+    /// When it runs, e.g. "Fall 2026".
+    pub term: Option<String>,
+    /// The school or organization running it.
+    pub institution: Option<String>,
+    /// Difficulty / audience, e.g. "Beginner".
+    pub level: Option<String>,
     pub created_at: DateTimeWithTimeZone,
 }
 

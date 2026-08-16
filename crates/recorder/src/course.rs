@@ -22,6 +22,9 @@ struct CourseCli {
 }
 
 #[derive(Subcommand, Debug)]
+// `Create` carries many optional flags and dwarfs `Init`; boxing the variant
+// would fight clap's `Subcommand` derive, and this enum is built once at parse.
+#[allow(clippy::large_enum_variant)]
 enum CourseCmd {
     /// Create a new course, or link an existing git repo as one.
     Create(CreateArgs),
@@ -62,6 +65,22 @@ struct CreateArgs {
     /// Don't seed the course's exercises from the repo's folders (see --link).
     #[arg(long)]
     no_exercises: bool,
+
+    /// Course description (profile).
+    #[arg(long)]
+    description: Option<String>,
+
+    /// Term the course runs, e.g. "Fall 2026" (profile).
+    #[arg(long)]
+    term: Option<String>,
+
+    /// Institution running the course (profile).
+    #[arg(long)]
+    institution: Option<String>,
+
+    /// Difficulty / audience, e.g. "Beginner" (profile).
+    #[arg(long)]
+    level: Option<String>,
 
     /// HTTP base URL of the Hermione server.
     #[arg(
@@ -134,7 +153,15 @@ async fn create(args: CreateArgs) -> Result<()> {
 
     let server = args.server.trim_end_matches('/').to_string();
     let client = reqwest::Client::new();
-    let body = serde_json::json!({ "slug": slug, "name": name, "repoUrl": repo });
+    let body = serde_json::json!({
+        "slug": slug,
+        "name": name,
+        "repoUrl": repo,
+        "description": args.description,
+        "term": args.term,
+        "institution": args.institution,
+        "level": args.level,
+    });
 
     // Auth determines both the create endpoint and whether we hold a teacher
     // session (needed to also define exercises, which is a teacher-only route).

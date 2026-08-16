@@ -15,7 +15,8 @@ mod m20240101_000010_index_sessions_course_started;
 mod m20240101_000011_assistant;
 mod m20240101_000012_course_repo;
 mod m20240101_000013_course_archive;
-mod m20240101_000014_file_event_edits;
+mod m20240101_000014_course_profile;
+mod m20240101_000015_file_event_edits;
 
 pub struct Migrator;
 
@@ -36,7 +37,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20240101_000011_assistant::Migration),
             Box::new(m20240101_000012_course_repo::Migration),
             Box::new(m20240101_000013_course_archive::Migration),
-            Box::new(m20240101_000014_file_event_edits::Migration),
+            Box::new(m20240101_000014_course_profile::Migration),
+            Box::new(m20240101_000015_file_event_edits::Migration),
         ]
     }
 }

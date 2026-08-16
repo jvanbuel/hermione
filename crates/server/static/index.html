@@ -89,6 +89,8 @@
     .members li .you { color: var(--fg-subtle); font-size: var(--fs-xs); }
     .members li button { background: none; border: none; color: var(--fg-subtle); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-base); }
     .members li button:hover { color: var(--red); background: var(--surface-2); }
+    .modal .profile-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .modal .profile-grid > div > label { display: block; font-size: var(--fs-sm); font-weight: 600; margin-bottom: 4px; }
     .add-member { display: flex; gap: 8px; margin-top: 8px; }
     .add-member input { flex: 1 1 auto; }
     .modal .archived-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -618,7 +620,7 @@
     function populateCourses(courses, selectSlug) {
       courseList = courses;
       const sel = document.getElementById('course');
-      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
+      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}"${c.description ? ` title="${esc(c.description)}"` : ''}>${esc(c.name)}</option>`).join('');
       const want = (selectSlug && courses.some(c => c.slug === selectSlug))
         ? selectSlug : (courses[0]?.slug || null);
       if (want) sel.value = want;
@@ -1073,6 +1075,25 @@
             <input type="text" id="cs-repo" value="${esc(c.repoUrl || '')}" placeholder="https://github.com/org/repo" />
           </div>
           <div class="field">
+            <label for="cs-description">Description</label>
+            <textarea id="cs-description" placeholder="What this course is about…">${esc(c.description || '')}</textarea>
+          </div>
+          <div class="field profile-grid">
+            <div>
+              <label for="cs-term">Term</label>
+              <input type="text" id="cs-term" value="${esc(c.term || '')}" placeholder="Fall 2026" />
+            </div>
+            <div>
+              <label for="cs-institution">Institution</label>
+              <input type="text" id="cs-institution" value="${esc(c.institution || '')}" placeholder="Acme University" />
+            </div>
+            <div>
+              <label for="cs-level">Level</label>
+              <input type="text" id="cs-level" value="${esc(c.level || '')}" list="cs-levels" placeholder="Beginner" />
+              <datalist id="cs-levels"><option value="Beginner"></option><option value="Intermediate"></option><option value="Advanced"></option></datalist>
+            </div>
+          </div>
+          <div class="field">
             <label for="cs-token">Enrollment token</label>
             <input type="text" id="cs-token" class="mono" readonly value="${esc(c.enrollmentToken || '')}" />
             <div class="add-member">
@@ -1174,6 +1195,10 @@
         const ok = await patchCourse(slug, {
           name: backdrop.querySelector('#cs-name').value.trim(),
           repoUrl: backdrop.querySelector('#cs-repo').value.trim(),
+          description: backdrop.querySelector('#cs-description').value.trim(),
+          term: backdrop.querySelector('#cs-term').value.trim(),
+          institution: backdrop.querySelector('#cs-institution').value.trim(),
+          level: backdrop.querySelector('#cs-level').value.trim(),
         });
         if (ok) { close(); await reloadCourses(slug); toast('Course settings saved'); }
         else { save.disabled = false; save.textContent = 'Save'; backdrop.querySelector('#cs-msg').textContent = 'Failed to save'; }
