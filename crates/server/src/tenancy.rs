@@ -283,7 +283,10 @@ pub async fn courses_for_admin(
         .await
 }
 
-pub async fn all_courses(db: &DatabaseConnection, archived: bool) -> Result<Vec<courses::Model>, DbErr> {
+pub async fn all_courses(
+    db: &DatabaseConnection,
+    archived: bool,
+) -> Result<Vec<courses::Model>, DbErr> {
     courses::Entity::find()
         .filter(archived_filter(archived))
         .all(db)

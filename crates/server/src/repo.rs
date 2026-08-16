@@ -97,9 +97,10 @@ async fn fetch_root(
     let resp = gh_get(client, token, &url).await?;
     match resp.status() {
         s if s.is_success() => resp.json().await.map_err(|e| e.to_string()),
-        reqwest::StatusCode::NOT_FOUND => {
-            Err("repository not found or not accessible (private repos need HERMIONE_GITHUB_TOKEN)".into())
-        }
+        reqwest::StatusCode::NOT_FOUND => Err(
+            "repository not found or not accessible (private repos need HERMIONE_GITHUB_TOKEN)"
+                .into(),
+        ),
         s => Err(format!("GitHub API returned {s}")),
     }
 }
@@ -120,7 +121,11 @@ async fn fetch_hermione_json(
         return None;
     }
     // GitHub wraps base64 content at 60 columns; strip whitespace before decode.
-    let cleaned: String = file.content.chars().filter(|c| !c.is_whitespace()).collect();
+    let cleaned: String = file
+        .content
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     let bytes = BASE64.decode(cleaned.as_bytes()).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
@@ -168,7 +173,14 @@ fn is_ignored_dir(name: &str) -> bool {
     name.starts_with('.')
         || matches!(
             name,
-            "node_modules" | "target" | "dist" | "build" | "out" | "bin" | "obj" | "vendor"
+            "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | "out"
+                | "bin"
+                | "obj"
+                | "vendor"
                 | "__pycache__"
         )
 }

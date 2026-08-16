@@ -136,7 +136,10 @@ async fn req_with_cookie(
         }
         None => Body::empty(),
     };
-    app.clone().oneshot(builder.body(body).unwrap()).await.unwrap()
+    app.clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -358,14 +361,19 @@ async fn teacher_creates_course_and_is_enrolled() {
     assert_eq!(slug, format!("course{s}"), "slug derived from repo");
     assert_eq!(created["repoUrl"], repo);
     assert!(
-        created["enrollmentToken"].as_str().is_some_and(|t| !t.is_empty()),
+        created["enrollmentToken"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
         "enrollment token returned"
     );
 
     // The creator is now a member, so the course is scoped to them...
     let resp = get_with_cookie(&app, "/api/courses", &cookie).await;
     let listed = body_string(resp).await;
-    assert!(listed.contains(&slug), "new course visible to creator: {listed}");
+    assert!(
+        listed.contains(&slug),
+        "new course visible to creator: {listed}"
+    );
 
     // ...and its data endpoints are accessible.
     let resp = get_with_cookie(&app, &format!("/api/overview?course={slug}"), &cookie).await;
@@ -416,7 +424,10 @@ async fn teacher_manages_course_settings() {
         .await
         .unwrap();
     assert_eq!(updated.name, "Renamed");
-    assert_eq!(updated.repo_url.as_deref(), Some("https://github.com/org/x"));
+    assert_eq!(
+        updated.repo_url.as_deref(),
+        Some("https://github.com/org/x")
+    );
 
     // Clearing the repo (explicit null) unlinks it.
     let resp = req_with_cookie(&app, "PATCH", &uri, &cookie, Some(r#"{"repoUrl":null}"#)).await;
@@ -534,9 +545,16 @@ async fn archived_courses_leave_the_active_list() {
 
     // Gone from the active list, present in the archived list.
     let active = body_string(get_with_cookie(&app, "/api/courses", &cookie).await).await;
-    assert!(!active.contains(&format!("arch{s}")), "archived hidden: {active}");
-    let archived = body_string(get_with_cookie(&app, "/api/courses?archived=1", &cookie).await).await;
-    assert!(archived.contains(&format!("arch{s}")), "archived listed: {archived}");
+    assert!(
+        !active.contains(&format!("arch{s}")),
+        "archived hidden: {active}"
+    );
+    let archived =
+        body_string(get_with_cookie(&app, "/api/courses?archived=1", &cookie).await).await;
+    assert!(
+        archived.contains(&format!("arch{s}")),
+        "archived listed: {archived}"
+    );
 
     // Restore it.
     let resp = req_with_cookie(
@@ -549,7 +567,10 @@ async fn archived_courses_leave_the_active_list() {
     .await;
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let active = body_string(get_with_cookie(&app, "/api/courses", &cookie).await).await;
-    assert!(active.contains(&format!("arch{s}")), "restored to active: {active}");
+    assert!(
+        active.contains(&format!("arch{s}")),
+        "restored to active: {active}"
+    );
 }
 
 #[tokio::test]

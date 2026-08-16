@@ -89,7 +89,12 @@ async fn create(args: CreateArgs) -> Result<()> {
         .slug
         .as_deref()
         .and_then(normalize_slug)
-        .or_else(|| repo.as_deref().and_then(repo_short_name).as_deref().and_then(normalize_slug))
+        .or_else(|| {
+            repo.as_deref()
+                .and_then(repo_short_name)
+                .as_deref()
+                .and_then(normalize_slug)
+        })
         .or_else(|| args.name.as_deref().and_then(normalize_slug))
         .ok_or_else(|| anyhow!("provide a slug, --name, --repo, or --link"))?;
 
@@ -115,29 +120,27 @@ async fn create(args: CreateArgs) -> Result<()> {
 
     // Auth determines both the create endpoint and whether we hold a teacher
     // session (needed to also define exercises, which is a teacher-only route).
-    let (resp, cookie) =
-        if let Some(token) = args.admin_token.as_deref().filter(|t| !t.is_empty()) {
-            let resp = client
-                .post(format!("{server}/api/admin/courses"))
-                .bearer_auth(token)
-                .json(&body)
-                .send()
-                .await?;
-            (resp, None)
-        } else if let Some(user) = args.user.as_deref().filter(|u| !u.is_empty()) {
-            let cookie = login(&client, &server, user, args.password.clone()).await?;
-            let resp = client
-                .post(format!("{server}/api/courses"))
-                .header(reqwest::header::COOKIE, &cookie)
-                .json(&body)
-                .send()
-                .await?;
-            (resp, Some(cookie))
-        } else {
-            bail!(
-                "authenticate with --admin-token (HERMIONE_ADMIN_TOKEN) or --user (HERMIONE_USER)"
-            );
-        };
+    let (resp, cookie) = if let Some(token) = args.admin_token.as_deref().filter(|t| !t.is_empty())
+    {
+        let resp = client
+            .post(format!("{server}/api/admin/courses"))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await?;
+        (resp, None)
+    } else if let Some(user) = args.user.as_deref().filter(|u| !u.is_empty()) {
+        let cookie = login(&client, &server, user, args.password.clone()).await?;
+        let resp = client
+            .post(format!("{server}/api/courses"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .json(&body)
+            .send()
+            .await?;
+        (resp, Some(cookie))
+    } else {
+        bail!("authenticate with --admin-token (HERMIONE_ADMIN_TOKEN) or --user (HERMIONE_USER)");
+    };
 
     let created = created_course(resp).await?;
     report_created(&created, repo.as_deref());
@@ -150,7 +153,11 @@ async fn create(args: CreateArgs) -> Result<()> {
             Some(cookie) => {
                 seed_exercises(&client, &server, cookie, &created.slug, &exercises).await?;
                 let names: Vec<&str> = exercises.iter().map(|e| e.slug.as_str()).collect();
-                println!("Defined {} exercise(s): {}", exercises.len(), names.join(", "));
+                println!(
+                    "Defined {} exercise(s): {}",
+                    exercises.len(),
+                    names.join(", ")
+                );
             }
             None => {
                 eprintln!(
@@ -209,7 +216,10 @@ async fn created_course(resp: reqwest::Response) -> Result<Created> {
     Ok(Created {
         slug: v["slug"].as_str().unwrap_or_default().to_string(),
         name: v["name"].as_str().unwrap_or_default().to_string(),
-        token: v["enrollmentToken"].as_str().unwrap_or_default().to_string(),
+        token: v["enrollmentToken"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
@@ -348,7 +358,9 @@ fn git_origin() -> Result<String> {
         .output()
         .map_err(|e| anyhow!("running git: {e}"))?;
     if !out.status.success() {
-        bail!("could not read git 'origin' remote — run inside a repo with an origin, or pass --repo");
+        bail!(
+            "could not read git 'origin' remote — run inside a repo with an origin, or pass --repo"
+        );
     }
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if url.is_empty() {
@@ -437,7 +449,10 @@ mod tests {
 
     #[test]
     fn slug_normalization() {
-        assert_eq!(normalize_slug("Intro Python").as_deref(), Some("intro-python"));
+        assert_eq!(
+            normalize_slug("Intro Python").as_deref(),
+            Some("intro-python")
+        );
         assert_eq!(normalize_slug("CS 101!!").as_deref(), Some("cs-101"));
         assert_eq!(normalize_slug("--a__b--").as_deref(), Some("a-b"));
         assert_eq!(normalize_slug("   ").as_deref(), None);
@@ -491,7 +506,14 @@ mod tests {
 
     #[test]
     fn ignores_tooling_dirs() {
-        for d in [".git", ".github", "node_modules", "target", "dist", "__pycache__"] {
+        for d in [
+            ".git",
+            ".github",
+            "node_modules",
+            "target",
+            "dist",
+            "__pycache__",
+        ] {
             assert!(is_ignored_dir(d), "{d} should be ignored");
         }
         for d in ["ex1", "pointers", "week-01"] {

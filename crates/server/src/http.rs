@@ -79,7 +79,10 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/analytics", get(analytics_page))
         .route("/transcripts", get(transcripts_page))
-        .route("/api/courses", get(list_courses).post(create_course_for_teacher))
+        .route(
+            "/api/courses",
+            get(list_courses).post(create_course_for_teacher),
+        )
         .route("/api/courses/{slug}", get(get_course).patch(patch_course))
         .route("/api/courses/{slug}/rotate-token", post(rotate_token))
         .route("/api/courses/{slug}/members", post(add_member))
@@ -139,7 +142,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/inbox", get(crate::messages::inbox))
         .route("/api/assistant/status", get(crate::assistant::status))
         .route("/api/assistant/chat", post(crate::assistant::chat))
-        .route("/api/assistant/chat/stream", post(crate::assistant::chat_stream))
+        .route(
+            "/api/assistant/chat/stream",
+            post(crate::assistant::chat_stream),
+        )
         .route("/api/assistant/history", get(crate::assistant::history))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -620,9 +626,7 @@ async fn list_courses(
     let archived = matches!(q.archived.as_deref(), Some("1" | "true" | "yes"));
     let courses = match ctx {
         AuthCtx::OpenDev => tenancy::all_courses(&state.db, archived).await,
-        AuthCtx::Admin(admin_id) => {
-            tenancy::courses_for_admin(&state.db, admin_id, archived).await
-        }
+        AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id, archived).await,
     };
     match courses {
         Ok(rows) => {
@@ -700,7 +704,12 @@ fn resolve_new_course(body: &CreateCourseBody) -> Result<(String, String, Option
 
     // Slug precedence: an explicit slug, else the repo's short name, else the
     // course name — so any one of the three fields is enough to create a course.
-    let slug = match body.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let slug = match body
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(explicit) => normalize_slug(explicit)
             .ok_or_else(|| "slug must contain a letter or digit".to_string())?,
         None => repo_url
@@ -780,16 +789,16 @@ async fn create_course_for_teacher(
                                 .collect();
                             match crate::exercises::upsert(&state.db, course.id, &items).await {
                                 Ok(()) => exercises_seeded = items.len(),
-                                Err(e) => seed_note = Some(format!("could not save exercises: {e}")),
+                                Err(e) => {
+                                    seed_note = Some(format!("could not save exercises: {e}"))
+                                }
                             }
                         }
                         Ok(_) => {}
                         Err(e) => seed_note = Some(e),
                     }
                 }
-                None => {
-                    seed_note = Some("exercise seeding supports GitHub repos only".to_string())
-                }
+                None => seed_note = Some("exercise seeding supports GitHub repos only".to_string()),
             }
         }
     }
@@ -890,7 +899,11 @@ async fn patch_course(
         Err(resp) => return resp,
     };
 
-    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let repo_url = body
         .repo_url
         .as_ref()
