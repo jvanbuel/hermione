@@ -692,6 +692,50 @@ async fn defined_exercises_drive_overview_order() {
 }
 
 #[tokio::test]
+async fn exercises_replace_sets_the_exact_list() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("ex{s}"), "Ex", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("ex{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("ex{s}"), "pw").await.unwrap();
+
+    let slugs = |body: String| async move {
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["slug"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    // Upsert (no replace): one, two, three.
+    let define = format!(
+        r#"{{"course":"ex{s}","exercises":[{{"slug":"one"}},{{"slug":"two"}},{{"slug":"three"}}]}}"#
+    );
+    let resp = post_json_with_cookie(&app, "/api/exercises", &cookie, &define).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Replace with exactly [two, four]: one and three are removed, four added.
+    let replace = format!(
+        r#"{{"course":"ex{s}","replace":true,"exercises":[{{"slug":"two","title":"Two"}},{{"slug":"four"}}]}}"#
+    );
+    let resp = post_json_with_cookie(&app, "/api/exercises", &cookie, &replace).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = get_with_cookie(&app, &format!("/api/exercises?course=ex{s}"), &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let got = slugs(body_string(resp).await).await;
+    assert_eq!(got, ["two", "four"], "replace set the exact ordered list");
+}
+
+#[tokio::test]
 async fn enforced_identity_required_and_trusted() {
     use crate::identity::{Identity, Provider, ProviderKind};
     let provider = Provider {
