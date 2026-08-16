@@ -97,4 +97,8 @@ pub struct AppState {
     /// Owners/orgs whose repos may be read with `github_token`. The token is
     /// never sent to any other owner (guards against cross-repo disclosure).
     pub github_allowed_owners: Vec<String>,
+    /// GitHub App for minting repository-scoped installation tokens when seeding
+    /// exercises. Preferred over `github_token`: it reads only the linked repo,
+    /// enforcing the authorization boundary at runtime. `None` disables it.
+    pub github_app: Option<crate::github_app::GithubApp>,
 }

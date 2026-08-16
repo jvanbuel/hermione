@@ -72,6 +72,7 @@ async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Ro
         assistant_default_model: "claude-opus-4-8".to_string(),
         github_token: None,
         github_allowed_owners: Vec::new(),
+        github_app: None,
     };
     let router = http::router(state.clone());
     (state, router)

@@ -810,10 +810,24 @@ async fn create_course_for_teacher(
         if let Some(repo) = course.repo_url.as_deref() {
             match crate::repo::parse_github(repo) {
                 Some((owner, name)) => {
-                    // Only send the token to allow-listed owners, so a teacher
-                    // can't disclose an unrelated private repo's folders through it.
+                    // Prefer a repository-scoped GitHub App installation token: it
+                    // can read only this repo, so a teacher can't disclose an
+                    // unrelated repo's folders. Fall back to the shared PAT, which
+                    // is only sent to allow-listed owners for the same reason, and
+                    // finally to unauthenticated (public-repo) seeding.
+                    let app_token = match &state.github_app {
+                        Some(app) => match app.installation_token(&owner, &name).await {
+                            Ok(t) => Some(t),
+                            Err(e) => {
+                                tracing::debug!("no GitHub App token for {owner}/{name}: {e}");
+                                None
+                            }
+                        },
+                        None => None,
+                    };
                     let allowed = crate::repo::owner_allowed(&owner, &state.github_allowed_owners);
-                    let token = state.github_token.as_deref().filter(|_| allowed);
+                    let pat = state.github_token.as_deref().filter(|_| allowed);
+                    let token = app_token.as_deref().or(pat);
                     match crate::repo::discover_exercises(&owner, &name, token).await {
                         Ok(found) if !found.is_empty() => {
                             let items: Vec<(String, String, i32)> = found
@@ -829,12 +843,13 @@ async fn create_course_for_teacher(
                             }
                         }
                         Ok(_) => {}
-                        // When a token exists but this owner isn't allow-listed, say
-                        // so — otherwise the failure looks like a missing token.
-                        Err(e) if state.github_token.is_some() && !allowed => {
+                        // When a PAT exists but this owner isn't allow-listed (and no
+                        // app token covered it), say so — otherwise the failure looks
+                        // like a missing token.
+                        Err(e) if token.is_none() && state.github_token.is_some() && !allowed => {
                             seed_note = Some(format!(
-                                "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS, \
-                                 so the GitHub token was not used"
+                                "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS \
+                                 and no GitHub App is installed on the repo, so no token was used"
                             ))
                         }
                         Err(e) => seed_note = Some(e),
