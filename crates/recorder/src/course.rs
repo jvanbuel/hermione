@@ -9,6 +9,8 @@
 //! either the provisioning secret (`--admin-token`, hits `/api/admin/courses`)
 //! or a teacher sign-in (`--user` + password, hits `/api/courses`).
 
+use std::path::{Path, PathBuf};
+
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
 
@@ -23,6 +25,21 @@ struct CourseCli {
 enum CourseCmd {
     /// Create a new course, or link an existing git repo as one.
     Create(CreateArgs),
+    /// Scaffold a `.hermione.json` from a repo's top-level folders, so the
+    /// exercise mapping lives in the repo (the extension reads it, and
+    /// `course create --link` seeds from it).
+    Init(InitArgs),
+}
+
+#[derive(Args, Debug)]
+struct InitArgs {
+    /// Directory to scan and write `.hermione.json` into (default: current dir).
+    #[arg(long)]
+    dir: Option<String>,
+
+    /// Overwrite an existing `.hermione.json`.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -73,6 +90,7 @@ pub async fn run(argv: Vec<String>) -> Result<()> {
     let cli = CourseCli::parse_from(argv);
     match cli.cmd {
         CourseCmd::Create(args) => create(args).await,
+        CourseCmd::Init(args) => init(args),
     }
 }
 
@@ -169,6 +187,92 @@ async fn create(args: CreateArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `hermione course init` — write a `.hermione.json` mapping each top-level
+/// folder to an exercise, so the mapping lives in the repo.
+fn init(args: InitArgs) -> Result<()> {
+    let dir = args
+        .dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let path = dir.join(".hermione.json");
+    if path.exists() && !args.force {
+        bail!(
+            "{} already exists — pass --force to overwrite",
+            path.display()
+        );
+    }
+
+    let mut folders = scan_exercise_folders(&dir)?;
+    folders.sort();
+    let rules = exercise_rules_for_folders(&folders);
+    if rules.is_empty() {
+        bail!(
+            "no exercise folders found in {} — create a folder per exercise, then re-run",
+            dir.display()
+        );
+    }
+
+    // Serialize from the struct (not a json! Value) so keys read name-then-match.
+    let text = serde_json::to_string_pretty(&HermioneConfig { exercises: &rules })? + "\n";
+    std::fs::write(&path, text)?;
+    let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+    println!(
+        "Wrote {} with {} exercise(s): {}",
+        path.display(),
+        names.len(),
+        names.join(", ")
+    );
+    println!("  Commit it, then: hermione course create --link --user <you>");
+    Ok(())
+}
+
+/// Top-level directories in `dir` that could be exercises (skips hidden and
+/// tooling/build/deps dirs).
+fn scan_exercise_folders(dir: &Path) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_ignored_dir(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+/// One `.hermione.json` exercise rule: an exercise `name` (slug) and the glob it
+/// `match`es. Field order is preserved on serialize (name, then match).
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct ExerciseRule {
+    name: String,
+    #[serde(rename = "match")]
+    pattern: String,
+}
+
+#[derive(serde::Serialize)]
+struct HermioneConfig<'a> {
+    exercises: &'a [ExerciseRule],
+}
+
+/// Builds one exercise rule per folder — `name` the folder's slug, `match` a
+/// glob over that folder — deduped by slug, in the order given.
+fn exercise_rules_for_folders(folders: &[String]) -> Vec<ExerciseRule> {
+    let mut seen = std::collections::HashSet::new();
+    folders
+        .iter()
+        .filter_map(|folder| {
+            let slug = normalize_slug(folder)?;
+            seen.insert(slug.clone()).then(|| ExerciseRule {
+                name: slug,
+                pattern: format!("{folder}/**"),
+            })
+        })
+        .collect()
 }
 
 /// Signs in and returns the `hermione_session=…` cookie for the teacher API.
@@ -457,6 +561,25 @@ mod tests {
         assert_eq!(normalize_slug("--a__b--").as_deref(), Some("a-b"));
         assert_eq!(normalize_slug("   ").as_deref(), None);
         assert_eq!(normalize_slug("!!!").as_deref(), None);
+    }
+
+    #[test]
+    fn exercise_rules_map_folders_to_globs() {
+        let folders = vec![
+            "ex1-arrays".to_string(),
+            "Ex1 Arrays".to_string(), // duplicate slug — dropped
+            "week 02".to_string(),
+        ];
+        let rules = exercise_rules_for_folders(&folders);
+        let names: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
+        // First "ex1-arrays" wins; the dup is dropped. Order preserved.
+        assert_eq!(names, ["ex1-arrays", "week-02"]);
+        // `match` uses the original folder name (real path).
+        assert_eq!(rules[0].pattern, "ex1-arrays/**");
+        assert_eq!(rules[1].pattern, "week 02/**");
+        // Serializes with name before match, and only these keys.
+        let json = serde_json::to_string(&rules[0]).unwrap();
+        assert_eq!(json, r#"{"name":"ex1-arrays","match":"ex1-arrays/**"}"#);
     }
 
     #[test]

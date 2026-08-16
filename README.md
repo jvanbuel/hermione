@@ -245,6 +245,10 @@ ever shows the selected course's data.
       local checkout, so it needs no token and works for private repos; opt out
       with `--no-exercises`. Seeding uses the teacher session, so it applies to
       the `--user` flow (not `--admin-token`).
+    - **`hermione course init`** scaffolds a `.hermione.json` from the repo's
+      top-level folders (one exercise per folder) so the mapping lives in the
+      repo and the extension can read it. Commit it, then `course create --link`.
+      (`--force` overwrites an existing file.)
 - **Manage a course from the dashboard.** The gear next to the course switcher
   opens *Course settings*: rename it, link/unlink its repo, copy or **rotate** the
   enrollment token (if it leaks), add/remove **co-teachers** (any existing admin,
