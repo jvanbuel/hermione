@@ -870,3 +870,175 @@ async fn enforced_identity_required_and_trusted() {
         "self-asserted name ignored: {body}"
     );
 }
+
+/// Edit events must survive ingest and reach the overview, and a student who
+/// has been on an exercise a long time without typing must read differently
+/// from one who is still working.
+#[tokio::test]
+async fn edit_activity_separates_working_from_stuck() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("ed{s}"), "Ed", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("ed{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("ed{s}"), "pw").await.unwrap();
+
+    // Both students have been on the same exercise for ~20 minutes. The only
+    // difference is that one of them is still typing.
+    let now = chrono::Utc::now().timestamp_millis();
+    let start = now - 20 * 60 * 1000;
+    let mut events = Vec::new();
+    for who in [format!("busy{s}"), format!("idle{s}")] {
+        // A heartbeat every minute keeps time-on-exercise accumulating for both.
+        for m in 0..21 {
+            events.push(format!(
+                r#"{{"student":"{who}","path":"/a.py","exercise":"one","kind":"heartbeat","atUnixMs":{}}}"#,
+                start + m * 60 * 1000
+            ));
+        }
+    }
+    // The busy student typed just now; the stuck one last typed 15 minutes ago.
+    events.push(format!(
+        r#"{{"student":"busy{s}","path":"/a.py","exercise":"one","kind":"edit","edits":37,"line":12,"atUnixMs":{now}}}"#
+    ));
+    events.push(format!(
+        r#"{{"student":"idle{s}","path":"/a.py","exercise":"one","kind":"edit","edits":4,"line":3,"atUnixMs":{}}}"#,
+        now - 15 * 60 * 1000
+    ));
+    let payload = format!("[{}]", events.join(","));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=ed{s}"), &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let students: Vec<&serde_json::Value> = v["exercises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["students"].as_array().unwrap())
+        .collect();
+
+    let busy = students
+        .iter()
+        .find(|st| st["student"] == format!("busy{s}"))
+        .expect("busy student in overview");
+    let idle = students
+        .iter()
+        .find(|st| st["student"] == format!("idle{s}"))
+        .expect("idle student in overview");
+
+    assert_eq!(busy["editsRecent"], 37, "recent edits surfaced");
+    assert_eq!(idle["editsRecent"], 0, "old edits fall outside the window");
+    assert!(
+        busy["lastEditUnixMs"].is_i64() && idle["lastEditUnixMs"].is_i64(),
+        "last edit reported for both"
+    );
+
+    let reasons = |st: &serde_json::Value| {
+        st["struggleReasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().starts_with("no edits for"))
+    };
+    assert!(!reasons(busy), "a typing student is not stalled");
+    assert!(reasons(idle), "a silent student is stalled: {idle}");
+}
+
+/// An edit flushed after the student has already moved on must not drag the
+/// board back to the file they left, and must not count as typing on the new
+/// exercise.
+#[tokio::test]
+async fn a_late_edit_does_not_follow_the_student_to_the_next_exercise() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("lt{s}"), "Lt", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("lt{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("lt{s}"), "pw").await.unwrap();
+
+    // Typed in "one", switched to "two" a second later, and the edit for "one"
+    // only reached us after the switch — stamped when the typing happened.
+    let now = chrono::Utc::now().timestamp_millis();
+    let student = format!("sw{s}");
+    let payload = format!(
+        r#"[{{"student":"{student}","path":"/one.py","exercise":"one","kind":"focus","atUnixMs":{}}},
+            {{"student":"{student}","path":"/two.py","exercise":"two","kind":"focus","atUnixMs":{}}},
+            {{"student":"{student}","path":"/one.py","exercise":"one","kind":"edit","edits":9,"atUnixMs":{}}}]"#,
+        now - 60_000,
+        now - 30_000,
+        now - 31_000,
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=lt{s}"), &cookie).await;
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let groups = v["exercises"].as_array().unwrap();
+
+    let holding = groups
+        .iter()
+        .find(|g| {
+            g["students"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|st| st["student"] == student)
+        })
+        .expect("student appears somewhere");
+    assert_eq!(
+        holding["exercise"], "two",
+        "the student stays on the exercise they moved to"
+    );
+
+    let st = holding["students"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|st| st["student"] == student)
+        .unwrap();
+    assert_eq!(
+        st["editsRecent"], 0,
+        "edits on the previous exercise don't count as typing here: {st}"
+    );
+}
