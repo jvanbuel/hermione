@@ -982,19 +982,18 @@ async fn remove_member(
     let Some(admin_id) = tenancy::admin_by_username(&state.db, username.trim()).await else {
         return (StatusCode::NOT_FOUND, "no such admin").into_response();
     };
-    match tenancy::count_course_admins(&state.db, course.id).await {
-        Ok(n) if n <= 1 => {
-            return (
-                StatusCode::CONFLICT,
-                "cannot remove the last member of a course",
-            )
-                .into_response();
+    // Atomic: locks the membership rows so concurrent removals can't both slip
+    // past the last-member check and orphan the course.
+    match tenancy::revoke_membership_checked(&state.db, admin_id, course.id).await {
+        Ok(tenancy::RevokeOutcome::Removed) => StatusCode::NO_CONTENT.into_response(),
+        Ok(tenancy::RevokeOutcome::NotAMember) => {
+            (StatusCode::NOT_FOUND, "not a member of this course").into_response()
         }
-        Ok(_) => {}
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-    match tenancy::revoke_membership(&state.db, admin_id, course.id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(tenancy::RevokeOutcome::LastMember) => (
+            StatusCode::CONFLICT,
+            "cannot remove the last member of a course",
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

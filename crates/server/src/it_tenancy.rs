@@ -505,6 +505,17 @@ async fn teacher_manages_co_teachers() {
     let resp = get_with_cookie(&app, &format!("/api/overview?course=team{s}"), &colleague).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
+    // Removing an admin who isn't a member is a 404 (not a last-member conflict).
+    let resp = req_with_cookie(
+        &app,
+        "DELETE",
+        &format!("/api/courses/team{s}/members/colleague{s}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
     // The last remaining member cannot be removed.
     let resp = req_with_cookie(
         &app,

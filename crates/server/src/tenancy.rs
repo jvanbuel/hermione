@@ -6,7 +6,7 @@ use chrono::Utc;
 use hermione_entity::{admins, course_admins, courses};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, PaginatorTrait,
-    QueryFilter,
+    QueryFilter, QuerySelect, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -216,18 +216,6 @@ pub async fn is_member(db: &DatabaseConnection, admin_id: Uuid, course_id: Uuid)
         .is_some()
 }
 
-/// Removes an admin's access to a course. Idempotent.
-pub async fn revoke_membership(
-    db: &DatabaseConnection,
-    admin_id: Uuid,
-    course_id: Uuid,
-) -> Result<(), DbErr> {
-    course_admins::Entity::delete_by_id((admin_id, course_id))
-        .exec(db)
-        .await?;
-    Ok(())
-}
-
 /// The admins with access to a course, ordered by username.
 pub async fn admins_for_course(
     db: &DatabaseConnection,
@@ -251,12 +239,44 @@ pub async fn admins_for_course(
     Ok(rows)
 }
 
-/// How many admins have access to a course.
-pub async fn count_course_admins(db: &DatabaseConnection, course_id: Uuid) -> Result<u64, DbErr> {
-    course_admins::Entity::find()
+/// Outcome of a checked membership revocation.
+pub enum RevokeOutcome {
+    /// The admin was removed.
+    Removed,
+    /// The admin isn't a member of this course.
+    NotAMember,
+    /// The admin is the course's only member — removal refused.
+    LastMember,
+}
+
+/// Revokes an admin's membership, refusing to remove the last member (which would
+/// orphan the course). Runs in one transaction with the membership rows locked
+/// `FOR UPDATE`, so concurrent removals can't both pass the last-member check and
+/// leave the course with zero members.
+pub async fn revoke_membership_checked(
+    db: &DatabaseConnection,
+    admin_id: Uuid,
+    course_id: Uuid,
+) -> Result<RevokeOutcome, DbErr> {
+    let txn = db.begin().await?;
+    let members = course_admins::Entity::find()
         .filter(course_admins::Column::CourseId.eq(course_id))
-        .count(db)
-        .await
+        .lock_exclusive()
+        .all(&txn)
+        .await?;
+    if !members.iter().any(|m| m.admin_id == admin_id) {
+        txn.rollback().await?;
+        return Ok(RevokeOutcome::NotAMember);
+    }
+    if members.len() <= 1 {
+        txn.rollback().await?;
+        return Ok(RevokeOutcome::LastMember);
+    }
+    course_admins::Entity::delete_by_id((admin_id, course_id))
+        .exec(&txn)
+        .await?;
+    txn.commit().await?;
+    Ok(RevokeOutcome::Removed)
 }
 
 /// Courses an admin may access. `archived` selects active (false) or archived

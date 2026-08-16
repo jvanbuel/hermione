@@ -96,7 +96,7 @@ Migrations run automatically on startup. Configuration is via flags or env vars:
 | `--bootstrap-admin-password` | `HERMIONE_BOOTSTRAP_ADMIN_PASSWORD` | none — set it to seed an admin on first start |
 | `--anthropic-api-key` | `HERMIONE_ANTHROPIC_API_KEY` | none — set it to enable the AI teaching assistant |
 | `--assistant-model`   | `HERMIONE_ASSISTANT_MODEL`   | `claude-opus-4-8`                              |
-| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises (private repos / rate limits) |
+| `--github-token`  | `HERMIONE_GITHUB_TOKEN`  | none — reads a linked repo's folders to seed exercises. Use a **read-only, minimally-scoped** token: teachers can point a course at any repo the token can read (see note below) |
 
 ### 3. Record a session (on the student's machine)
 
@@ -179,8 +179,10 @@ cd vscode-extension && npm install && npm run compile
 - `GET /api/courses/{slug}` — course detail (repo, enrollment token, teachers).
   `PATCH /api/courses/{slug}` — rename, relink the repo (`repoUrl: null` unlinks),
   or `archived: true/false`. `POST /api/courses/{slug}/rotate-token` — issue a
-  fresh enrollment token. `POST` / `DELETE /api/courses/{slug}/members[/{username}]`
-  — add / remove a co-teacher (any existing admin). All scoped to a member.
+  fresh enrollment token. `POST /api/courses/{slug}/members` adds a co-teacher
+  (body `{"username":"…"}`); `DELETE /api/courses/{slug}/members/{username}`
+  removes one (the last member cannot be removed). A co-teacher is any existing
+  admin. All scoped to a member.
 - `GET /api/exercises?course=…` / `POST /api/exercises` — list / define (upsert)
   a course's exercises (title + order). The dashboard shows all of them, even
   ones nobody has started, with per-exercise stats.
@@ -230,7 +232,11 @@ ever shows the selected course's data.
     - **Dashboard "New course"** fetches the linked GitHub repo's folders over
       the API (set `HERMIONE_GITHUB_TOKEN` for private repos / rate limits);
       untick *Seed exercises* to skip. Best-effort — seeding never blocks course
-      creation.
+      creation. Only folder **names** are read (not contents). Because a teacher
+      can link any repo URL, `HERMIONE_GITHUB_TOKEN` should be read-only and
+      scoped to just the repos teachers may seed from (e.g. a fine-grained PAT or
+      a repo-scoped GitHub App installation) so it can't disclose folder names of
+      unrelated private repos.
     - **`hermione course create --link`** (run inside the repo) seeds from the
       local checkout, so it needs no token and works for private repos; opt out
       with `--no-exercises`. Seeding uses the teacher session, so it applies to

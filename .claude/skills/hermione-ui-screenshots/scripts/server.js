@@ -63,6 +63,10 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET') return sendJson(res, F.courseDetail);
     res.writeHead(204); return res.end();
   }
+  // Rotate-token mirrors production: 200 + a fresh token (the UI reads it back).
+  if (/^\/api\/courses\/[^/]+\/rotate-token$/.test(p)) {
+    return sendJson(res, { enrollmentToken: 'enroll-rotated-3f21b8d0c95e4a17' });
+  }
   if (p.startsWith('/api/courses/')) { res.writeHead(204); return res.end(); }
   if (p === '/api/overview') return sendJson(res, F.overview);
   if (p === '/api/analytics/time-per-file') return sendJson(res, F.analytics);

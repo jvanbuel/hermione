@@ -78,6 +78,8 @@
     .course-repo { font-size: var(--fs-sm); color: var(--fg-muted); text-decoration: none;
       display: inline-flex; align-items: center; gap: 5px; max-width: 220px; }
     .course-repo:hover { color: var(--fg); text-decoration: underline; }
+    .course-repo.unlinked { cursor: default; }
+    .course-repo.unlinked:hover { color: var(--fg-muted); text-decoration: none; }
     .course-repo .ico { width: 14px; height: 14px; flex: none; }
     .course-repo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Members editor in the course-settings modal. */
@@ -575,16 +577,30 @@
       }
     }
 
+    // Only http(s) URLs are safe as an href — a stored `javascript:`/`data:`
+    // repoUrl must never become a clickable link in another teacher's session.
+    function safeHttpUrl(url) {
+      try {
+        const u = new URL(url);
+        return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null;
+      } catch (_) { return null; }
+    }
+
     function updateCourseRepo() {
       const c = courseList.find(c => c.slug === currentCourse);
       const link = document.getElementById('course-repo');
-      if (c && c.repoUrl) {
-        link.href = c.repoUrl;
-        document.getElementById('course-repo-name').textContent = repoLabel(c.repoUrl);
-        link.hidden = false;
+      if (!c || !c.repoUrl) { link.hidden = true; return; }
+      document.getElementById('course-repo-name').textContent = repoLabel(c.repoUrl);
+      const href = safeHttpUrl(c.repoUrl);
+      if (href) {
+        link.href = href;
+        link.classList.remove('unlinked');
       } else {
-        link.hidden = true;
+        // Non-http(s) (e.g. an ssh git URL) — show the label, but not clickable.
+        link.removeAttribute('href');
+        link.classList.add('unlinked');
       }
+      link.hidden = false;
     }
 
     function populateCourses(courses, selectSlug) {
