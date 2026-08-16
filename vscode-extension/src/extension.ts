@@ -75,7 +75,10 @@ class Reporter {
 
     private exercises = new ExerciseMap();
     private queue: FileEvent[] = [];
-    private pendingEdits = new Map<string, { doc: vscode.TextDocument; count: number }>();
+    private pendingEdits = new Map<
+        string,
+        { doc: vscode.TextDocument; count: number; at: number }
+    >();
     private heartbeatTimer?: NodeJS.Timeout;
     private flushTimer?: NodeJS.Timeout;
     private editTimer?: NodeJS.Timeout;
@@ -504,10 +507,12 @@ class Reporter {
         const entry = this.pendingEdits.get(e.document.uri.fsPath);
         if (entry) {
             entry.count += e.contentChanges.length;
+            entry.at = Date.now();
         } else {
             this.pendingEdits.set(e.document.uri.fsPath, {
                 doc: e.document,
                 count: e.contentChanges.length,
+                at: Date.now(),
             });
         }
         if (!this.editTimer) {
@@ -520,8 +525,12 @@ class Reporter {
             clearTimeout(this.editTimer);
             this.editTimer = undefined;
         }
-        for (const { doc, count } of this.pendingEdits.values()) {
-            const event = this.buildEvent('edit', doc, doc.languageId, this.cursorLine(doc));
+        for (const { doc, count, at } of this.pendingEdits.values()) {
+            // Stamped when the typing happened, not when the timer fired —
+            // otherwise an edit lands up to a window later than it occurred and
+            // can sort after a focus change the student made in between, making
+            // the board show the file they already left.
+            const event = this.buildEvent('edit', doc, doc.languageId, this.cursorLine(doc), at);
             event.edits = count;
             this.enqueue(event);
         }
@@ -562,6 +571,7 @@ class Reporter {
         doc: vscode.TextDocument,
         language: string | undefined,
         line?: number,
+        at?: number,
     ): FileEvent {
         const uri = doc.uri;
         const folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -577,7 +587,7 @@ class Reporter {
             exercise: this.exercises.resolve(relativePath),
             kind,
             line,
-            atUnixMs: Date.now(),
+            atUnixMs: at ?? Date.now(),
         };
     }
 

@@ -608,13 +608,16 @@ pub async fn overview(
             "idle"
         };
 
-        // Typing activity. `last_edit` stays `None` for clients that never send
-        // edit events, which keeps students on an older extension from all
-        // looking stalled.
+        // Typing activity, scoped to the exercise the student is on now — the
+        // same scope as `seconds_on_exercise`, so the two are comparable.
+        // Edits on a previous exercise say nothing about being stuck on this
+        // one. `last_edit` stays `None` for clients that never send edit
+        // events, which keeps students on an older extension from all looking
+        // stalled.
         let mut edits_recent = 0i32;
         let mut last_edit: Option<i64> = None;
         for ev in &evs {
-            if ev.kind != "edit" {
+            if ev.kind != "edit" || ev.exercise != current_exercise {
                 continue;
             }
             let t = ev.at.timestamp();

@@ -443,7 +443,9 @@
         ? `<div class="reason">${ICONS.warn}<span>${esc(s.struggleReasons.join(' · '))}</span></div>` : '';
       // Recent typing is the counterweight to the clock: a long time on an
       // exercise reads very differently when the student is still writing code.
-      const typing = s.editsRecent > 0
+      // The edit window is longer than the active window, so gate on status too
+      // — someone who left four minutes ago is not "typing".
+      const typing = s.status === 'active' && s.editsRecent > 0
         ? `<span class="sep">·</span><span class="typing" title="${s.editsRecent} edits in the last few minutes">${ICONS.pencil}typing</span>` : '';
       const prov = (s.studentSource || s.repo)
         ? `<div class="prov" title="identity provenance">${esc(s.studentSource || '?')}${s.repo ? ` · ${esc(s.repo)}` : ''}</div>` : '';

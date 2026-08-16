@@ -964,3 +964,80 @@ async fn edit_activity_separates_working_from_stuck() {
     assert!(!reasons(busy), "a typing student is not stalled");
     assert!(reasons(idle), "a silent student is stalled: {idle}");
 }
+
+/// An edit flushed after the student has already moved on must not drag the
+/// board back to the file they left, and must not count as typing on the new
+/// exercise.
+#[tokio::test]
+async fn a_late_edit_does_not_follow_the_student_to_the_next_exercise() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("lt{s}"), "Lt", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("lt{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("lt{s}"), "pw").await.unwrap();
+
+    // Typed in "one", switched to "two" a second later, and the edit for "one"
+    // only reached us after the switch — stamped when the typing happened.
+    let now = chrono::Utc::now().timestamp_millis();
+    let student = format!("sw{s}");
+    let payload = format!(
+        r#"[{{"student":"{student}","path":"/one.py","exercise":"one","kind":"focus","atUnixMs":{}}},
+            {{"student":"{student}","path":"/two.py","exercise":"two","kind":"focus","atUnixMs":{}}},
+            {{"student":"{student}","path":"/one.py","exercise":"one","kind":"edit","edits":9,"atUnixMs":{}}}]"#,
+        now - 60_000,
+        now - 30_000,
+        now - 31_000,
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-events")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = get_with_cookie(&app, &format!("/api/overview?course=lt{s}"), &cookie).await;
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let groups = v["exercises"].as_array().unwrap();
+
+    let holding = groups
+        .iter()
+        .find(|g| {
+            g["students"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|st| st["student"] == student)
+        })
+        .expect("student appears somewhere");
+    assert_eq!(
+        holding["exercise"], "two",
+        "the student stays on the exercise they moved to"
+    );
+
+    let st = holding["students"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|st| st["student"] == student)
+        .unwrap();
+    assert_eq!(
+        st["editsRecent"], 0,
+        "edits on the previous exercise don't count as typing here: {st}"
+    );
+}
