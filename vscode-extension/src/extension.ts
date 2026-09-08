@@ -116,7 +116,10 @@ class Reporter {
         this.enabled = true;
 
         this.disposables.push(
-            vscode.window.onDidChangeActiveTextEditor((editor) => this.onFocus(editor)),
+            vscode.window.onDidChangeActiveTextEditor(() => this.onFocus()),
+            // A notebook can gain focus without any cell entering edit mode,
+            // which fires no text-editor event.
+            vscode.window.onDidChangeActiveNotebookEditor(() => this.onFocus()),
             vscode.window.onDidChangeWindowState((s) => {
                 this.windowFocused = s.focused;
             }),
@@ -136,7 +139,7 @@ class Reporter {
         );
 
         this.restartHeartbeat();
-        this.onFocus(vscode.window.activeTextEditor); // report current file immediately
+        this.onFocus(); // report current file immediately
 
         // Surface teacher broadcasts for this course over a live WebSocket.
         this.lastMessageId = this.context.globalState.get(this.messageKey(), 0);
@@ -501,14 +504,14 @@ class Reporter {
         }
         this.heartbeatTimer = setInterval(() => {
             if (this.enabled && this.windowFocused) {
-                this.report('heartbeat', vscode.window.activeTextEditor);
+                this.report('heartbeat');
             }
         }, this.heartbeatSeconds * 1000);
     }
 
-    private onFocus(editor: vscode.TextEditor | undefined): void {
+    private onFocus(): void {
         if (this.enabled) {
-            this.report('focus', editor);
+            this.report('focus');
             this.updateStatusBar();
         }
     }
@@ -593,27 +596,47 @@ class Reporter {
         }
     }
 
-    private report(kind: 'focus' | 'heartbeat', editor: vscode.TextEditor | undefined): void {
-        if (!editor || !tracked(editor.document)) {
+    /**
+     * The file the student is looking at.
+     *
+     * `activeTextEditor` only points at a notebook cell while that cell is in
+     * edit mode, so a student reading or clicking through cells has no active
+     * text editor at all. Falling back to `activeNotebookEditor` is what makes
+     * a notebook count as being worked on, rather than only counting the
+     * moments someone is mid-keystroke.
+     */
+    private activeTarget(): { uri: vscode.Uri; language?: string; line?: number } | undefined {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && tracked(editor.document)) {
+            return {
+                uri: editor.document.uri,
+                language: editor.document.languageId,
+                line: this.cursorLine(editor.document),
+            };
+        }
+        const nb = vscode.window.activeNotebookEditor;
+        if (nb) {
+            const cell = nb.notebook.cellCount > 0 ? nb.notebook.cellAt(nb.selection.start) : undefined;
+            return { uri: nb.notebook.uri, language: cell?.document.languageId };
+        }
+        return undefined;
+    }
+
+    private report(kind: 'focus' | 'heartbeat'): void {
+        const target = this.activeTarget();
+        if (!target) {
             return;
         }
         // Clicking from cell to cell inside one notebook is a focus change per
         // cell, all of them the same file. Report the file the student moved
         // to, not every step they took inside it.
         if (kind === 'focus') {
-            if (editor.document.uri.fsPath === this.focusedPath) {
+            if (target.uri.fsPath === this.focusedPath) {
                 return;
             }
-            this.focusedPath = editor.document.uri.fsPath;
+            this.focusedPath = target.uri.fsPath;
         }
-        this.enqueue(
-            this.buildEvent(
-                kind,
-                editor.document.uri,
-                editor.document.languageId,
-                this.cursorLine(editor.document),
-            ),
-        );
+        this.enqueue(this.buildEvent(kind, target.uri, target.language, target.line));
     }
 
     private buildEvent(
@@ -692,8 +715,8 @@ class Reporter {
             this.statusBar.show();
             return;
         }
-        const editor = vscode.window.activeTextEditor;
-        const rel = editor ? vscode.workspace.asRelativePath(editor.document.uri, false) : undefined;
+        const target = this.activeTarget();
+        const rel = target ? vscode.workspace.asRelativePath(target.uri, false) : undefined;
         const exercise = rel ? this.exercises.resolve(rel) : undefined;
         const suffix = exercise ? ` · ${exercise}` : '';
         this.statusBar.text = `$(eye) Hermione: ${this.student}${suffix}`;
