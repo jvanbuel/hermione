@@ -56,6 +56,18 @@ interface FileEvent {
 const EDIT_WINDOW_MS = 5000;
 
 /**
+ * Documents worth reporting. A notebook's cells are separate TextDocuments
+ * under the `vscode-notebook-cell` scheme, so a course taught in notebooks
+ * reports nothing at all if only `file` counts. Every cell URI carries the
+ * notebook's own path (the cell id lives in the fragment), so `fsPath` and
+ * `asRelativePath` already collapse the cells of one notebook onto one file,
+ * and exercise matching keeps working untouched.
+ */
+function tracked(doc: vscode.TextDocument): boolean {
+    return doc.uri.scheme === 'file' || doc.uri.scheme === 'vscode-notebook-cell';
+}
+
+/**
  * Watches which file the student has active and reports it to the Hermione
  * backend — on focus changes, via periodic heartbeats (so we can measure
  * time-on-task), and on edit bursts (so time-on-task can be told apart from
@@ -72,6 +84,9 @@ class Reporter {
     private serverUrl = '';
     private heartbeatSeconds = 15;
     private token = '';
+
+    /** Path last reported as focused, to suppress same-file focus churn. */
+    private focusedPath = '';
 
     private exercises = new ExerciseMap();
     private queue: FileEvent[] = [];
@@ -107,6 +122,7 @@ class Reporter {
             }),
             vscode.workspace.onDidChangeTextDocument((e) => this.onEdit(e)),
             vscode.workspace.onDidCloseTextDocument((doc) => this.onClose(doc)),
+            vscode.workspace.onDidCloseNotebookDocument((nb) => this.onCloseNotebook(nb)),
             vscode.workspace.onDidChangeWorkspaceFolders(async () => {
                 await this.loadConfig();
                 await this.exercises.load();
@@ -139,6 +155,9 @@ class Reporter {
             this.editTimer = undefined;
         }
         this.pendingEdits.clear();
+        // start() reports the current file immediately; leaving this set would
+        // suppress exactly that.
+        this.focusedPath = '';
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = undefined;
@@ -268,7 +287,7 @@ class Reporter {
 
     private chatBody(message: string): string {
         const editor = vscode.window.activeTextEditor;
-        const onFile = editor && editor.document.uri.scheme === 'file';
+        const onFile = editor && tracked(editor.document);
         const file = onFile ? vscode.workspace.asRelativePath(editor!.document.uri, false) : undefined;
         const language = onFile ? editor!.document.languageId : undefined;
         return JSON.stringify({ message, student: this.student, file, language });
@@ -501,7 +520,7 @@ class Reporter {
      * all — time-on-task alone can't distinguish working from stuck.
      */
     private onEdit(e: vscode.TextDocumentChangeEvent): void {
-        if (!this.enabled || e.document.uri.scheme !== 'file' || e.contentChanges.length === 0) {
+        if (!this.enabled || !tracked(e.document) || e.contentChanges.length === 0) {
             return;
         }
         const entry = this.pendingEdits.get(e.document.uri.fsPath);
@@ -530,7 +549,7 @@ class Reporter {
             // otherwise an edit lands up to a window later than it occurred and
             // can sort after a focus change the student made in between, making
             // the board show the file they already left.
-            const event = this.buildEvent('edit', doc, doc.languageId, this.cursorLine(doc), at);
+            const event = this.buildEvent('edit', doc.uri, doc.languageId, this.cursorLine(doc), at);
             event.edits = count;
             this.enqueue(event);
         }
@@ -544,22 +563,53 @@ class Reporter {
     }
 
     private onClose(doc: vscode.TextDocument): void {
+        // Deleting or collapsing a cell closes that cell's document while the
+        // notebook stays open, so cells are left to onCloseNotebook.
         if (this.enabled && doc.uri.scheme === 'file') {
             // Flush first so a final typing burst isn't lost, and so the close
             // stays last in the stream.
             this.flushEdits();
-            this.enqueue(this.buildEvent('close', doc, undefined));
+            this.forgetFocus(doc.uri);
+            this.enqueue(this.buildEvent('close', doc.uri, undefined));
+        }
+    }
+
+    private onCloseNotebook(nb: vscode.NotebookDocument): void {
+        if (!this.enabled) {
+            return;
+        }
+        this.flushEdits();
+        this.forgetFocus(nb.uri);
+        this.enqueue(this.buildEvent('close', nb.uri, undefined));
+    }
+
+    /**
+     * Closing a file has to clear it, or reopening the same one is mistaken for
+     * focus that never moved and is never reported.
+     */
+    private forgetFocus(uri: vscode.Uri): void {
+        if (uri.fsPath === this.focusedPath) {
+            this.focusedPath = '';
         }
     }
 
     private report(kind: 'focus' | 'heartbeat', editor: vscode.TextEditor | undefined): void {
-        if (!editor || editor.document.uri.scheme !== 'file') {
+        if (!editor || !tracked(editor.document)) {
             return;
+        }
+        // Clicking from cell to cell inside one notebook is a focus change per
+        // cell, all of them the same file. Report the file the student moved
+        // to, not every step they took inside it.
+        if (kind === 'focus') {
+            if (editor.document.uri.fsPath === this.focusedPath) {
+                return;
+            }
+            this.focusedPath = editor.document.uri.fsPath;
         }
         this.enqueue(
             this.buildEvent(
                 kind,
-                editor.document,
+                editor.document.uri,
                 editor.document.languageId,
                 this.cursorLine(editor.document),
             ),
@@ -568,12 +618,11 @@ class Reporter {
 
     private buildEvent(
         kind: FileEvent['kind'],
-        doc: vscode.TextDocument,
+        uri: vscode.Uri,
         language: string | undefined,
         line?: number,
         at?: number,
     ): FileEvent {
-        const uri = doc.uri;
         const folder = vscode.workspace.getWorkspaceFolder(uri);
         const relativePath = vscode.workspace.asRelativePath(uri, false);
         return {
