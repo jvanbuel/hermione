@@ -18,11 +18,15 @@ terraform {
 provider "aws" {
   region  = var.region
   profile = var.profile
+
+  default_tags {
+    tags = { app = "hermione" }
+  }
 }
 
-variable "region"  { default = "eu-west-1" }
+variable "region" { default = "eu-west-1" }
 variable "profile" { default = "playground" }
-variable "name"    { default = "hermione" }
+variable "name" { default = "hermione" }
 
 variable "zone_name" {
   description = "Route53 hosted zone that owns the hostnames below."
@@ -185,7 +189,7 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "main" {
   identifier     = var.name
   engine         = "postgres"
-  engine_version = "16"
+  engine_version = "16.13" # pinned: "16" floats, and apply_immediately is on
   instance_class = "db.t4g.micro"
 
   allocated_storage = 20
@@ -416,6 +420,9 @@ resource "aws_ecs_task_definition" "main" {
     name      = "server"
     image     = var.image
     essential = true
+    # The image sets no USER, so without this the task runs as root. Same uid
+    # the Helm chart pins (infra/charts/hermione/values.yaml).
+    user = "65532:65532"
 
     portMappings = [
       { containerPort = 8080, protocol = "tcp" },
@@ -429,11 +436,15 @@ resource "aws_ecs_task_definition" "main" {
       { name = "RUST_LOG", value = "hermione_server=info,tower_http=info" },
     ]
 
-    secrets = [
+    secrets = concat([
       { name = "HERMIONE_DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn },
       { name = "HERMIONE_ADMIN_TOKEN", valueFrom = aws_ssm_parameter.admin_token.arn },
       { name = "HERMIONE_BOOTSTRAP_ADMIN_PASSWORD", valueFrom = aws_ssm_parameter.bootstrap_admin_password.arn },
-    ]
+      ], var.anthropic_api_key != "" ? [
+      # Only when a real key was given: the parameter otherwise holds the
+      # placeholder, which the server would take for a live key.
+      { name = "HERMIONE_ANTHROPIC_API_KEY", valueFrom = aws_ssm_parameter.anthropic_api_key.arn },
+    ] : [])
 
     readonlyRootFilesystem = true
 
@@ -468,7 +479,15 @@ resource "aws_ecs_service" "main" {
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
-  health_check_grace_period_seconds = 120
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  # The chart allows 150s for a first migration against an empty database
+  # (startupProbe, 30 x 5s). With min 0% there is no second task to fall back
+  # on, so this is deliberately more generous than that.
+  health_check_grace_period_seconds = 300
 
   network_configuration {
     subnets = data.aws_subnets.default.ids
@@ -490,7 +509,7 @@ resource "aws_ecs_service" "main" {
     container_port   = 50051
   }
 
-  depends_on = [aws_lb_listener.https]
+  depends_on = [aws_lb_listener.https, aws_lb_listener_rule.grpc]
 }
 
 # --- DNS --------------------------------------------------------------------
@@ -522,7 +541,7 @@ resource "aws_route53_record" "grpc" {
 # --- Outputs ----------------------------------------------------------------
 
 output "dashboard_url" { value = "https://${var.host}" }
-output "grpc_backend"  { value = "https://${local.grpc_host}" }
+output "grpc_backend" { value = "https://${local.grpc_host}" }
 
 output "admin_username" { value = "admin" }
 

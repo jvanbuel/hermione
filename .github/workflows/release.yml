@@ -58,8 +58,11 @@ jobs:
       # Publishing is what makes the `lightcone.hermione-vscode` reference in a
       # course's devcontainer.json resolve. Skipped when the secret is absent,
       # so a release still succeeds in a fork.
+      # The vsix is already attached to the release above, so a Marketplace
+      # outage should not fail the release or block the recorder and image.
       - name: Publish to the VSCode Marketplace
         if: env.VSCE_PAT != ''
+        continue-on-error: true
         run: npx vsce publish --packagePath hermione-vscode.vsix
         working-directory: vscode-extension
 
