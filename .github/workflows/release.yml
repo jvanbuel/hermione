@@ -34,6 +34,10 @@ jobs:
 
   extension:
     runs-on: ubuntu-latest
+    env:
+      # Job-level so the publish step's `if` can test it; a step's own `env`
+      # block is not visible to its own condition.
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,11 +45,23 @@ jobs:
           node-version: 20
       - run: npm ci
         working-directory: vscode-extension
+      # The Marketplace rejects a version it already has, so take the version
+      # from the tag rather than from package.json. Tagging is then the only
+      # thing that has to be right.
+      - run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
+        working-directory: vscode-extension
       - run: npm run package
         working-directory: vscode-extension
       - uses: softprops/action-gh-release@v2
         with:
           files: vscode-extension/hermione-vscode.vsix
+      # Publishing is what makes the `lightcone.hermione-vscode` reference in a
+      # course's devcontainer.json resolve. Skipped when the secret is absent,
+      # so a release still succeeds in a fork.
+      - name: Publish to the VSCode Marketplace
+        if: env.VSCE_PAT != ''
+        run: npx vsce publish --packagePath hermione-vscode.vsix
+        working-directory: vscode-extension
 
   image:
     runs-on: ubuntu-latest

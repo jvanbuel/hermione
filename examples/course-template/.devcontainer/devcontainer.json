@@ -29,8 +29,8 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        // The Hermione editor-activity extension (publish it, or reference a vsix).
-        "hermione.hermione-vscode"
+        // The Hermione editor-activity extension.
+        "lightcone.hermione-vscode"
       ],
       "settings": {
         // Make every integrated terminal a recorded one by using the recorder

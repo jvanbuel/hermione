@@ -3,7 +3,7 @@
   "displayName": "Hermione",
   "description": "Reports the student's active file and exercise to the Hermione backend for live intervention and time-on-task analysis.",
   "version": "0.1.0",
-  "publisher": "hermione",
+  "publisher": "lightcone",
   "license": "GPL-3.0-or-later",
   "repository": {
     "type": "git",
