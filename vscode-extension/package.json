@@ -1,6 +1,6 @@
 {
   "name": "hermione-vscode",
-  "displayName": "Hermione",
+  "displayName": "Hermione Classroom",
   "description": "Reports the student's active file and exercise to the Hermione backend for live intervention and time-on-task analysis.",
   "version": "0.1.0",
   "publisher": "lightcone",
