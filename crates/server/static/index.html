@@ -153,7 +153,7 @@
     #board.tree .trow { display: contents; }
     #board.tree .tpath {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: var(--fs-sm); white-space: pre; padding: 3px 0;
+      font-size: var(--fs-base); white-space: pre; padding: 4px 0;
       color: var(--fg); align-self: start;
     }
     /* The connectors are scaffolding — keep them quiet so the names carry. */
@@ -166,16 +166,16 @@
     #board.tree .tperson {
       display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
       background: none; border: 1px solid transparent; border-radius: var(--radius-pill);
-      color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 1px 8px 1px 2px;
+      color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 2px 8px 2px 2px;
       cursor: pointer; text-align: left;
     }
     #board.tree .tperson:hover { background: var(--surface-2); border-color: var(--border); }
-    #board.tree .tperson .avatar { width: 20px; height: 20px; font-size: 9px; }
+    #board.tree .tperson .avatar { width: 22px; height: 22px; font-size: 10px; }
     #board.tree .tperson .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #board.tree .tperson.help { color: var(--red-text); }
     #board.tree .tperson.watch { color: var(--amber); }
     /* A file nobody is in still needs a row height, or the grid collapses. */
-    #board.tree .tpeople:empty::after { content: ""; display: block; height: 22px; }
+    #board.tree .tpeople:empty::after { content: ""; display: block; height: 26px; }
 
     .column {
       flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
@@ -672,22 +672,48 @@
     }
 
     // ---- tree view ----
+    // The repo's real folders, fetched once per course. The tree is drawn from
+    // these rather than from the course's exercises: exercises are only the
+    // subset someone defined, and are themselves often derived from the repo's
+    // .hermione.json. Refresh runs every 3s, so this must never be part of it.
+    let repoDirs = { course: null, dirs: [], loading: false };
+    async function loadRepoDirs(slug) {
+      if (!slug || repoDirs.course === slug || repoDirs.loading) return;
+      repoDirs.loading = true;
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(slug)}/tree`);
+        const body = res.ok ? await res.json() : { dirs: [] };
+        repoDirs = { course: slug, dirs: body.dirs || [], loading: false };
+      } catch (_) {
+        // A failed fetch must not blank the tree — fall back to open paths.
+        repoDirs = { course: slug, dirs: [], loading: false };
+      }
+      if (currentView === 'tree' && lastOverview) renderView(lastOverview);
+    }
+
     // Only the paths someone actually has open, so the tree is the class's
     // attention rather than a directory listing. Same shape as `tree`: one
     // entry per line, directories before files, connectors on the left.
-    function buildTree(students) {
+    function buildTree(students, dirs = []) {
       const root = { dirs: new Map(), files: new Map() };
+      const descend = (parts) => {
+        let node = root;
+        for (const dir of parts) {
+          if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: new Map() });
+          node = node.dirs.get(dir);
+        }
+        return node;
+      };
+      // Real folders first, so the structure is the repo's and stays put as
+      // students move around inside it.
+      for (const d of dirs) descend(String(d).split('/').filter(Boolean));
       for (const s of students) {
         const path = String(s.file || '').replace(/^\/+/, '');
         if (!path) continue; // nothing open — nothing to place in the tree
         const parts = path.split('/').filter(p => p && p !== '.');
         if (!parts.length) continue;
         const file = parts.pop();
-        let node = root;
-        for (const dir of parts) {
-          if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: new Map() });
-          node = node.dirs.get(dir);
-        }
+        const node = descend(parts);
         if (!node.files.has(file)) node.files.set(file, []);
         node.files.get(file).push(s);
       }
@@ -746,15 +772,8 @@
 
     function renderTree(board, data) {
       const students = data.exercises.flatMap(g => g.students).concat(data.noExercise);
-      const root = buildTree(students);
-      // Between sessions nobody has anything open, and a blank panel says
-      // nothing. The course's defined exercises are its top-level folders, so
-      // fall back to those: the shape of the course, waiting to be filled in.
-      if (!root.dirs.size && !root.files.size) {
-        for (const g of data.exercises) {
-          if (g.exercise) root.dirs.set(g.exercise, { dirs: new Map(), files: new Map() });
-        }
-      }
+      const dirs = repoDirs.course === currentCourse ? repoDirs.dirs : [];
+      const root = buildTree(students, dirs);
       const rows = treeRows(root);
       if (rows.length) {
         const c = courseList.find(c => c.slug === currentCourse);
@@ -763,7 +782,9 @@
       if (!rows.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = 'Nobody has a file open, and this course has no exercises defined yet.';
+        empty.textContent = repoDirs.course === currentCourse
+          ? 'Nobody has a file open, and the linked repository has no folders to show.'
+          : 'Link a repository to this course to see its structure.';
         board.replaceChildren(empty);
         return;
       }
@@ -930,6 +951,7 @@
       } catch (_) { lastError = true; setFreshness(); return; }
       lastError = false; lastUpdated = Date.now(); setFreshness();
       renderView(data);
+      loadRepoDirs(currentCourse);
     }
 
     // ---- terminal panes ----

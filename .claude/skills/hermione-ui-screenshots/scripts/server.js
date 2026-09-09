@@ -63,6 +63,10 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET') return sendJson(res, F.courseDetail);
     res.writeHead(204); return res.end();
   }
+  // The tree view reads the linked repo's folder structure from here.
+  if (/^\/api\/courses\/[^/]+\/tree$/.test(p)) {
+    return sendJson(res, F.courseTree);
+  }
   // Rotate-token mirrors production: 200 + a fresh token (the UI reads it back).
   if (/^\/api\/courses\/[^/]+\/rotate-token$/.test(p)) {
     return sendJson(res, { enrollmentToken: 'enroll-rotated-3f21b8d0c95e4a17' });

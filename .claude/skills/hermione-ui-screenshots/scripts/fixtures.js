@@ -29,6 +29,22 @@ function buildFixtures(now) {
     { slug: 'ex3-trees', title: 'Exercise 3 — Binary trees', position: 2 },
   ];
 
+  // The linked repo's folders (GET /api/courses/{slug}/tree). Deliberately
+  // includes directories nobody is working in, which is the point of drawing
+  // the repo rather than only the paths students have open.
+  const courseTree = {
+    dirs: [
+      'docs',
+      'docs/img',
+      'ex01-pointers',
+      'ex02-strings',
+      'ex03-trees',
+      'ex04-hashing',
+      'src',
+      'src/lib',
+    ],
+  };
+
   // Full detail for the course-settings panel (GET /api/courses/{slug}).
   const courseDetail = {
     slug: 'cs101',
@@ -198,6 +214,6 @@ function buildFixtures(now) {
     mcpServers: [{ name: 'docs', url: 'https://mcp.example.com/sse' }],
   };
 
-  return { courses, courseDetail, courseExercises, overview, analytics, conversations, messages, sessions, activity, assistant };
+  return { courses, courseDetail, courseTree, courseExercises, overview, analytics, conversations, messages, sessions, activity, assistant };
 }
 module.exports = { buildFixtures };

@@ -85,6 +85,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/courses/{slug}", get(get_course).patch(patch_course))
         .route("/api/courses/{slug}/rotate-token", post(rotate_token))
+        .route("/api/courses/{slug}/tree", get(course_tree))
         .route("/api/courses/{slug}/members", post(add_member))
         .route(
             "/api/courses/{slug}/members/{username}",
@@ -914,6 +915,52 @@ struct CourseDetailDto {
 
 /// GET /api/courses/{slug} — full detail incl. the enrollment token and members,
 /// for the course-settings panel.
+/// GET /api/courses/{slug}/tree — the linked repo's directory structure.
+///
+/// The tree view draws the repo itself rather than inferring folders from the
+/// course's exercises: those are only ever the subset someone chose to define,
+/// and are themselves often derived from the repo's `.hermione.json`.
+///
+/// Never an error status. A course with no repo, a non-GitHub URL, a private
+/// repo without a token or a rate limit all return an empty list plus a note,
+/// so the board degrades to the paths students actually have open instead of
+/// showing an error where a tree should be.
+async fn course_tree(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthCtx>,
+    Path(slug): Path<String>,
+) -> Response {
+    let course = match authorized_course(&state, ctx, &slug).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let note = |msg: &str| Json(serde_json::json!({ "dirs": [], "note": msg })).into_response();
+
+    let Some(repo_url) = course.repo_url.as_deref() else {
+        return note("no repository linked to this course");
+    };
+    let Some((owner, name)) = crate::repo::parse_github(repo_url) else {
+        return note("the linked repository is not on GitHub");
+    };
+
+    // Same token ladder as course seeding: a repo-scoped GitHub App token
+    // first, then the shared PAT but only for allow-listed owners, then
+    // unauthenticated for public repos. A teacher must not be able to point a
+    // course at an arbitrary private repo and read its layout.
+    let app_token = match &state.github_app {
+        Some(app) => app.installation_token(&owner, &name).await.ok(),
+        None => None,
+    };
+    let allowed = crate::repo::owner_allowed(&owner, &state.github_allowed_owners);
+    let pat = state.github_token.as_deref().filter(|_| allowed);
+    let token = app_token.as_deref().or(pat);
+
+    match crate::repo::fetch_dirs(&owner, &name, token).await {
+        Ok(dirs) => Json(serde_json::json!({ "dirs": dirs })).into_response(),
+        Err(e) => note(&e),
+    }
+}
+
 async fn get_course(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,

@@ -120,6 +120,62 @@ pub async fn discover_exercises(
     Ok(out)
 }
 
+/// A directory in the linked repo, as a repo-relative path.
+///
+/// The Git trees API returns the whole repo in one request, which is what makes
+/// this cheap enough to serve on demand — the contents API would need one call
+/// per directory. `truncated` is possible on very large repos; the partial tree
+/// is still useful, so it is returned rather than treated as an error.
+pub async fn fetch_dirs(
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+) -> Result<Vec<String>, String> {
+    // Same redirect policy as discover_exercises, for the same reason: a
+    // renamed repo must not carry the token to a different owner.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1");
+    let resp = gh_get(&client, token, &url).await?;
+    let tree: TreeResponse = match resp.status() {
+        s if s.is_success() => resp.json().await.map_err(|e| e.to_string())?,
+        reqwest::StatusCode::NOT_FOUND => {
+            return Err(
+                "repository not found or not accessible (private repos need a token)".into(),
+            )
+        }
+        s => return Err(format!("GitHub API returned {s}")),
+    };
+
+    let mut dirs: Vec<String> = tree
+        .tree
+        .into_iter()
+        .filter(|e| e.kind == "tree")
+        // Hidden and build directories are noise on a teacher's board, and a
+        // path is dropped if any segment is ignored so children go with it.
+        .filter(|e| !e.path.split('/').any(is_ignored_dir))
+        .map(|e| e.path)
+        .collect();
+    dirs.sort();
+    Ok(dirs)
+}
+
+#[derive(Deserialize)]
+struct TreeResponse {
+    tree: Vec<TreeEntry>,
+}
+
+#[derive(Deserialize)]
+struct TreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 async fn fetch_root(
     client: &reqwest::Client,
     token: Option<&str>,
