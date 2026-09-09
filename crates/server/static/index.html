@@ -772,7 +772,12 @@
 
     function renderTree(board, data) {
       const students = data.exercises.flatMap(g => g.students).concat(data.noExercise);
-      const dirs = repoDirs.course === currentCourse ? repoDirs.dirs : [];
+      // Top-level repo folders only. Deeper ones arrive from the paths students
+      // actually have open, so a repo's theme and build internals — seven of
+      // the seventeen directories in one real course — don't bury the
+      // exercises on a board being scanned mid-class.
+      const dirs = (repoDirs.course === currentCourse ? repoDirs.dirs : [])
+        .filter(d => !String(d).includes('/'));
       const root = buildTree(students, dirs);
       const rows = treeRows(root);
       if (rows.length) {
