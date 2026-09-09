@@ -147,21 +147,30 @@
     /* The grid lives on the container, and each row is display:contents, so the
      * name column lines up across every row however deep the path goes. */
     #board.tree {
-      display: grid; grid-template-columns: max-content 1fr;
-      align-content: start; gap: 0; padding: 16px 18px; overflow: auto;
+      display: grid;
+      /* Both columns sized to content but floored, so the block is centred and
+       * its left edge stays put as paths and names change length — a tree that
+       * slid sideways on every refresh would be worse than one hugging the
+       * edge. The old `1fr` second column ate the whole viewport, which is why
+       * the tree read as a fragment against dead space. */
+      grid-template-columns: max-content max-content;
+      justify-content: center; align-content: start;
+      column-gap: 32px; padding: 32px 24px 48px; overflow: auto;
     }
     #board.tree .trow { display: contents; }
     #board.tree .tpath {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: var(--fs-base); white-space: pre; padding: 4px 0;
+      font-size: var(--fs-base); white-space: pre; padding: 2px 0;
       color: var(--fg); align-self: start;
     }
     /* The connectors are scaffolding — keep them quiet so the names carry. */
     #board.tree .branch { color: var(--fg-subtle); }
     #board.tree .tpath.dir .tname { color: var(--fg-muted); font-weight: 600; }
+    #board.tree .trow.root .tpath { padding-bottom: 18px; }
+    #board.tree .trow.root .tpath .tname { color: var(--fg); }
     #board.tree .tpeople {
       display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-      padding: 0 0 0 18px; min-width: 0;
+      min-width: 0;
     }
     #board.tree .tperson {
       display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
@@ -175,7 +184,7 @@
     #board.tree .tperson.help { color: var(--red-text); }
     #board.tree .tperson.watch { color: var(--amber); }
     /* A file nobody is in still needs a row height, or the grid collapses. */
-    #board.tree .tpeople:empty::after { content: ""; display: block; height: 26px; }
+    #board.tree .tpeople:empty::after { content: ""; display: block; height: 24px; }
 
     .column {
       flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
@@ -751,6 +760,7 @@
 
     function updateTreeRow(el, row) {
       const path = el.querySelector('.tpath');
+      el.classList.toggle('root', !!row.root);
       path.classList.toggle('dir', row.dir);
       path.querySelector('.branch').textContent = row.branch;
       path.querySelector('.tname').textContent = (row.dir && !row.root) ? row.name + '/' : row.name;
