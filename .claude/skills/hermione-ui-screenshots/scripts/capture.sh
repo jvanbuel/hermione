@@ -10,13 +10,26 @@
 #   LABEL        filename prefix, e.g. before/after (default: shot)
 #   STATIC_DIR   path to crates/server/static (default: inferred from repo)
 #   PORT         server port (default: an unlikely-busy 8799)
-#   PW_CHROMIUM  chromium binary (default: /opt/pw-browsers/chromium)
+#   PW_CHROMIUM  chromium binary (default: /opt/pw-browsers/chromium, else the
+#                local Playwright browser cache)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${OUT_DIR:?set OUT_DIR to the directory where screenshots should go}"
 export LABEL="${LABEL:-shot}"
 export PORT="${PORT:-8799}"
+
+# Chromium location. /opt/pw-browsers is the sandbox layout; on a workstation
+# Playwright keeps its browsers in a per-user cache instead, so fall back to
+# that rather than failing with "executable doesn't exist".
+if [ -z "${PW_CHROMIUM:-}" ]; then
+  for c in /opt/pw-browsers/chromium \
+           "$HOME/Library/Caches/ms-playwright"/chromium-*/chrome-mac*/*.app/Contents/MacOS/* \
+           "$HOME/.cache/ms-playwright"/chromium-*/chrome-linux/chrome; do
+    [ -x "$c" ] && PW_CHROMIUM="$c" && break
+  done
+fi
+export PW_CHROMIUM="${PW_CHROMIUM:-/opt/pw-browsers/chromium}"
 # Fixed clock shared by server + shooter so relative timestamps are stable.
 export FIXED_NOW="${FIXED_NOW:-$(node -e 'process.stdout.write(String(Date.parse("2025-07-19T13:30:00Z")))')}"
 # Playwright is usually only installed globally in this environment.

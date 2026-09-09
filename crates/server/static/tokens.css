@@ -28,10 +28,12 @@
   --border: #4d6358;
   --border-subtle: #36493f;
 
-  /* text — warm chalk, all chosen to clear 4.5:1 on the surfaces they sit on */
+  /* text — warm chalk. Measured against --surface-2, the lowest-contrast
+   * surface they land on, so 4.5:1 holds on every card and not only on --bg.
+   * --fg-subtle was #93a08e, which was 3.21:1 there. */
   --fg: #eef1e6;
   --fg-muted: #b4c0ad;
-  --fg-subtle: #93a08e;
+  --fg-subtle: #b6bfb3;
 
   /* semantic — softened "coloured chalk", but dark enough for white-on-colour */
   --accent: #3f7cbb;
@@ -43,12 +45,21 @@
   --help-bg: #b62324;
   --watch-bg: #9e6a03;
 
-  /* a real type scale — five steps, not thirteen */
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 14px;
-  --fs-lg: 16px;
-  --fs-xl: 20px;
+  /* The same hues again, lightened for use as TEXT on a dark surface. The
+   * fills above carry white text so they must stay dark; reused as text on
+   * the board they measured 2.0-3.7:1. Two jobs, two tokens. */
+  --accent-text: #a0bfdf;
+  --red-text: #f3a9a9;
+  --green-text: #87cb97;
+
+  /* a real type scale — five steps, not thirteen.
+   * Sized for a board read across a classroom rather than a code editor at
+   * arm's length; the old 14px base was too small to triage at a glance. */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
 
   /* shape + motion — named once so every card, pill and modal agrees */
   --radius-sm: 6px;
@@ -96,7 +107,7 @@
 
   --fg: #1f2328;
   --fg-muted: #59636e;
-  --fg-subtle: #6e7781;
+  --fg-subtle: #636b74;
 
   --accent: #0969da;
   --brand: #8250df;
@@ -106,6 +117,10 @@
   --amber: #9a6700;
   --help-bg: #cf222e;
   --watch-bg: #9a6700;
+
+  --accent-text: #0967d5;
+  --red-text: #ce222e;
+  --green-text: #197a35;
 
   /* softer, cooler shadows on the bright whiteboard */
   --shadow-1: 0 1px 2px rgba(31, 35, 40, .08);
@@ -125,7 +140,7 @@
 
     --fg: #1f2328;
     --fg-muted: #59636e;
-    --fg-subtle: #6e7781;
+    --fg-subtle: #636b74;
 
     --accent: #0969da;
     --brand: #8250df;
@@ -135,6 +150,10 @@
     --amber: #9a6700;
     --help-bg: #cf222e;
     --watch-bg: #9a6700;
+
+    --accent-text: #0967d5;
+    --red-text: #ce222e;
+    --green-text: #197a35;
 
     --shadow-1: 0 1px 2px rgba(31, 35, 40, .08);
     --shadow-2: 0 4px 14px rgba(31, 35, 40, .1);

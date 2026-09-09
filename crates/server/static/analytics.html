@@ -36,6 +36,11 @@
       padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
       flex: 0 0 auto;
     }
+    /* The mark and wordmark are one link back to the board. Keeping the
+     * original 10px header gap between them means the layout is unchanged. */
+    header .home { display: inline-flex; align-items: center; gap: 10px;
+      text-decoration: none; color: inherit; border-radius: var(--radius-sm); }
+    header .home:hover h1 { text-decoration: underline; }
     header .logo-mark { width: 24px; height: 24px; flex: none; border-radius: 50%;
       object-fit: contain; box-shadow: var(--shadow-1); }
     header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
@@ -74,7 +79,7 @@
     .summary-card .who .name { font-weight: 600; font-size: var(--fs-lg); }
     .summary-card .who .sub { color: var(--fg-muted); font-size: var(--fs-sm); }
     .summary-card .total { margin-left: auto; text-align: right; }
-    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; color: var(--accent); }
+    .summary-card .total .num { font-size: var(--fs-xl); font-weight: 700; color: var(--accent-text); }
     .summary-card .total .lbl { color: var(--fg-subtle); font-size: var(--fs-xs);
       text-transform: uppercase; letter-spacing: .04em; }
 
@@ -118,8 +123,10 @@
 </head>
 <body>
   <header>
-    <img class="logo-mark" src="/assets/hermione-mark.svg" alt="" aria-hidden="true" />
-    <h1>Hermione</h1>
+    <a class="home" href="/" title="Back to the board">
+      <img class="logo-mark" src="/assets/hermione-mark.svg" alt="" aria-hidden="true" />
+      <h1>Hermione</h1>
+    </a>
     <span class="crumb">/ Analytics</span>
     <label class="visually-hidden" for="course">Course</label>
     <select id="course" title="Course"></select>
