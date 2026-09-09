@@ -58,6 +58,28 @@ pub struct FileEventIn {
 
 /// Accepts a batch of file events from the extension. The course is determined
 /// by the enrollment token (resolved into `CourseCtx` by the ingest gate).
+/// Re-anchors a path that arrived absolute.
+///
+/// A notebook cell's URI is not workspace-resolvable, so older extensions
+/// reported `/workspace/ex/nb.ipynb` — or, when the URI carried a remote
+/// authority, `//codespaces+name/workspace/ex/nb.ipynb`. Both match no
+/// exercise glob, so the work landed under no exercise at all.
+///
+/// The course's own exercise slugs say where the repo starts: the first
+/// segment that names one is the anchor, and everything before it is the
+/// machine's workspace root. Only absolute paths are touched — a correctly
+/// reported path is relative and is left exactly as it is.
+fn reanchor(relative: &str, slugs: &[String]) -> Option<(String, String)> {
+    if !relative.starts_with('/') {
+        return None;
+    }
+    let segments: Vec<&str> = relative.split('/').filter(|s| !s.is_empty()).collect();
+    let at = segments
+        .iter()
+        .position(|seg| slugs.iter().any(|slug| slug == seg))?;
+    Some((segments[at..].join("/"), segments[at].to_string()))
+}
+
 pub async fn ingest(
     State(state): State<AppState>,
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
@@ -68,8 +90,33 @@ pub async fn ingest(
         return (StatusCode::OK, "0").into_response();
     }
 
+    // Only worth a query when something actually needs rescuing.
+    let slugs: Vec<String> = if events.iter().any(|e| {
+        e.relative_path
+            .as_deref()
+            .is_some_and(|r| r.starts_with('/'))
+    }) {
+        crate::exercises::list_for_course(&state.db, course_id)
+            .await
+            .map(|rows| rows.into_iter().map(|r| r.slug).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     let models: Vec<file_events::ActiveModel> = events
         .into_iter()
+        .map(|mut e| {
+            if let Some(rel) = e.relative_path.as_deref() {
+                if let Some((fixed, exercise)) = reanchor(rel, &slugs) {
+                    e.relative_path = Some(fixed);
+                    // Keep whatever the client managed to work out; only fill
+                    // in what it could not.
+                    e.exercise = e.exercise.or(Some(exercise));
+                }
+            }
+            e
+        })
         .map(|e| file_events::ActiveModel {
             course_id: Set(Some(course_id)),
             // A verified identity (when enforced) overrides the self-asserted one.
@@ -265,6 +312,42 @@ pub async fn time_per_file(
 
 #[cfg(test)]
 mod tests {
+
+    /// The three shapes seen from one class, all for the same file.
+    #[test]
+    fn reanchors_the_paths_notebook_cells_produce() {
+        let slugs = vec!["3-basic-transforms".to_string(), "5-joins".to_string()];
+
+        // A correctly reported path is relative and must be left alone.
+        assert_eq!(reanchor("3-basic-transforms/solution.ipynb", &slugs), None);
+
+        // A cell URI with no authority.
+        assert_eq!(
+            reanchor("/workspace/3-basic-transforms/solution.ipynb", &slugs),
+            Some((
+                "3-basic-transforms/solution.ipynb".to_string(),
+                "3-basic-transforms".to_string()
+            ))
+        );
+
+        // A cell URI carrying a remote authority, rendered UNC-style.
+        assert_eq!(
+            reanchor(
+                "//codespaces+curly-fishstick-96jg4p5x47q9h699/workspace/3-basic-transforms/solution.ipynb",
+                &slugs
+            ),
+            Some((
+                "3-basic-transforms/solution.ipynb".to_string(),
+                "3-basic-transforms".to_string()
+            ))
+        );
+
+        // Nothing recognisable: better untouched than mangled.
+        assert_eq!(reanchor("/workspace/docs/theme/styles/x.css", &slugs), None);
+
+        // A course with no exercises defined can rescue nothing.
+        assert_eq!(reanchor("/workspace/3-basic-transforms/x.ipynb", &[]), None);
+    }
     use super::*;
 
     fn stalled_for(secs: i64) -> EditActivity {

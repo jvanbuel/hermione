@@ -78,7 +78,16 @@ function tracked(doc: vscode.TextDocument): boolean {
  * event landed with no exercise at all.
  */
 function fileUri(uri: vscode.Uri): vscode.Uri {
-    return uri.scheme === 'file' ? uri : uri.with({ scheme: 'file', fragment: '' });
+    if (uri.scheme === 'file') {
+        return uri;
+    }
+    // Prefer the notebook's own URI. Rebuilding one keeps the cell's authority,
+    // and in a Codespace that authority is the machine name — `fsPath` then
+    // renders it UNC-style as `//codespaces+name/workspace/...`, which matches
+    // no workspace folder either. The real document carries whatever scheme and
+    // authority this window actually uses.
+    const notebook = vscode.workspace.notebookDocuments.find(nb => nb.uri.path === uri.path);
+    return notebook ? notebook.uri : uri.with({ scheme: 'file', authority: '', fragment: '' });
 }
 
 /**
