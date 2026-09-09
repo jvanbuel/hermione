@@ -40,19 +40,47 @@ jobs:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags and history, so the diff against the previous release works.
+          fetch-depth: 0
+      # Most releases are server-only, and each one was publishing a
+      # byte-identical extension: v0.1.5 through v0.1.14 changed the extension
+      # twice between them. Deciding from the diff rather than from a separate
+      # tag prefix keeps one tagging habit and cannot silently skip a real
+      # extension fix because someone tagged the wrong way.
+      - name: Has the extension changed since the last release?
+        id: changed
+        run: |
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+                 | grep -vFx "$GITHUB_REF_NAME" | head -1)
+          if [ -z "$prev" ]; then
+            echo "no previous tag — treating as changed"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$prev" "$GITHUB_REF_NAME" -- vscode-extension; then
+            echo "vscode-extension/ is unchanged since $prev — skipping"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "vscode-extension/ changed since $prev"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.changed.outputs.changed == 'true'
         with:
           node-version: 20
       - run: npm ci
+        if: steps.changed.outputs.changed == 'true'
         working-directory: vscode-extension
       # The Marketplace rejects a version it already has, so take the version
       # from the tag rather than from package.json. Tagging is then the only
       # thing that has to be right.
       - run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
+        if: steps.changed.outputs.changed == 'true'
         working-directory: vscode-extension
       - run: npm run package
+        if: steps.changed.outputs.changed == 'true'
         working-directory: vscode-extension
       - uses: softprops/action-gh-release@v2
+        if: steps.changed.outputs.changed == 'true'
         with:
           files: vscode-extension/hermione-vscode.vsix
       # Publishing is what makes the `lightcone.hermione-vscode` reference in a
@@ -65,7 +93,7 @@ jobs:
       # A publish can also succeed server-side and still time out client-side,
       # so an "already exists" on a retry counts as done.
       - name: Publish to the VSCode Marketplace
-        if: env.VSCE_PAT != ''
+        if: steps.changed.outputs.changed == 'true' && env.VSCE_PAT != ''
         working-directory: vscode-extension
         run: |
           for attempt in 1 2 3; do
