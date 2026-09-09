@@ -58,13 +58,29 @@ jobs:
       # Publishing is what makes the `lightcone.hermione-vscode` reference in a
       # course's devcontainer.json resolve. Skipped when the secret is absent,
       # so a release still succeeds in a fork.
-      # The vsix is already attached to the release above, so a Marketplace
-      # outage should not fail the release or block the recorder and image.
+      # The gallery intermittently hangs until vsce's fixed 180s timeout: v0.1.5
+      # did, while v0.1.4 and v0.1.6 published in under a second. Retry rather
+      # than swallow it — a publish that silently does not happen is worse than
+      # a red job, and the image and recorder jobs are independent anyway.
+      # A publish can also succeed server-side and still time out client-side,
+      # so an "already exists" on a retry counts as done.
       - name: Publish to the VSCode Marketplace
         if: env.VSCE_PAT != ''
-        continue-on-error: true
-        run: npx vsce publish --packagePath hermione-vscode.vsix
         working-directory: vscode-extension
+        run: |
+          for attempt in 1 2 3; do
+            if out=$(npx vsce publish --packagePath hermione-vscode.vsix 2>&1); then
+              echo "$out"; exit 0
+            fi
+            echo "$out"
+            case "$out" in
+              *already*exists*) echo "version already on the Marketplace — treating as published"; exit 0 ;;
+            esac
+            echo "::warning::vsce publish attempt $attempt failed; retrying in 30s"
+            sleep 30
+          done
+          echo "::error::vsce publish failed three times; the vsix is still attached to the release"
+          exit 1
 
   image:
     runs-on: ubuntu-latest
