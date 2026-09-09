@@ -22,7 +22,9 @@ jobs:
           --health-interval 2s --health-timeout 3s --health-retries 15
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not @stable: a new stable release must not be able to redden
+      # main on its own. Keep in step with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2

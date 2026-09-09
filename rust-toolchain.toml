@@ -1,0 +1,17 @@
+# Pinned so a new stable release cannot turn CI red on its own. A floating
+# toolchain did exactly that: 1.98 added `result_large_err` hits in code that
+# had not changed, and main went red with no commit to blame.
+#
+# Bumping this is a deliberate commit. Three places name the same version and
+# have to move together: this file, the `dtolnay/rust-toolchain` ref in
+# .github/workflows/ci.yml, and the builder image in Dockerfile. The Docker
+# image lags rustup by a patch or two, so the pin tracks whatever all three
+# can agree on.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+# The release workflow cross-builds the recorder for both. Naming them here
+# ties the std libraries to the pinned compiler; leaving them out would let a
+# release job install a target for one toolchain and then build with another.
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+profile = "minimal"
