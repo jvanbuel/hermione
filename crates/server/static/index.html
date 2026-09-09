@@ -40,6 +40,17 @@
     }
     /* The mark and wordmark are one link back to the board. Keeping the
      * original 10px header gap between them means the layout is unchanged. */
+    /* Segmented Board/Tree switch — one control, two states. */
+    #view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+    #view-toggle button {
+      display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 0;
+      background: none; color: var(--fg-muted); font: inherit; font-size: var(--fs-sm);
+      padding: 5px 9px; cursor: pointer;
+    }
+    #view-toggle button + button { border-left: 1px solid var(--border); }
+    #view-toggle button:hover { background: var(--surface-2); }
+    #view-toggle button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); font-weight: 600; }
+
     header .home { display: inline-flex; align-items: center; gap: 10px;
       text-decoration: none; color: inherit; border-radius: var(--radius-sm); }
     header .home:hover h1 { text-decoration: underline; }
@@ -59,6 +70,14 @@
     .freshness.stale { color: var(--amber); }
     .freshness.failed { color: var(--red-text); }
     .freshness .fdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+    /* Controls keep their size; only the hint gives way when the bar is full.
+     * Without this every item shrinks at once and the header grows to two or
+     * three lines of squeezed text. */
+    header button, header a.nav, #view-toggle, #alert, header select, #freshness { flex: none; }
+    #freshness { white-space: nowrap; }
+    header #alert:not(:empty) { white-space: nowrap; }
+    .hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     header button, header a.nav {
       background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
       border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
@@ -124,6 +143,40 @@
       flex: 1 1 0; min-width: 0; overflow-x: auto;
       display: flex; gap: 16px; padding: 16px; align-items: flex-start;
     }
+    /* ---- Tree view: the repo, pruned to what people actually have open ---- */
+    /* The grid lives on the container, and each row is display:contents, so the
+     * name column lines up across every row however deep the path goes. */
+    #board.tree {
+      display: grid; grid-template-columns: max-content 1fr;
+      align-content: start; gap: 0; padding: 16px 18px; overflow: auto;
+    }
+    #board.tree .trow { display: contents; }
+    #board.tree .tpath {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: var(--fs-sm); white-space: pre; padding: 3px 0;
+      color: var(--fg); align-self: start;
+    }
+    /* The connectors are scaffolding — keep them quiet so the names carry. */
+    #board.tree .branch { color: var(--fg-subtle); }
+    #board.tree .tpath.dir .tname { color: var(--fg-muted); font-weight: 600; }
+    #board.tree .tpeople {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      padding: 0 0 0 18px; min-width: 0;
+    }
+    #board.tree .tperson {
+      display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+      background: none; border: 1px solid transparent; border-radius: var(--radius-pill);
+      color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 1px 8px 1px 2px;
+      cursor: pointer; text-align: left;
+    }
+    #board.tree .tperson:hover { background: var(--surface-2); border-color: var(--border); }
+    #board.tree .tperson .avatar { width: 20px; height: 20px; font-size: 9px; }
+    #board.tree .tperson .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #board.tree .tperson.help { color: var(--red-text); }
+    #board.tree .tperson.watch { color: var(--amber); }
+    /* A file nobody is in still needs a row height, or the grid collapses. */
+    #board.tree .tpeople:empty::after { content: ""; display: block; height: 22px; }
+
     .column {
       flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
       border-radius: var(--radius); max-height: 100%; display: flex; flex-direction: column;
@@ -291,6 +344,14 @@
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5.5 1a4.5 4.5 0 0 0-1.4 8.8c.2 0 .3-.1.3-.3v-1c-1.3.3-1.6-.6-1.6-.6-.2-.5-.5-.7-.5-.7-.4-.3 0-.3 0-.3.5 0 .7.5.7.5.4.7 1.1.5 1.4.4 0-.3.2-.5.3-.7-1-.1-2.1-.5-2.1-2.3 0-.5.2-.9.5-1.2 0-.2-.2-.6 0-1.2 0 0 .4-.1 1.3.5a4.4 4.4 0 0 1 2.4 0c.9-.6 1.3-.5 1.3-.5.2.6.1 1 0 1.2.3.3.5.7.5 1.2 0 1.8-1.1 2.2-2.1 2.3.2.2.3.5.3.9v1.3c0 .2.1.3.4.3A4.5 4.5 0 0 0 5.5 1z"/></svg>
       <span id="course-repo-name"></span>
     </a>
+    <div id="view-toggle" role="group" aria-label="View">
+      <button type="button" data-view="board" aria-pressed="true" aria-label="Board view" title="Board — students grouped by exercise">
+        <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2h4v12h-4V2zm5 0h4v7h-4V2zm5 0h4v10h-4V2z"/></svg>
+      </button>
+      <button type="button" data-view="tree" aria-pressed="false" aria-label="Tree view" title="Tree — the files everyone has open">
+        <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 1.5v10.5h4M3 6.5h4M11 2.2h3.2M11 7.2h3.2M11 12.2h3.2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
     <span id="alert" aria-live="assertive"></span>
     <span class="spacer"></span>
     <span id="freshness" class="freshness">Connecting…</span>
@@ -344,6 +405,22 @@
       sun: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3 3l1.3 1.3M11.7 11.7 13 13M13 3l-1.3 1.3M4.3 11.7 3 13"/></svg>',
       moon: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.2 2.3a5.8 5.8 0 1 0 7.5 7.5A4.7 4.7 0 0 1 6.2 2.3z"/></svg>',
     };
+
+    // ---- which view of the class is on screen ----
+    const VIEW_KEY = 'hermione.view';
+    let currentView = 'board';
+    function setView(view) {
+      currentView = (view === 'tree') ? 'tree' : 'board';
+      try { localStorage.setItem(VIEW_KEY, currentView); } catch (_) {}
+      for (const b of document.querySelectorAll('#view-toggle button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.view === currentView));
+      }
+      // The two views share #board but lay it out completely differently, so a
+      // switch has to start from an empty container rather than reconcile
+      // columns into rows.
+      document.getElementById('board').replaceChildren();
+      if (lastOverview) renderView(lastOverview);
+    }
 
     // ---- the course being watched, remembered across reloads ----
     // A teacher watching one class all morning should not be dropped back onto
@@ -573,11 +650,15 @@
       a.innerHTML = n ? `<span class="alert-dot"></span>${n} need help` : '';
     }
 
-    function renderBoard(data) {
+    let lastOverview = null;
+
+    function renderView(data) {
+      lastOverview = data;
       const board = document.getElementById('board');
       const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
       lastAudience = allStudents.length;
       setAlert(allStudents.filter(s => s.struggle === 'help').length);
+      board.classList.toggle('tree', currentView === 'tree');
 
       if (data.exercises.length === 0 && data.noExercise.length === 0) {
         const empty = document.createElement('div');
@@ -586,6 +667,100 @@
         board.replaceChildren(empty);
         return;
       }
+      if (currentView === 'tree') renderTree(board, allStudents);
+      else renderBoard(board, data);
+    }
+
+    // ---- tree view ----
+    // Only the paths someone actually has open, so the tree is the class's
+    // attention rather than a directory listing. Same shape as `tree`: one
+    // entry per line, directories before files, connectors on the left.
+    function buildTree(students) {
+      const root = { dirs: new Map(), files: new Map() };
+      for (const s of students) {
+        const path = String(s.file || '').replace(/^\/+/, '');
+        if (!path) continue; // nothing open — nothing to place in the tree
+        const parts = path.split('/').filter(p => p && p !== '.');
+        if (!parts.length) continue;
+        const file = parts.pop();
+        let node = root;
+        for (const dir of parts) {
+          if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), files: new Map() });
+          node = node.dirs.get(dir);
+        }
+        if (!node.files.has(file)) node.files.set(file, []);
+        node.files.get(file).push(s);
+      }
+      return root;
+    }
+
+    function treeRows(root) {
+      const rows = [];
+      const byName = (a, b) => a[0].localeCompare(b[0]);
+      // `open` tracks, per ancestor level, whether that branch still has
+      // siblings below it — that is what decides between "│" and blank.
+      (function walk(node, prefix, open) {
+        const entries = [
+          ...[...node.dirs.entries()].sort(byName).map(([name, v]) => ({ name, v, dir: true })),
+          ...[...node.files.entries()].sort(byName).map(([name, v]) => ({ name, v, dir: false })),
+        ];
+        entries.forEach((e, i) => {
+          const last = i === entries.length - 1;
+          const branch = open.map(o => (o ? '\u2502\u00a0\u00a0 ' : '\u00a0\u00a0\u00a0 ')).join('')
+            + (last ? '\u2514\u2500\u2500 ' : '\u251c\u2500\u2500 ');
+          const full = prefix + '/' + e.name;
+          rows.push({ key: full, branch, name: e.name, dir: e.dir, people: e.dir ? [] : e.v });
+          if (e.dir) walk(e.v, full, open.concat(!last));
+        });
+      })(root, '', []);
+      return rows;
+    }
+
+    function createTreeRow() {
+      const el = document.createElement('div');
+      el.className = 'trow';
+      el.innerHTML = '<code class="tpath"><span class="branch"></span><span class="tname"></span></code><div class="tpeople"></div>';
+      return el;
+    }
+
+    function updateTreeRow(el, row) {
+      const path = el.querySelector('.tpath');
+      path.classList.toggle('dir', row.dir);
+      path.querySelector('.branch').textContent = row.branch;
+      path.querySelector('.tname').textContent = (row.dir && !row.root) ? row.name + '/' : row.name;
+      const host = el.querySelector('.tpeople');
+      reconcile(host, row.people, s => s.student, () => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tperson';
+        return b;
+      }, (b, s) => {
+        b.className = 'tperson' + (s.struggle === 'help' ? ' help' : s.struggle === 'watch' ? ' watch' : '');
+        b.title = `${s.student} — open terminal`;
+        b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname">${esc(s.student)}</span>`
+          + (s.struggle === 'help' ? '<span class="pill help">needs help</span>'
+            : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '');
+        b.onclick = () => openTerminal(s.student, s.terminalSessionId, s.exercise);
+      });
+    }
+
+    function renderTree(board, students) {
+      const rows = treeRows(buildTree(students));
+      if (rows.length) {
+        const c = courseList.find(c => c.slug === currentCourse);
+        rows.unshift({ key: '__root__', branch: '', name: (c && c.repoUrl) ? repoLabel(c.repoUrl) : '.', dir: true, root: true, people: [] });
+      }
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'Nobody has a file open right now.';
+        board.replaceChildren(empty);
+        return;
+      }
+      reconcile(board, rows, r => r.key, createTreeRow, updateTreeRow);
+    }
+
+    function renderBoard(board, data) {
       const cols = data.exercises.map(g => ({ key: 'ex:' + g.exercise, kind: 'ex', g }));
       if (data.noExercise.length) {
         cols.push({ key: '__none__', kind: 'none', g: { title: 'No exercise', students: data.noExercise } });
@@ -744,7 +919,7 @@
         data = await res.json();
       } catch (_) { lastError = true; setFreshness(); return; }
       lastError = false; lastUpdated = Date.now(); setFreshness();
-      renderBoard(data);
+      renderView(data);
     }
 
     // ---- terminal panes ----
@@ -1415,6 +1590,14 @@
       if (localStorage.getItem(HINT_KEY)) document.getElementById('hint').style.display = 'none';
       setFreshness();
       await loadCourses();
+      let storedView = null;
+      try { storedView = localStorage.getItem(VIEW_KEY); } catch (_) {}
+      currentView = storedView === 'tree' ? 'tree' : 'board';
+      for (const b of document.querySelectorAll('#view-toggle button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.view === currentView));
+        b.addEventListener('click', () => setView(b.dataset.view));
+      }
+
       await refresh();
       setInterval(refresh, 3000);
     })();
