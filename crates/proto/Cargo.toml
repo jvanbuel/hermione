@@ -12,3 +12,6 @@ prost-types.workspace = true
 [build-dependencies]
 tonic-build.workspace = true
 protoc-bin-vendored.workspace = true
+
+[lints]
+workspace = true

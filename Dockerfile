@@ -1,6 +1,8 @@
 # Build the Hermione backend.
 # The proto build step uses a vendored protoc, so no protobuf-compiler is needed.
-FROM rust:1-bookworm AS builder
+# Pinned to match rust-toolchain.toml, so the image build and CI compile
+# with the same compiler.
+FROM rust:1.98.0-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release -p hermione-server

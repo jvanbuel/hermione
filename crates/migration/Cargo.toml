@@ -15,3 +15,6 @@ path = "src/main.rs"
 [dependencies]
 tokio.workspace = true
 sea-orm-migration.workspace = true
+
+[lints]
+workspace = true
