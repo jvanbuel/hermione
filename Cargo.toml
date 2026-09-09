@@ -15,6 +15,13 @@ license = "GPL-3.0-or-later"
 authors = ["Hermione contributors"]
 repository = "https://github.com/jvanbuel/hermione"
 
+# `result_large_err` fires on every function whose `Err` is an `axum::Response`
+# (128 bytes) or a `tonic::Status` (176 bytes), which is the idiomatic error
+# type for our handlers and the only one tonic generates. Both sizes belong to
+# the dependency, so boxing at our call sites is churn that buys nothing.
+[workspace.lints.clippy]
+result_large_err = "allow"
+
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
