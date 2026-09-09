@@ -667,7 +667,7 @@
         board.replaceChildren(empty);
         return;
       }
-      if (currentView === 'tree') renderTree(board, allStudents);
+      if (currentView === 'tree') renderTree(board, data);
       else renderBoard(board, data);
     }
 
@@ -744,8 +744,18 @@
       });
     }
 
-    function renderTree(board, students) {
-      const rows = treeRows(buildTree(students));
+    function renderTree(board, data) {
+      const students = data.exercises.flatMap(g => g.students).concat(data.noExercise);
+      const root = buildTree(students);
+      // Between sessions nobody has anything open, and a blank panel says
+      // nothing. The course's defined exercises are its top-level folders, so
+      // fall back to those: the shape of the course, waiting to be filled in.
+      if (!root.dirs.size && !root.files.size) {
+        for (const g of data.exercises) {
+          if (g.exercise) root.dirs.set(g.exercise, { dirs: new Map(), files: new Map() });
+        }
+      }
+      const rows = treeRows(root);
       if (rows.length) {
         const c = courseList.find(c => c.slug === currentCourse);
         rows.unshift({ key: '__root__', branch: '', name: (c && c.repoUrl) ? repoLabel(c.repoUrl) : '.', dir: true, root: true, people: [] });
@@ -753,7 +763,7 @@
       if (!rows.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = 'Nobody has a file open right now.';
+        empty.textContent = 'Nobody has a file open, and this course has no exercises defined yet.';
         board.replaceChildren(empty);
         return;
       }
