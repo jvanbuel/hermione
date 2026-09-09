@@ -68,6 +68,20 @@ function tracked(doc: vscode.TextDocument): boolean {
 }
 
 /**
+ * The `file:` URI a document belongs to.
+ *
+ * A cell's URI keeps the notebook's path but carries the
+ * `vscode-notebook-cell` scheme, and both `getWorkspaceFolder` and
+ * `asRelativePath` match on scheme: they see no workspace folder and hand back
+ * an absolute path. That reported `/workspace/ex1/nb.ipynb` instead of
+ * `ex1/nb.ipynb`, so nothing matched the exercise globs and every notebook
+ * event landed with no exercise at all.
+ */
+function fileUri(uri: vscode.Uri): vscode.Uri {
+    return uri.scheme === 'file' ? uri : uri.with({ scheme: 'file', fragment: '' });
+}
+
+/**
  * Watches which file the student has active and reports it to the Hermione
  * backend — on focus changes, via periodic heartbeats (so we can measure
  * time-on-task), and on edit bursts (so time-on-task can be told apart from
@@ -291,7 +305,7 @@ class Reporter {
     private chatBody(message: string): string {
         const editor = vscode.window.activeTextEditor;
         const onFile = editor && tracked(editor.document);
-        const file = onFile ? vscode.workspace.asRelativePath(editor!.document.uri, false) : undefined;
+        const file = onFile ? vscode.workspace.asRelativePath(fileUri(editor!.document.uri), false) : undefined;
         const language = onFile ? editor!.document.languageId : undefined;
         return JSON.stringify({ message, student: this.student, file, language });
     }
@@ -646,14 +660,15 @@ class Reporter {
         line?: number,
         at?: number,
     ): FileEvent {
-        const folder = vscode.workspace.getWorkspaceFolder(uri);
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
+        const file = fileUri(uri);
+        const folder = vscode.workspace.getWorkspaceFolder(file);
+        const relativePath = vscode.workspace.asRelativePath(file, false);
         return {
             student: this.student,
             studentSource: this.studentSource || undefined,
             repo: this.repo || undefined,
             workspace: folder?.name,
-            path: uri.fsPath,
+            path: file.fsPath,
             relativePath,
             language,
             exercise: this.exercises.resolve(relativePath),
@@ -716,7 +731,7 @@ class Reporter {
             return;
         }
         const target = this.activeTarget();
-        const rel = target ? vscode.workspace.asRelativePath(target.uri, false) : undefined;
+        const rel = target ? vscode.workspace.asRelativePath(fileUri(target.uri), false) : undefined;
         const exercise = rel ? this.exercises.resolve(rel) : undefined;
         const suffix = exercise ? ` · ${exercise}` : '';
         this.statusBar.text = `$(eye) Hermione: ${this.student}${suffix}`;
