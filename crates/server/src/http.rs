@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
             "/api/students/activity",
             get(crate::files::students_activity),
         )
+        .route("/api/students/file", get(crate::snapshots::student_file))
         .route("/api/overview", get(crate::files::overview))
         .route(
             "/api/analytics/time-per-file",
@@ -140,6 +141,7 @@ pub fn router(state: AppState) -> Router {
     // the same credential.
     let ingest = Router::new()
         .route("/api/file-events", post(crate::files::ingest))
+        .route("/api/file-snapshots", post(crate::snapshots::ingest))
         .route("/api/inbox", get(crate::messages::inbox))
         .route("/api/assistant/status", get(crate::assistant::status))
         .route("/api/assistant/chat", post(crate::assistant::chat))
@@ -444,6 +446,10 @@ struct WsQuery {
     /// Resume after this message id (catch up on anything missed while away).
     /// Omit for live-only delivery (e.g. the dashboard monitor).
     since: Option<i64>,
+    /// Which student this editor belongs to, so control frames meant for them
+    /// (a snapshot request) reach only their socket. Extension clients only;
+    /// a socket without it simply receives no control frames.
+    student: Option<String>,
 }
 
 /// Live message channel. Authenticates the same way the rest of the API does —
@@ -476,13 +482,20 @@ async fn ws_handler(
         }
     };
 
-    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since))
+    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since, q.student))
 }
 
-/// Sends any missed messages (when `since` is given), then tails live ones.
+/// Sends any missed messages (when `since` is given), then tails live ones
+/// alongside any control frames addressed to this socket's student.
 /// Inbound frames are ignored for now — the hook where student→teacher chat
 /// will land.
-async fn message_socket(socket: WebSocket, state: AppState, course_id: Uuid, since: Option<i64>) {
+async fn message_socket(
+    socket: WebSocket,
+    state: AppState,
+    course_id: Uuid,
+    since: Option<i64>,
+    student: Option<String>,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     // Catch up from the durable store (Postgres is the source of truth). Skipped
@@ -509,8 +522,14 @@ async fn message_socket(socket: WebSocket, state: AppState, course_id: Uuid, sin
         }
     }
 
-    // Then tail live messages.
+    // Then tail live messages, plus control frames when this socket said who it
+    // belongs to. A socket without a student (the dashboard) gets messages only.
     let mut rx = state.msg_hub.subscribe(course_id).await;
+    let student = student.filter(|s| !s.is_empty());
+    let mut ctrl_rx = match student.as_deref() {
+        Some(s) => Some(state.ctrl_hub.subscribe(course_id, s).await),
+        None => None,
+    };
     loop {
         tokio::select! {
             inbound = receiver.next() => {
@@ -531,11 +550,35 @@ async fn message_socket(socket: WebSocket, state: AppState, course_id: Uuid, sin
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+            ctrl = async {
+                match ctrl_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    // Nothing to tail: park this branch forever rather than
+                    // spinning the select on a channel that doesn't exist.
+                    None => std::future::pending().await,
+                }
+            } => {
+                match ctrl {
+                    Ok(c) => {
+                        if sender.send(Message::Text(to_text(&c))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
+    }
+
+    // Let the hub forget this student once their last editor is gone.
+    drop(ctrl_rx.take());
+    if let Some(s) = student.as_deref() {
+        state.ctrl_hub.release(course_id, s).await;
     }
 }
 
-fn to_text(msg: &MessageOut) -> axum::extract::ws::Utf8Bytes {
+fn to_text<T: serde::Serialize>(msg: &T) -> axum::extract::ws::Utf8Bytes {
     serde_json::to_string(msg).unwrap_or_default().into()
 }
 

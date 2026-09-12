@@ -4,12 +4,14 @@ import * as vscode from 'vscode';
 import WebSocket from 'ws';
 import { registerAssistant } from './assistant';
 import { ExerciseMap } from './exercises';
+import { buildSnapshot, FileSnapshot, SnapshotTarget } from './snapshot';
 
 interface CourseConfig {
     backend?: string;
     token?: string;
     identity?: string;
     authProvider?: string;
+    shareFileContents?: boolean;
 }
 
 /** Reads the course config from the workspace's `.hermione.json`. */
@@ -24,6 +26,7 @@ async function readCourseConfig(): Promise<CourseConfig> {
                 token: cfg.token,
                 identity: cfg.identity,
                 authProvider: cfg.authProvider,
+                shareFileContents: cfg.shareFileContents,
             };
         } catch (_) {
             // try the next folder
@@ -54,6 +57,22 @@ interface FileEvent {
  * counted and flushed as one 'edit' event per window.
  */
 const EDIT_WINDOW_MS = 5000;
+
+/**
+ * How long one snapshot request keeps this editor in "a teacher is looking"
+ * mode. The backend re-asks while the teacher's pane is open, so this only has
+ * to outlast the gap between two polls; when the pane closes, the requests stop
+ * and the window lapses on its own.
+ */
+const WATCH_WINDOW_MS = 10_000;
+
+/**
+ * While watched, a focus change or a typing burst pushes a fresh snapshot
+ * rather than waiting for the next request, so the teacher's view tracks the
+ * student. Coalesced over this window so a fast typist sends a few per second
+ * at most.
+ */
+const SNAPSHOT_DEBOUNCE_MS = 400;
 
 /**
  * Documents worth reporting. A notebook's cells are separate TextDocuments
@@ -124,6 +143,14 @@ class Reporter {
     private reconnectTimer?: NodeJS.Timeout;
     private lastMessageId = 0;
     private windowFocused = true;
+
+    /** Whether this student's config permits sharing file contents at all. */
+    private shareFileContents = true;
+    /** Until when a teacher is known to be looking at this editor. */
+    private watchedUntil = 0;
+    private snapshotTimer?: NodeJS.Timeout;
+    private watchTimer?: NodeJS.Timeout;
+
     private statusBar: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
 
@@ -147,6 +174,9 @@ class Reporter {
                 this.windowFocused = s.focused;
             }),
             vscode.workspace.onDidChangeTextDocument((e) => this.onEdit(e)),
+            // Moving the cursor changes nothing worth reporting as activity,
+            // but it is most of what a teacher watching the file wants to see.
+            vscode.window.onDidChangeTextEditorSelection(() => this.pushSnapshot()),
             vscode.workspace.onDidCloseTextDocument((doc) => this.onClose(doc)),
             vscode.workspace.onDidCloseNotebookDocument((nb) => this.onCloseNotebook(nb)),
             vscode.workspace.onDidChangeWorkspaceFolders(async () => {
@@ -155,8 +185,15 @@ class Reporter {
             }),
             vscode.workspace.onDidChangeConfiguration(async (e) => {
                 if (e.affectsConfiguration('hermione')) {
+                    const before = this.student;
                     await this.loadConfig();
                     this.restartHeartbeat();
+                    // Snapshot requests are routed by student name, so a
+                    // renamed identity needs a fresh socket — the open one is
+                    // still subscribed under the name we connected with.
+                    if (this.student !== before) {
+                        this.reconnectMessages();
+                    }
                 }
             }),
         );
@@ -181,6 +218,15 @@ class Reporter {
             this.editTimer = undefined;
         }
         this.pendingEdits.clear();
+        if (this.snapshotTimer) {
+            clearTimeout(this.snapshotTimer);
+            this.snapshotTimer = undefined;
+        }
+        if (this.watchTimer) {
+            clearTimeout(this.watchTimer);
+            this.watchTimer = undefined;
+        }
+        this.watchedUntil = 0;
         // start() reports the current file immediately; leaving this set would
         // suppress exactly that.
         this.focusedPath = '';
@@ -220,6 +266,12 @@ class Reporter {
             params.set('token', this.token);
         }
         params.set('since', String(this.lastMessageId));
+        // Lets the backend route snapshot requests to this editor alone rather
+        // than to the whole course. Routing only: the snapshot that goes back
+        // is attributed by the identity the backend verifies on ingest.
+        if (this.student) {
+            params.set('student', this.student);
+        }
 
         let ws: WebSocket;
         try {
@@ -232,7 +284,15 @@ class Reporter {
 
         ws.on('message', (data: WebSocket.RawData) => {
             try {
-                const m = JSON.parse(data.toString()) as { id: number; body: string };
+                const m = JSON.parse(data.toString()) as { id: number; body: string; kind?: string };
+                // Control frames carry a `kind` and no body: the backend asking
+                // for what's on screen because a teacher opened this student's
+                // file. Frames are addressed per student, so anything arriving
+                // here is for us.
+                if (m && m.kind === 'snapshot-request') {
+                    this.onSnapshotRequest();
+                    return;
+                }
                 if (m && m.body) {
                     vscode.window.showInformationMessage(`📣 ${m.body}`);
                     if (m.id > this.lastMessageId) {
@@ -245,6 +305,11 @@ class Reporter {
             }
         });
         ws.on('close', () => {
+            // A socket we already replaced deliberately must not schedule a
+            // second connection on its way out.
+            if (this.socket !== ws) {
+                return;
+            }
             this.socket = undefined;
             this.scheduleReconnect();
         });
@@ -255,6 +320,20 @@ class Reporter {
                 // already closing
             }
         });
+    }
+
+    /** Replaces the message socket immediately, without the reconnect delay. */
+    private reconnectMessages(): void {
+        const old = this.socket;
+        this.socket = undefined;
+        if (old) {
+            try {
+                old.close();
+            } catch (_) {
+                // already closing
+            }
+        }
+        this.connectMessages();
     }
 
     private scheduleReconnect(): void {
@@ -432,6 +511,12 @@ class Reporter {
         this.studentSource = id.source;
         this.repo = this.resolveRepo();
         this.authProvider = course.authProvider || 'github';
+        // Either side may withhold file contents: the course sets the policy,
+        // and the student keeps a veto over their own buffer. Both must allow
+        // it, so the more restrictive of the two wins.
+        this.shareFileContents =
+            course.shareFileContents !== false &&
+            (cfg.get<boolean>('shareFileContents') ?? true);
         await this.ensureIdentity(false);
     }
 
@@ -535,6 +620,7 @@ class Reporter {
     private onFocus(): void {
         if (this.enabled) {
             this.report('focus');
+            this.pushSnapshot();
             this.updateStatusBar();
         }
     }
@@ -563,6 +649,9 @@ class Reporter {
         if (!this.editTimer) {
             this.editTimer = setTimeout(() => this.flushEdits(), EDIT_WINDOW_MS);
         }
+        // Edit *events* are deliberately coalesced over five seconds; a teacher
+        // watching the file wants the keystroke, not the summary.
+        this.pushSnapshot();
     }
 
     private flushEdits(): void {
@@ -643,6 +732,114 @@ class Reporter {
             return { uri: nb.notebook.uri, language: cell?.document.languageId };
         }
         return undefined;
+    }
+
+    // ---- file snapshots (what the teacher sees when they open your file) ----
+
+    /** True while a teacher is known to have this student's file open. */
+    private get watched(): boolean {
+        return Date.now() < this.watchedUntil;
+    }
+
+    /**
+     * The backend asks for a snapshot whenever a teacher has this student's
+     * file open. Answering also puts the editor in "watched" mode, so further
+     * edits are pushed without waiting to be asked again.
+     */
+    private onSnapshotRequest(): void {
+        if (!this.enabled) {
+            return;
+        }
+        const wasWatched = this.watched;
+        this.watchedUntil = Date.now() + WATCH_WINDOW_MS;
+        if (!wasWatched) {
+            // Make it visible in the student's own editor the moment it starts.
+            this.updateStatusBar();
+        }
+        // Drop the indicator once the requests stop rather than leaving a stale
+        // "being viewed" badge in the status bar.
+        if (this.watchTimer) {
+            clearTimeout(this.watchTimer);
+        }
+        this.watchTimer = setTimeout(() => {
+            this.watchTimer = undefined;
+            this.updateStatusBar();
+        }, WATCH_WINDOW_MS + 100);
+
+        this.sendSnapshot();
+    }
+
+    /** Pushes a fresh snapshot, but only while someone is actually looking. */
+    private pushSnapshot(): void {
+        if (!this.watched || this.snapshotTimer) {
+            return;
+        }
+        this.snapshotTimer = setTimeout(() => {
+            this.snapshotTimer = undefined;
+            if (this.watched) {
+                this.sendSnapshot();
+            }
+        }, SNAPSHOT_DEBOUNCE_MS);
+    }
+
+    /**
+     * The document the student is looking at, for snapshot purposes.
+     *
+     * Unlike `activeTarget`, this needs the document itself (to read its text),
+     * and it prefers the notebook *cell* over the notebook: the cell's buffer is
+     * what's on screen, while the `.ipynb` on disk is JSON nobody wants to read.
+     */
+    private snapshotTarget(): SnapshotTarget | undefined {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && tracked(editor.document)) {
+            return {
+                doc: editor.document,
+                editor,
+                uri: fileUri(editor.document.uri),
+                cell: editor.document.uri.scheme === 'vscode-notebook-cell',
+            };
+        }
+        const nb = vscode.window.activeNotebookEditor;
+        if (nb && nb.notebook.cellCount > 0) {
+            const cell = nb.notebook.cellAt(nb.selection.start);
+            return { doc: cell.document, uri: nb.notebook.uri, cell: true };
+        }
+        return undefined;
+    }
+
+    /**
+     * Builds and sends one snapshot. Unlike file events these are never queued
+     * or retried: a snapshot describes one instant, and a stale one is worse
+     * than none at all.
+     */
+    private async sendSnapshot(): Promise<void> {
+        let snapshot: FileSnapshot;
+        const target = this.snapshotTarget();
+
+        if (!this.shareFileContents) {
+            // Answer anyway. Silence is indistinguishable from a disconnected
+            // editor, and the teacher deserves to be told which one it is.
+            snapshot = { student: this.student, declined: true, atUnixMs: Date.now() };
+        } else if (!target) {
+            snapshot = { student: this.student, atUnixMs: Date.now() };
+        } else {
+            const relativePath = vscode.workspace.asRelativePath(target.uri, false);
+            snapshot = await buildSnapshot(target, {
+                student: this.student,
+                relativePath,
+                exercise: this.exercises.resolve(relativePath),
+            });
+        }
+
+        try {
+            await fetch(`${this.serverUrl}/api/file-snapshots`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                body: JSON.stringify(snapshot),
+            });
+        } catch (_) {
+            // The teacher's next poll re-asks; nothing to recover here.
+        }
     }
 
     private report(kind: 'focus' | 'heartbeat'): void {
@@ -733,6 +930,7 @@ class Reporter {
     }
 
     private updateStatusBar(): void {
+        this.statusBar.backgroundColor = undefined;
         if (!this.enabled) {
             this.statusBar.text = '$(circle-slash) Hermione: off';
             this.statusBar.tooltip = 'Hermione reporting is stopped';
@@ -743,6 +941,20 @@ class Reporter {
         const rel = target ? vscode.workspace.asRelativePath(fileUri(target.uri), false) : undefined;
         const exercise = rel ? this.exercises.resolve(rel) : undefined;
         const suffix = exercise ? ` · ${exercise}` : '';
+
+        // Being watched is never silent. A teacher reading your buffer is a
+        // different thing from time-on-task being counted, and the student can
+        // see which one is happening.
+        if (this.watched) {
+            this.statusBar.text = `$(book) Hermione: ${this.student}${suffix} · teacher viewing`;
+            this.statusBar.tooltip =
+                'A teacher is looking at the file you have open. ' +
+                'Turn this off with the hermione.shareFileContents setting.';
+            this.statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            this.statusBar.show();
+            return;
+        }
+
         this.statusBar.text = `$(eye) Hermione: ${this.student}${suffix}`;
         this.statusBar.tooltip = `Reporting file activity as "${this.student}" to ${this.serverUrl}`;
         this.statusBar.show();

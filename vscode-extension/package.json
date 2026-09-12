@@ -65,6 +65,11 @@
           "minimum": 5,
           "description": "How often to report that the current file is still active (seconds)."
         },
+        "hermione.shareFileContents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let a teacher see the contents of the file you have open, and its diff against your last commit, while they have it open on their dashboard. Nothing is sent unless a teacher is looking, and the status bar says when they are."
+        },
         "hermione.enabled": {
           "type": "boolean",
           "default": true,
@@ -81,9 +86,11 @@
     "package": "vsce package -o hermione-vscode.vsix"
   },
   "dependencies": {
+    "diff": "^7.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.0",

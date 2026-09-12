@@ -64,6 +64,8 @@ async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Ro
             .expect("connect HERMIONE_TEST_DATABASE_URL"),
         hub: Hub::default(),
         msg_hub: MsgHub::default(),
+        ctrl_hub: crate::state::CtrlHub::default(),
+        snapshots: crate::snapshots::SnapshotStore::default(),
         auth: Auth::new(),
         identity,
         admin_token: Some("admintok".to_string()),
@@ -1041,4 +1043,101 @@ async fn a_late_edit_does_not_follow_the_student_to_the_next_exercise() {
         st["editsRecent"], 0,
         "edits on the previous exercise don't count as typing here: {st}"
     );
+}
+
+/// A file snapshot is posted with the course's enrollment token and read back
+/// by a teacher of that course — and by nobody else. Snapshots carry the text a
+/// student has on screen, so the scoping matters more here than anywhere.
+#[tokio::test]
+async fn file_snapshots_are_scoped_to_the_course() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("fs{s}"), "Fs", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("fs{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("fs{s}"), "pw").await.unwrap();
+
+    // A second course, with a teacher who is a member of only that one.
+    let other = tenancy::create_course(&state.db, &format!("fo{s}"), "Fo", None)
+        .await
+        .unwrap();
+    let outsider = tenancy::create_admin(&state.db, &format!("fo{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, outsider.id, other.id)
+        .await
+        .unwrap();
+    let other_cookie = login(&app, &format!("fo{s}"), "pw").await.unwrap();
+
+    let student = format!("sn{s}");
+    let payload = format!(
+        r#"{{"student":"{student}","relativePath":"ex1/main.py","line":4,"column":9,
+             "content":"print('hi')\n","base":"head","atUnixMs":{}}}"#,
+        chrono::Utc::now().timestamp_millis(),
+    );
+
+    // Unauthenticated ingest is refused, exactly like file events.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-snapshots")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/file-snapshots")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", course.enrollment_token),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The course's own teacher sees the buffer.
+    let uri = format!("/api/students/file?course=fs{s}&student={student}");
+    let resp = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    assert_eq!(v["snapshot"]["content"], "print('hi')\n");
+    assert_eq!(v["snapshot"]["line"], 4);
+    assert_eq!(v["snapshot"]["column"], 9);
+
+    // A teacher of another course cannot reach it, by slug or by student name.
+    let resp = get_with_cookie(&app, &uri, &other_cookie).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let other_uri = format!("/api/students/file?course=fo{s}&student={student}");
+    let resp = get_with_cookie(&app, &other_uri, &other_cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    assert!(
+        v["snapshot"].is_null(),
+        "a snapshot must not leak into another course: {v}"
+    );
+
+    // And signing out entirely gets nothing.
+    let resp = app
+        .clone()
+        .oneshot(Request::get(&uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::OK);
 }

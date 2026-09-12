@@ -15,6 +15,8 @@ The `.hermione.json` is the course config a student's extension reads:
 ```jsonc
 {
   "identity": "github",          // how to identify the student (see below)
+  "shareFileContents": true,     // may a teacher open the file a student
+                                  // has on screen? (they are told when one does)
   "exercises": [                  // map files → exercise slugs
     { "name": "lab1", "match": "lab1/**" },
     { "name": "lab2", "match": "lab2/**" }
