@@ -146,10 +146,10 @@ class Reporter {
 
     /** Whether this student's config permits sharing file contents at all. */
     private shareFileContents = true;
-    /** Until when a teacher is known to be looking at this editor. */
-    private watchedUntil = 0;
-    private snapshotTimer?: NodeJS.Timeout;
+    /** Set while a teacher is known to be looking; its existence *is* `watched`. */
     private watchTimer?: NodeJS.Timeout;
+    private snapshotTimer?: NodeJS.Timeout;
+    private snapshotSending = false;
 
     private statusBar: vscode.StatusBarItem;
     private disposables: vscode.Disposable[] = [];
@@ -226,7 +226,6 @@ class Reporter {
             clearTimeout(this.watchTimer);
             this.watchTimer = undefined;
         }
-        this.watchedUntil = 0;
         // start() reports the current file immediately; leaving this set would
         // suppress exactly that.
         this.focusedPath = '';
@@ -717,28 +716,37 @@ class Reporter {
      * a notebook count as being worked on, rather than only counting the
      * moments someone is mid-keystroke.
      */
-    private activeTarget(): { uri: vscode.Uri; language?: string; line?: number } | undefined {
+    private activeTarget(): SnapshotTarget | undefined {
         const editor = vscode.window.activeTextEditor;
         if (editor && tracked(editor.document)) {
             return {
-                uri: editor.document.uri,
-                language: editor.document.languageId,
-                line: this.cursorLine(editor.document),
+                doc: editor.document,
+                editor,
+                uri: fileUri(editor.document.uri),
+                cell: editor.document.uri.scheme === 'vscode-notebook-cell',
             };
         }
         const nb = vscode.window.activeNotebookEditor;
         if (nb) {
+            // A notebook with no cells still counts as the file being worked
+            // on; there is simply no buffer to read.
             const cell = nb.notebook.cellCount > 0 ? nb.notebook.cellAt(nb.selection.start) : undefined;
-            return { uri: nb.notebook.uri, language: cell?.document.languageId };
+            return { doc: cell?.document, uri: nb.notebook.uri, cell: true };
         }
         return undefined;
+    }
+
+    /** A target's path relative to the workspace, and the exercise it maps to. */
+    private locate(uri: vscode.Uri): { relativePath: string; exercise?: string } {
+        const relativePath = vscode.workspace.asRelativePath(uri, false);
+        return { relativePath, exercise: this.exercises.resolve(relativePath) };
     }
 
     // ---- file snapshots (what the teacher sees when they open your file) ----
 
     /** True while a teacher is known to have this student's file open. */
     private get watched(): boolean {
-        return Date.now() < this.watchedUntil;
+        return this.watchTimer !== undefined;
     }
 
     /**
@@ -751,21 +759,17 @@ class Reporter {
             return;
         }
         const wasWatched = this.watched;
-        this.watchedUntil = Date.now() + WATCH_WINDOW_MS;
+        // The timer is the whole state: it lapses when the requests stop, which
+        // drops the "being viewed" badge rather than leaving a stale one.
+        clearTimeout(this.watchTimer);
+        this.watchTimer = setTimeout(() => {
+            this.watchTimer = undefined;
+            this.updateStatusBar();
+        }, WATCH_WINDOW_MS);
         if (!wasWatched) {
             // Make it visible in the student's own editor the moment it starts.
             this.updateStatusBar();
         }
-        // Drop the indicator once the requests stop rather than leaving a stale
-        // "being viewed" badge in the status bar.
-        if (this.watchTimer) {
-            clearTimeout(this.watchTimer);
-        }
-        this.watchTimer = setTimeout(() => {
-            this.watchTimer = undefined;
-            this.updateStatusBar();
-        }, WATCH_WINDOW_MS + 100);
-
         this.sendSnapshot();
     }
 
@@ -783,62 +787,41 @@ class Reporter {
     }
 
     /**
-     * The document the student is looking at, for snapshot purposes.
-     *
-     * Unlike `activeTarget`, this needs the document itself (to read its text),
-     * and it prefers the notebook *cell* over the notebook: the cell's buffer is
-     * what's on screen, while the `.ipynb` on disk is JSON nobody wants to read.
-     */
-    private snapshotTarget(): SnapshotTarget | undefined {
-        const editor = vscode.window.activeTextEditor;
-        if (editor && tracked(editor.document)) {
-            return {
-                doc: editor.document,
-                editor,
-                uri: fileUri(editor.document.uri),
-                cell: editor.document.uri.scheme === 'vscode-notebook-cell',
-            };
-        }
-        const nb = vscode.window.activeNotebookEditor;
-        if (nb && nb.notebook.cellCount > 0) {
-            const cell = nb.notebook.cellAt(nb.selection.start);
-            return { doc: cell.document, uri: nb.notebook.uri, cell: true };
-        }
-        return undefined;
-    }
-
-    /**
      * Builds and sends one snapshot. Unlike file events these are never queued
      * or retried: a snapshot describes one instant, and a stale one is worse
      * than none at all.
      */
     private async sendSnapshot(): Promise<void> {
+        // Two triggers drive this — the backend's request and the student's own
+        // typing — and they must not stack into overlapping uploads.
+        if (this.snapshotSending) {
+            return;
+        }
+        const target = this.activeTarget();
+        const doc = target?.doc;
         let snapshot: FileSnapshot;
-        const target = this.snapshotTarget();
-
         if (!this.shareFileContents) {
             // Answer anyway. Silence is indistinguishable from a disconnected
             // editor, and the teacher deserves to be told which one it is.
             snapshot = { student: this.student, declined: true, atUnixMs: Date.now() };
-        } else if (!target) {
+        } else if (!target || !doc) {
             snapshot = { student: this.student, atUnixMs: Date.now() };
         } else {
-            const relativePath = vscode.workspace.asRelativePath(target.uri, false);
-            snapshot = await buildSnapshot(target, {
-                student: this.student,
-                relativePath,
-                exercise: this.exercises.resolve(relativePath),
-            });
+            snapshot = await buildSnapshot(
+                { ...target, doc },
+                { student: this.student, ...this.locate(target.uri) },
+            );
         }
 
+        this.snapshotSending = true;
         try {
-            await fetch(`${this.serverUrl}/api/file-snapshots`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-                body: JSON.stringify(snapshot),
-            });
+            // Never queued or retried: a snapshot describes one instant, and a
+            // stale one is worse than none at all.
+            await this.post('/api/file-snapshots', JSON.stringify(snapshot));
         } catch (_) {
             // The teacher's next poll re-asks; nothing to recover here.
+        } finally {
+            this.snapshotSending = false;
         }
     }
 
@@ -856,7 +839,8 @@ class Reporter {
             }
             this.focusedPath = target.uri.fsPath;
         }
-        this.enqueue(this.buildEvent(kind, target.uri, target.language, target.line));
+        this.enqueue(this.buildEvent(kind, target.uri, target.doc?.languageId,
+            target.doc && this.cursorLine(target.doc)));
     }
 
     private buildEvent(
@@ -892,6 +876,29 @@ class Reporter {
         }
     }
 
+    /**
+     * One authenticated POST. Every caller shares the `401` handling, because a
+     * stale identity token is a property of the connection rather than of the
+     * payload — a snapshot that silently 401s forever would leave the teacher
+     * staring at "Asking…" with no way to find out why.
+     */
+    private async post(path: string, body: string): Promise<void> {
+        const res = await fetch(`${this.serverUrl}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+            body,
+        });
+        if (res.status === 401) {
+            // Backend requires a verified identity — sign in, then let the
+            // caller decide whether this one is worth resending.
+            await this.ensureIdentity(true);
+            throw new Error('identity required');
+        }
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+    }
+
     private async flush(): Promise<void> {
         this.flushTimer = undefined;
         if (this.queue.length === 0) {
@@ -900,26 +907,7 @@ class Reporter {
         const batch = this.queue;
         this.queue = [];
         try {
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-            if (this.token) {
-                headers['Authorization'] = `Bearer ${this.token}`;
-            }
-            if (this.identityToken) {
-                headers['X-Hermione-Identity'] = this.identityToken;
-            }
-            const res = await fetch(`${this.serverUrl}/api/file-events`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(batch),
-            });
-            if (res.status === 401) {
-                // Backend requires a verified identity — sign in, then retry.
-                await this.ensureIdentity(true);
-                throw new Error('identity required');
-            }
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
-            }
+            await this.post('/api/file-events', JSON.stringify(batch));
         } catch {
             // Re-queue and retry on the next tick so we don't lose events.
             this.queue = batch.concat(this.queue);
@@ -938,8 +926,7 @@ class Reporter {
             return;
         }
         const target = this.activeTarget();
-        const rel = target ? vscode.workspace.asRelativePath(fileUri(target.uri), false) : undefined;
-        const exercise = rel ? this.exercises.resolve(rel) : undefined;
+        const exercise = target && this.locate(target.uri).exercise;
         const suffix = exercise ? ` · ${exercise}` : '';
 
         // Being watched is never silent. A teacher reading your buffer is a

@@ -139,13 +139,13 @@
   --red-text: #ce222e;
   --green-text: #197a35;
 
-  --hl-comment: #6e7781;
+  --hl-comment: var(--fg-subtle);
   --hl-string: #0a3069;
   --hl-number: #0550ae;
-  --hl-keyword: #cf222e;
-  --hl-function: #8250df;
+  --hl-keyword: var(--red);
+  --hl-function: var(--brand);
   --hl-type: #953800;
-  --hl-operator: #57606a;
+  --hl-operator: var(--fg-muted);
 
   /* On white, a plain wash of each hue is enough. */
   --diff-add-wash: color-mix(in srgb, var(--green) 10%, transparent);
@@ -184,13 +184,13 @@
     --red-text: #ce222e;
     --green-text: #197a35;
 
-    --hl-comment: #6e7781;
+    --hl-comment: var(--fg-subtle);
     --hl-string: #0a3069;
     --hl-number: #0550ae;
-    --hl-keyword: #cf222e;
-    --hl-function: #8250df;
+    --hl-keyword: var(--red);
+    --hl-function: var(--brand);
     --hl-type: #953800;
-    --hl-operator: #57606a;
+    --hl-operator: var(--fg-muted);
 
     /* On white, a plain wash of each hue is enough. */
     --diff-add-wash: color-mix(in srgb, var(--green) 10%, transparent);

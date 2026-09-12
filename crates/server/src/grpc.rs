@@ -119,7 +119,7 @@ impl Ingest for IngestService {
                                 .exec(db)
                                 .await
                                 .map_err(internal)?;
-                            bcast = Some(self.state.hub.channel(id).await);
+                            bcast = Some(self.state.hub.channel(&id).await);
                             session_id = Some(id);
                             tracing::info!(%id, "session started");
                         }
@@ -199,7 +199,7 @@ impl Ingest for IngestService {
             if !ended {
                 finalize(db, id, None).await;
             }
-            self.state.hub.remove(id).await;
+            self.state.hub.remove(&id).await;
             tracing::info!(%id, chunks = seq, "session ingest finished");
         }
 
@@ -238,7 +238,7 @@ impl Viewer for ViewerService {
         let id = Uuid::parse_str(&req.session_id)
             .map_err(|_| Status::invalid_argument("invalid session_id"))?;
 
-        let rx = self.state.hub.subscribe(id).await;
+        let rx = self.state.hub.subscribe(&id).await;
         let db = self.state.db.clone();
         let include_history = req.include_history;
 

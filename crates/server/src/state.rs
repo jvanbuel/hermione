@@ -12,32 +12,92 @@ use uuid::Uuid;
 
 use crate::auth::Auth;
 
-/// Per-session broadcast channels used to fan out live terminal activity to
-/// any number of observers (gRPC watchers and SSE web clients).
-#[derive(Clone, Default)]
-pub struct Hub {
-    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<TerminalChunk>>>>,
+/// A set of broadcast channels keyed by whatever the fan-out is per.
+///
+/// Three things in the server need exactly this: live terminal chunks per
+/// session, course broadcasts, and control frames per student. A channel is
+/// created on first subscribe and dropped once its last listener goes, so the
+/// map tracks who is actually listening rather than everything ever seen.
+pub struct Hub<K, T, const CAP: usize> {
+    channels: Arc<RwLock<HashMap<K, broadcast::Sender<T>>>>,
 }
 
-impl Hub {
-    /// Returns the broadcast sender for a session, creating it if necessary.
-    pub async fn channel(&self, id: Uuid) -> broadcast::Sender<TerminalChunk> {
-        let mut map = self.channels.write().await;
-        map.entry(id)
-            .or_insert_with(|| broadcast::channel(4096).0)
+// Derived impls would demand `K: Clone`/`T: Default` and similar bounds that
+// an `Arc` field doesn't actually need.
+impl<K, T, const CAP: usize> Clone for Hub<K, T, CAP> {
+    fn clone(&self) -> Self {
+        Self {
+            channels: Arc::clone(&self.channels),
+        }
+    }
+}
+
+impl<K, T, const CAP: usize> Default for Hub<K, T, CAP> {
+    fn default() -> Self {
+        Self {
+            channels: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+impl<K: Eq + std::hash::Hash + Clone, T: Clone, const CAP: usize> Hub<K, T, CAP> {
+    /// The sender for a key, creating the channel if nobody has used it yet.
+    pub async fn channel(&self, key: &K) -> broadcast::Sender<T> {
+        self.channels
+            .write()
+            .await
+            .entry(key.clone())
+            .or_insert_with(|| broadcast::channel(CAP).0)
             .clone()
     }
 
-    /// Subscribes to live chunks for a session.
-    pub async fn subscribe(&self, id: Uuid) -> broadcast::Receiver<TerminalChunk> {
-        self.channel(id).await.subscribe()
+    /// Subscribes a listener.
+    pub async fn subscribe(&self, key: &K) -> broadcast::Receiver<T> {
+        self.channel(key).await.subscribe()
     }
 
-    /// Drops the channel once a session has ended and no longer needs fan-out.
-    pub async fn remove(&self, id: Uuid) {
-        self.channels.write().await.remove(&id);
+    /// Sends to everyone currently listening on `key`, and forgets the channel
+    /// when it turns out nobody is — otherwise the map would grow for the life
+    /// of the process.
+    pub async fn publish(&self, key: &K, msg: T) {
+        let sender = { self.channels.read().await.get(key).cloned() };
+        if let Some(sender) = sender {
+            if sender.send(msg).is_err() {
+                self.channels.write().await.remove(key);
+            }
+        }
+    }
+
+    /// How many listeners `key` has right now. Zero also covers "never seen".
+    pub async fn listeners(&self, key: &K) -> usize {
+        self.channels
+            .read()
+            .await
+            .get(key)
+            .map_or(0, |s| s.receiver_count())
+    }
+
+    /// Drops a channel outright, for a key that can never be used again.
+    pub async fn remove(&self, key: &K) {
+        self.channels.write().await.remove(key);
     }
 }
+
+/// Live terminal activity, fanned out to gRPC watchers and SSE web clients.
+pub type SessionHub = Hub<Uuid, TerminalChunk, 4096>;
+
+/// Course messaging (teacher → students today; the same fan-out underpins
+/// two-way chat later).
+pub type MsgHub = Hub<Uuid, MessageOut, 256>;
+
+/// Control frames addressed to one student's editor.
+///
+/// Keyed by student as well as course so a request for Alice never reaches
+/// Bob's editor — who is being watched is not something the rest of the class
+/// should learn. The key comes from the socket's self-asserted `student`
+/// parameter, which is only ever used for routing: the snapshot that comes
+/// back is attributed by the ingest gate's verified identity, not by this.
+pub type CtrlHub = Hub<(Uuid, String), ControlOut, 16>;
 
 /// A message pushed to course members over WebSocket.
 #[derive(Clone, Serialize)]
@@ -46,31 +106,6 @@ pub struct MessageOut {
     pub id: i64,
     pub body: String,
     pub created_at_unix_ms: i64,
-}
-
-/// Per-course broadcast channels for live messaging (teacher → students today;
-/// the same fan-out underpins two-way chat later).
-#[derive(Clone, Default)]
-pub struct MsgHub {
-    channels: Arc<RwLock<HashMap<Uuid, broadcast::Sender<MessageOut>>>>,
-}
-
-impl MsgHub {
-    async fn channel(&self, course_id: Uuid) -> broadcast::Sender<MessageOut> {
-        let mut map = self.channels.write().await;
-        map.entry(course_id)
-            .or_insert_with(|| broadcast::channel(256).0)
-            .clone()
-    }
-
-    pub async fn subscribe(&self, course_id: Uuid) -> broadcast::Receiver<MessageOut> {
-        self.channel(course_id).await.subscribe()
-    }
-
-    /// Publishes a message to everyone currently connected for the course.
-    pub async fn publish(&self, course_id: Uuid, msg: MessageOut) {
-        let _ = self.channel(course_id).await.send(msg);
-    }
 }
 
 /// A control frame pushed to one student's editor over the message socket.
@@ -82,70 +117,14 @@ impl MsgHub {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlOut {
-    pub kind: String,
-}
-
-type CtrlChannels = HashMap<(Uuid, String), broadcast::Sender<ControlOut>>;
-
-/// Per-student control channels, used to ask one student's editor for a
-/// snapshot of the file they have open.
-///
-/// Keyed by student as well as course so a request for Alice never reaches
-/// Bob's editor — who is being watched is not something the rest of the class
-/// should learn. The key comes from the socket's self-asserted `student`
-/// parameter, which is only ever used for routing: the snapshot that comes
-/// back is attributed by the ingest gate's verified identity, not by this.
-#[derive(Clone, Default)]
-pub struct CtrlHub {
-    channels: Arc<RwLock<CtrlChannels>>,
-}
-
-impl CtrlHub {
-    /// Subscribes one connected editor to its student's control frames.
-    pub async fn subscribe(
-        &self,
-        course_id: Uuid,
-        student: &str,
-    ) -> broadcast::Receiver<ControlOut> {
-        let mut map = self.channels.write().await;
-        map.entry((course_id, student.to_string()))
-            .or_insert_with(|| broadcast::channel(16).0)
-            .clone()
-            .subscribe()
-    }
-
-    /// Sends a control frame to a student's editors. Returns false when nobody
-    /// is listening, so a caller can tell "no editor connected" from "asked".
-    pub async fn publish(&self, course_id: Uuid, student: &str, frame: ControlOut) -> bool {
-        let key = (course_id, student.to_string());
-        let sender = { self.channels.read().await.get(&key).cloned() };
-        let Some(sender) = sender else {
-            return false;
-        };
-        if sender.send(frame).is_ok() {
-            return true;
-        }
-        // The last editor for this student disconnected; drop the channel
-        // rather than let the map grow for the life of the process.
-        self.channels.write().await.remove(&key);
-        false
-    }
-
-    /// Drops a student's channel once their last editor has disconnected.
-    pub async fn release(&self, course_id: Uuid, student: &str) {
-        let mut map = self.channels.write().await;
-        let key = (course_id, student.to_string());
-        if map.get(&key).is_some_and(|s| s.receiver_count() == 0) {
-            map.remove(&key);
-        }
-    }
+    pub kind: &'static str,
 }
 
 /// State shared across the gRPC and HTTP servers.
 #[derive(Clone)]
 pub struct AppState {
     pub db: DatabaseConnection,
-    pub hub: Hub,
+    pub hub: SessionHub,
     pub msg_hub: MsgHub,
     /// Teacher → one student's editor control frames (snapshot requests).
     pub ctrl_hub: CtrlHub,

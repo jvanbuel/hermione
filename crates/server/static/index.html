@@ -612,10 +612,12 @@
     }
     // Escape untrusted strings (student names, file paths, exercises, course
     // names) before putting them in HTML — they originate from students.
+    const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
     function esc(s) {
-      return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      s = String(s == null ? '' : s);
+      // Most spans of source code contain nothing to escape, and this runs
+      // thousands of times per file render.
+      return /[&<>"']/.test(s) ? s.replace(/[&<>"']/g, c => ESC[c]) : s;
     }
 
     // Keyed, in-place reconciliation of a container's children, so the 3s
@@ -1202,8 +1204,9 @@
       if (p.mode === 'file') {
         pollSnapshot(student, p);
       } else {
-        // Refit: xterm sizes to a hidden element as 0 columns.
-        setTimeout(() => { try { p.fit && p.fit.fit(); } catch (_) {} }, 0);
+        // xterm sizes to a hidden element as 0 columns, so it needs a refit
+        // once the pane is visible again.
+        refitPanes();
       }
     }
 
@@ -1214,23 +1217,19 @@
       p.el.querySelector('.diff').setAttribute('aria-pressed', String(p.diff));
       // The snapshot already carries the diff, so this is a re-render, not a
       // round trip to the student's editor.
-      p.lastKey = null;
       if (p.last) renderSnapshot(student, p, p.last);
     }
 
     function syncSnapshotPolling() {
       const wanted = [...openPanes.values()].some(p => p.mode === 'file');
       if (wanted && !snapshotPoll) {
-        snapshotPoll = setInterval(pollSnapshots, SNAPSHOT_POLL_MS);
+        snapshotPoll = setInterval(
+          () => openPanes.forEach((p, student) => p.mode === 'file' && pollSnapshot(student, p)),
+          SNAPSHOT_POLL_MS);
       } else if (!wanted && snapshotPoll) {
         clearInterval(snapshotPoll);
         snapshotPoll = null;
       }
-    }
-
-    function pollSnapshots() {
-      const open = [...openPanes.entries()].filter(([, p]) => p.mode === 'file');
-      return Promise.all(open.map(([student, p]) => pollSnapshot(student, p)));
     }
 
     async function pollSnapshot(student, pane) {
@@ -1258,7 +1257,7 @@
         head.innerHTML = '';
         body.classList.add('empty');
         body.innerHTML = `<div class="note">${html}</div>`;
-        p.lastKey = null;
+        p.lastKey = p.lastHead = null;
       };
 
       if (!s) {
@@ -1276,19 +1275,18 @@
         return;
       }
 
-      // Re-rendering an unchanged buffer would throw away the teacher's scroll
-      // position every poll, so only redraw when something actually moved.
-      // `language` is in here because it is what decides the highlighting, and
-      // it can change (a rename) while the text does not.
-      const key = JSON.stringify([p.diff, s.relativePath, s.language, s.line, s.column,
-        s.content, s.diff || null]);
+      // Redrawing an unchanged buffer would throw away the teacher's text
+      // selection and restart the caret blink every poll. Snapshots are
+      // replaced wholesale rather than edited, so the timestamp identifies one
+      // exactly — no need to compare the buffer against itself.
+      const key = `${p.diff}:${s.atUnixMs}`;
       const headHtml = snapshotHead(s, data.ageMs);
-      if (p.lastKey === key) {
+      if (headHtml !== p.lastHead) {
         head.innerHTML = headHtml; // freshness still ticks
-        return;
+        p.lastHead = headHtml;
       }
+      if (p.lastKey === key) return;
       p.lastKey = key;
-      head.innerHTML = headHtml;
 
       const html = p.diff ? diffHtml(s) : codeHtml(s);
       const prevTop = body.scrollTop;
@@ -1315,7 +1313,7 @@
       if (s.dirty) bits.push('· unsaved');
       if (s.truncated) bits.push('· truncated');
       if (ageMs != null && ageMs > SNAPSHOT_STALE_MS) {
-        bits.push(`· <span class="stale">${Math.round(ageMs / 1000)}s ago</span>`);
+        bits.push(`· <span class="stale">${timeAgo(s.atUnixMs)}</span>`);
       }
       bits.push(`<span class="sum">${diffSummary(s)}</span>`);
       return bits.join(' ');
@@ -1340,10 +1338,7 @@
       for (let i = 0; i < lines.length; i++) {
         const n = i + 1;
         const cur = n === s.line;
-        const spans = hl && Array.isArray(hl[i]) ? hl[i] : null;
-        const text = spans
-          ? spansHtml(spans, cur ? s.column : null)
-          : (cur ? caretLine(lines[i], s.column) : esc(lines[i]));
+        const text = lineHtml(hl && hl[i], lines[i], cur ? s.column : null);
         out.push(`<div class="cl${cur ? ' cur' : ''}"><span class="n">${n}</span><span class="t">${text}</span></div>`);
       }
       return out.join('');
@@ -1375,10 +1370,6 @@
       return placed ? out : out + '<span class="caret"></span>';
     }
 
-    function caretLine(text, column) {
-      const at = Math.max(0, Math.min(text.length, (column || 1) - 1));
-      return esc(text.slice(0, at)) + '<span class="caret"></span>' + esc(text.slice(at));
-    }
 
     /**
      * The student's working changes, as hunks against their last commit.
@@ -1406,23 +1397,26 @@
           else if (sign === '-') { cls = 'del'; on = o++; spans = removed && removed[ri++]; }
           else { on = o++; nn = n++; spans = hl && hl[nn - 1]; }
           out.push(`<div class="dl ${cls}"><span class="n">${on}</span><span class="n">${nn}</span>`
-            + `<span class="t"><span class="sg">${sign}</span>${lineHtml(spans, text)}</span></div>`);
+            + `<span class="t"><span class="sg">${sign}</span>${lineHtml(spans, text, null)}</span></div>`);
         }
       }
       return out.join('');
     }
 
     /**
-     * A diff line's text, highlighted when the spans we have really are this
+     * One line of code, highlighted when the spans we have really are this
      * line's. They can disagree — a buffer clamped at the size cap has fewer
-     * lines than the diff refers to — and showing text the student never typed
-     * is the one failure worth guarding against, so the spans have to prove
-     * themselves before they're used.
+     * lines than its diff refers to — and showing text the student never typed
+     * is the one failure worth guarding against, so the spans prove themselves
+     * first. Summing their lengths catches that without rebuilding the string.
+     *
+     * An unhighlighted line is just one classless span, which is why there is
+     * only one renderer below rather than a plain path and a highlighted one.
      */
-    function lineHtml(spans, text) {
-      if (!Array.isArray(spans)) return esc(text);
-      const joined = spans.reduce((acc, t) => acc + t[1], '');
-      return joined === text ? spansHtml(spans, null) : esc(text);
+    function lineHtml(spans, text, column) {
+      const ok = Array.isArray(spans)
+        && spans.reduce((n, t) => n + t[1].length, 0) === text.length;
+      return spansHtml(ok ? spans : [['', text]], column);
     }
 
     // ---- draggable board/dock divider ----

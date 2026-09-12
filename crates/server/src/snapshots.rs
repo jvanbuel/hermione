@@ -137,18 +137,17 @@ pub struct FileSnapshot {
 
 impl FileSnapshot {
     /// Trims a snapshot to the server's own caps, whatever the client sent.
-    fn clamp(mut self) -> Self {
-        if let Some(content) = self.content.take() {
+    fn clamp(&mut self) {
+        if let Some(content) = self.content.as_mut() {
             if content.len() > MAX_CONTENT_BYTES {
                 // Cut on a char boundary so the result stays valid UTF-8.
+                // Byte 0 always is one, so this terminates.
                 let mut end = MAX_CONTENT_BYTES;
-                while end > 0 && !content.is_char_boundary(end) {
+                while !content.is_char_boundary(end) {
                     end -= 1;
                 }
-                self.content = Some(content[..end].to_string());
+                content.truncate(end);
                 self.truncated = Some(true);
-            } else {
-                self.content = Some(content);
             }
         }
         if let Some(diff) = self.diff.as_mut() {
@@ -168,58 +167,63 @@ impl FileSnapshot {
                 diff.truncated = Some(true);
             }
         }
-        self
     }
 }
 
+/// A student's snapshot slot: which course, and which student in it.
+type Key = (Uuid, String);
+
 struct Entry {
     snapshot: Option<Arc<FileSnapshot>>,
-    stored_at: Instant,
+    /// When this entry was last written — by a snapshot or by a request. Both
+    /// keep it alive through pruning.
+    touched_at: Instant,
     requested_at: Option<Instant>,
 }
 
 /// The in-memory cache of the latest snapshot per student.
 #[derive(Clone, Default)]
 pub struct SnapshotStore {
-    entries: Arc<RwLock<HashMap<(Uuid, String), Entry>>>,
+    entries: Arc<RwLock<HashMap<Key, Entry>>>,
 }
 
 impl SnapshotStore {
-    async fn put(&self, course_id: Uuid, snapshot: FileSnapshot) {
-        let key = (course_id, snapshot.student.clone());
+    async fn put(&self, key: Key, snapshot: FileSnapshot) {
         let mut map = self.entries.write().await;
         if map.len() > PRUNE_THRESHOLD {
-            map.retain(|_, e| e.stored_at.elapsed() < SNAPSHOT_TTL);
+            map.retain(|_, e| e.touched_at.elapsed() < SNAPSHOT_TTL);
         }
         let requested_at = map.get(&key).and_then(|e| e.requested_at);
         map.insert(
             key,
             Entry {
                 snapshot: Some(Arc::new(snapshot)),
-                stored_at: Instant::now(),
+                touched_at: Instant::now(),
                 requested_at,
             },
         );
     }
 
     /// The student's latest snapshot, if one arrived recently enough to trust.
-    async fn get(&self, course_id: Uuid, student: &str) -> Option<Arc<FileSnapshot>> {
-        let map = self.entries.read().await;
-        let entry = map.get(&(course_id, student.to_string()))?;
-        (entry.stored_at.elapsed() < SNAPSHOT_TTL).then(|| entry.snapshot.clone())?
+    async fn get(&self, key: &Key) -> Option<Arc<FileSnapshot>> {
+        self.entries
+            .read()
+            .await
+            .get(key)
+            .filter(|e| e.touched_at.elapsed() < SNAPSHOT_TTL)?
+            .snapshot
+            .clone()
     }
 
     /// Records that a request is about to go out, and says whether enough time
     /// has passed to actually send one.
-    async fn should_request(&self, course_id: Uuid, student: &str) -> bool {
+    async fn should_request(&self, key: &Key) -> bool {
         let mut map = self.entries.write().await;
-        let entry = map
-            .entry((course_id, student.to_string()))
-            .or_insert_with(|| Entry {
-                snapshot: None,
-                stored_at: Instant::now(),
-                requested_at: None,
-            });
+        let entry = map.entry(key.clone()).or_insert_with(|| Entry {
+            snapshot: None,
+            touched_at: Instant::now(),
+            requested_at: None,
+        });
         let due = entry
             .requested_at
             .is_none_or(|at| at.elapsed() >= REQUEST_INTERVAL);
@@ -246,28 +250,49 @@ pub async fn ingest(
         return (StatusCode::BAD_REQUEST, "missing student").into_response();
     }
 
-    // Highlight after clamping, so the spans describe the text we actually
-    // kept, and once here rather than once per teacher per poll.
-    let mut snapshot = snapshot.clamp();
-    let language = snapshot.language.clone();
+    snapshot.clamp();
+    let key = (course_id, snapshot.student.clone());
+
+    // Parsing a buffer is tens to hundreds of milliseconds of solid CPU, and a
+    // watched student sends one of these every few hundred ms. On a Tokio
+    // worker that stalls every other request sharing the thread, so it goes
+    // where argon2 goes (see tenancy.rs).
+    let snapshot = match tokio::task::spawn_blocking(move || {
+        highlight_snapshot(&mut snapshot);
+        snapshot
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    state.snapshots.put(key, snapshot).await;
+    StatusCode::OK.into_response()
+}
+
+/// Adds the spans the dashboard renders from. Runs after clamping, so they
+/// describe the text we actually kept, and once on arrival rather than once
+/// per teacher per poll.
+fn highlight_snapshot(snapshot: &mut FileSnapshot) {
+    let language = snapshot.language.as_deref();
     let path = snapshot
         .relative_path
-        .clone()
-        .or_else(|| snapshot.path.clone());
-    if let Some(content) = snapshot.content.as_deref() {
-        snapshot.highlight =
-            crate::highlight::highlight(content, language.as_deref(), path.as_deref());
-    }
+        .as_deref()
+        .or(snapshot.path.as_deref());
+    let highlight = snapshot
+        .content
+        .as_deref()
+        .and_then(|c| crate::highlight::highlight(c, language, path));
+
     // Only worth highlighting the removed side when the rest of the diff has
     // spans to sit next to; a half-coloured diff is worse than a plain one.
-    if snapshot.highlight.is_some() {
+    if highlight.is_some() {
         if let Some(diff) = snapshot.diff.as_mut() {
-            highlight_removed(diff, language.as_deref(), path.as_deref());
+            highlight_removed(diff, language, path);
         }
     }
-
-    state.snapshots.put(course_id, snapshot).await;
-    StatusCode::OK.into_response()
+    snapshot.highlight = highlight;
 }
 
 /// Fills in each hunk's `removed_highlight`.
@@ -279,28 +304,23 @@ pub async fn ingest(
 /// buffer.
 fn highlight_removed(diff: &mut Diff, language: Option<&str>, path: Option<&str>) {
     for hunk in diff.hunks.iter_mut() {
-        let mut old_side = Vec::new();
-        let mut removed = Vec::new();
-        for line in &hunk.lines {
-            if line.starts_with('+') {
-                continue;
-            }
-            // Every diff line carries a one-byte ASCII sign, so this is always
-            // a char boundary.
-            old_side.push(line.get(1..).unwrap_or_default().to_string());
-            removed.push(line.starts_with('-'));
-        }
-        if !removed.iter().any(|r| *r) {
+        if !hunk.lines.iter().any(|l| l.starts_with('-')) {
             continue;
         }
-        let Some(spans) = crate::highlight::highlight_lines(&old_side, language, path) else {
+        // The old side, sign stripped. Every diff line carries a one-byte
+        // ASCII sign, so slicing from 1 is always a char boundary.
+        let old_side = || hunk.lines.iter().filter(|l| !l.starts_with('+'));
+        let text: Vec<&str> = old_side().map(|l| l.get(1..).unwrap_or_default()).collect();
+        let Some(spans) = crate::highlight::highlight_lines(&text, language, path) else {
             continue;
         };
+        // Zipping back over the same filter is what keeps the rows aligned
+        // with the lines they came from.
         hunk.removed_highlight = Some(
             spans
                 .into_iter()
-                .zip(&removed)
-                .filter(|(_, keep)| **keep)
+                .zip(old_side())
+                .filter(|(_, line)| line.starts_with('-'))
                 .map(|(span, _)| span)
                 .collect(),
         );
@@ -342,24 +362,18 @@ pub async fn student_file(
         return (StatusCode::BAD_REQUEST, "missing student").into_response();
     }
 
-    let connected = if state.snapshots.should_request(course_id, &q.student).await {
-        state
-            .ctrl_hub
-            .publish(
-                course_id,
-                &q.student,
-                ControlOut {
-                    kind: "snapshot-request".to_string(),
-                },
-            )
-            .await
-    } else {
-        // Too soon to ask again; report reachability from whether a snapshot
-        // has landed recently rather than re-probing the socket.
-        state.snapshots.get(course_id, &q.student).await.is_some()
-    };
+    let key = (course_id, q.student.clone());
+    if state.snapshots.should_request(&key).await {
+        let frame = ControlOut {
+            kind: "snapshot-request",
+        };
+        state.ctrl_hub.publish(&key, frame).await;
+    }
 
-    let snapshot = state.snapshots.get(course_id, &q.student).await;
+    // Whether an editor is there to answer is the hub's to say, not something
+    // to infer from the side effects of a poll that may have been throttled.
+    let connected = state.ctrl_hub.listeners(&key).await > 0;
+    let snapshot = state.snapshots.get(&key).await;
     let age_ms = snapshot
         .as_ref()
         .map(|s| (chrono::Utc::now().timestamp_millis() - s.at_unix_ms).max(0));
@@ -401,8 +415,9 @@ mod tests {
     fn clamps_oversized_content_on_a_char_boundary() {
         // A multi-byte char straddling the cap must not be cut in half.
         let big = "é".repeat(MAX_CONTENT_BYTES);
-        let clamped = snapshot(&big).clamp();
-        let content = clamped.content.unwrap();
+        let mut clamped = snapshot(&big);
+        clamped.clamp();
+        let content = clamped.content.clone().unwrap();
         assert!(content.len() <= MAX_CONTENT_BYTES);
         assert_eq!(clamped.truncated, Some(true));
         assert!(content.chars().all(|c| c == 'é'));
@@ -410,7 +425,8 @@ mod tests {
 
     #[test]
     fn keeps_content_that_fits() {
-        let clamped = snapshot("print('hi')").clamp();
+        let mut clamped = snapshot("print('hi')");
+        clamped.clamp();
         assert_eq!(clamped.content.as_deref(), Some("print('hi')"));
         assert_eq!(clamped.truncated, None);
     }
@@ -432,7 +448,8 @@ mod tests {
             hunks: vec![hunk(MAX_DIFF_LINES), hunk(1)],
             truncated: None,
         });
-        let diff = s.clamp().diff.unwrap();
+        s.clamp();
+        let diff = s.diff.unwrap();
         assert_eq!(diff.hunks.len(), 1);
         assert_eq!(diff.truncated, Some(true));
     }
@@ -497,35 +514,36 @@ mod tests {
     #[tokio::test]
     async fn expired_snapshots_are_not_served() {
         let store = SnapshotStore::default();
-        let course = Uuid::new_v4();
-        store.put(course, snapshot("x")).await;
-        assert!(store.get(course, "alice").await.is_some());
+        let alice = (Uuid::new_v4(), "alice".to_string());
+        store.put(alice.clone(), snapshot("x")).await;
+        assert!(store.get(&alice).await.is_some());
 
         // Age the entry past the TTL without sleeping for it.
         {
             let mut map = store.entries.write().await;
-            let entry = map.get_mut(&(course, "alice".to_string())).unwrap();
-            entry.stored_at = Instant::now() - SNAPSHOT_TTL - Duration::from_secs(1);
+            let entry = map.get_mut(&alice).unwrap();
+            entry.touched_at = Instant::now() - SNAPSHOT_TTL - Duration::from_secs(1);
         }
-        assert!(store.get(course, "alice").await.is_none());
+        assert!(store.get(&alice).await.is_none());
     }
 
     #[tokio::test]
     async fn requests_are_throttled_per_student() {
         let store = SnapshotStore::default();
         let course = Uuid::new_v4();
-        assert!(store.should_request(course, "alice").await);
-        assert!(!store.should_request(course, "alice").await);
+        let alice = (course, "alice".to_string());
+        assert!(store.should_request(&alice).await);
+        assert!(!store.should_request(&alice).await);
         // A different student is throttled independently.
-        assert!(store.should_request(course, "bob").await);
+        assert!(store.should_request(&(course, "bob".to_string())).await);
     }
 
     #[tokio::test]
     async fn a_new_snapshot_keeps_the_request_throttle() {
         let store = SnapshotStore::default();
-        let course = Uuid::new_v4();
-        assert!(store.should_request(course, "alice").await);
-        store.put(course, snapshot("x")).await;
-        assert!(!store.should_request(course, "alice").await);
+        let alice = (Uuid::new_v4(), "alice".to_string());
+        assert!(store.should_request(&alice).await);
+        store.put(alice.clone(), snapshot("x")).await;
+        assert!(!store.should_request(&alice).await);
     }
 }

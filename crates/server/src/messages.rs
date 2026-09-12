@@ -58,7 +58,7 @@ pub async fn broadcast(
             state
                 .msg_hub
                 .publish(
-                    course_id,
+                    &course_id,
                     crate::state::MessageOut {
                         id: msg.id,
                         body: msg.body,

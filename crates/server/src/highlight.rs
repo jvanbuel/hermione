@@ -15,9 +15,9 @@
 
 use std::sync::OnceLock;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use syntect::easy::ScopeRegionIterator;
-use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
 /// Files longer than this aren't highlighted. Parsing is linear and cheap, but
 /// a snapshot is rebuilt on every keystroke burst and the tokens travel to the
@@ -26,48 +26,58 @@ const MAX_LINES: usize = 4000;
 
 /// One run of characters sharing a class. Serialized as a two-element array
 /// (`["k","return"]`) because a snapshot carries one per token and the field
-/// names would outweigh the data.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Token(pub String, pub String);
+/// names would outweigh the data. Never deserialized: the class is always one
+/// of the literals below, and a client's own idea of it is not wanted.
+#[derive(Clone, Debug, Serialize)]
+pub struct Token(pub &'static str, pub String);
 
-/// The highlighter's whole vocabulary. Kept small on purpose: the file pane is
-/// for reading someone's work over their shoulder, so the useful distinctions
-/// are "this is prose", "this is a literal", "this is a name" — not the fifty
-/// scopes a full theme separates.
-fn class_for(scope: &str) -> Option<&'static str> {
-    // Longest-prefix first: `keyword.operator` must not be read as `keyword`.
-    const RULES: &[(&str, &str)] = &[
-        ("comment", "c"),
-        ("string", "s"),
-        ("constant.numeric", "n"),
-        ("constant", "n"),
-        ("keyword.operator", "o"),
-        ("keyword", "k"),
-        ("storage", "k"),
-        ("entity.name.function", "f"),
-        ("support.function", "f"),
-        ("entity.name.type", "t"),
-        ("entity.name.class", "t"),
-        ("entity.name.struct", "t"),
-        ("support.type", "t"),
-        ("support.class", "t"),
-        ("entity.name.tag", "t"),
-        ("variable.function", "f"),
-    ];
-    RULES
-        .iter()
-        .find(|(prefix, _)| scope == *prefix || scope.starts_with(&format!("{prefix}.")))
-        .map(|(_, class)| *class)
+/// The highlighter's whole vocabulary, compiled once into syntect's interned
+/// scopes. Kept small on purpose: the file pane is for reading someone's work
+/// over their shoulder, so the useful distinctions are "this is prose", "this
+/// is a literal", "this is a name" — not the fifty scopes a full theme
+/// separates.
+///
+/// Order matters, most specific first: `keyword.operator` must be matched
+/// before `keyword`, which is a prefix of it.
+fn rules() -> &'static [(Scope, &'static str)] {
+    static RULES: OnceLock<Vec<(Scope, &'static str)>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        [
+            ("comment", "c"),
+            ("string", "s"),
+            ("constant", "n"),
+            ("keyword.operator", "o"),
+            ("keyword", "k"),
+            ("storage", "k"),
+            ("entity.name.function", "f"),
+            ("support.function", "f"),
+            ("variable.function", "f"),
+            ("entity.name.type", "t"),
+            ("entity.name.class", "t"),
+            ("entity.name.struct", "t"),
+            ("support.type", "t"),
+            ("support.class", "t"),
+            ("entity.name.tag", "t"),
+        ]
+        .into_iter()
+        .filter_map(|(prefix, class)| Scope::new(prefix).ok().map(|s| (s, class)))
+        .collect()
+    })
 }
 
 /// The class for a scope stack: the most specific scope that we have an
 /// opinion about, searched innermost-out. An inner `punctuation.definition`
 /// inside a string is still string-coloured, which is what a reader expects.
+///
+/// `is_prefix_of` compares interned atoms, so this runs once per scope with no
+/// allocation — `Scope::build_string` would take a global lock and build a
+/// `String` for every token on the page.
 fn classify(stack: &ScopeStack) -> &'static str {
     for scope in stack.scopes.iter().rev() {
-        let name = scope.build_string();
-        if let Some(class) = class_for(&name) {
-            return class;
+        for (prefix, class) in rules() {
+            if prefix.is_prefix_of(*scope) {
+                return class;
+            }
         }
     }
     ""
@@ -82,14 +92,15 @@ fn syntax_set() -> &'static SyntaxSet {
 /// VSCode language ids that name no syntect syntax. Mapping them to the
 /// nearest one beats falling back to no highlighting at all — TypeScript read
 /// as JavaScript is wrong only about type annotations.
+/// Only ids that resolve to nothing are listed: `find_syntax_by_token` below
+/// already matches by extension and by case-insensitive name, so `bash`,
+/// `objective-c` and friends find their syntax unaided.
 fn alias(language: &str) -> Option<&'static str> {
     Some(match language {
         "typescript" | "typescriptreact" | "javascriptreact" => "JavaScript",
-        "shellscript" | "bash" | "sh" | "zsh" => "Shell-Unix-Generic",
-        "objective-c" => "Objective-C",
+        "shellscript" => "Bourne Again Shell (bash)",
         "objective-cpp" => "Objective-C++",
         "jsonc" | "json5" => "JSON",
-        "restructuredtext" => "reStructuredText",
         _ => return None,
     })
 }
@@ -141,7 +152,7 @@ pub fn highlight(
 /// multi-line construct can be mis-scoped — pass the hunk's context lines
 /// along with the removed ones to give the parser what context there is.
 pub fn highlight_lines(
-    lines: &[String],
+    lines: &[&str],
     language: Option<&str>,
     path: Option<&str>,
 ) -> Option<Vec<Vec<Token>>> {
@@ -150,7 +161,7 @@ pub fn highlight_lines(
     if lines.len() > MAX_LINES {
         return None;
     }
-    spans_for(syntax, ps, lines.iter().map(String::as_str))
+    spans_for(syntax, ps, lines.iter().copied())
 }
 
 /// The parse loop shared by both entry points: one token list per input line,
@@ -163,11 +174,14 @@ fn spans_for<'a>(
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
     let mut out = Vec::new();
+    let mut owned = String::new();
 
     for line in lines {
         // The parser wants the newline (some syntaxes end a context on it),
         // but it must not reach the page: the page draws the line break.
-        let owned = format!("{line}\n");
+        owned.clear();
+        owned.push_str(line);
+        owned.push('\n');
         let Ok(ops) = state.parse_line(&owned, ps) else {
             // A syntax that fails mid-file would leave the rest misparsed;
             // plain text is better than half-wrong colour.
@@ -187,7 +201,7 @@ fn spans_for<'a>(
             // token count on ordinary code.
             match tokens.last_mut() {
                 Some(last) if last.0 == class => last.1.push_str(text),
-                _ => tokens.push(Token(class.to_string(), text.to_string())),
+                _ => tokens.push(Token(class, text.to_string())),
             }
         }
         out.push(tokens);
@@ -222,13 +236,12 @@ mod tests {
             "/* hi */\nint main(void) {\n    char *s = \"x\";\n    return 0;\n}\n",
             "c",
         );
-        let class_of = |line: usize, text: &str| -> String {
+        let class_of = |line: usize, text: &str| -> &'static str {
             lines[line]
                 .iter()
                 .find(|t| t.1.contains(text))
                 .unwrap_or_else(|| panic!("{text:?} on line {line}"))
                 .0
-                .clone()
         };
         assert_eq!(class_of(0, "hi"), "c", "block comment");
         assert_eq!(class_of(1, "int"), "k", "storage type reads as a keyword");

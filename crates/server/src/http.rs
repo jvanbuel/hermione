@@ -524,10 +524,10 @@ async fn message_socket(
 
     // Then tail live messages, plus control frames when this socket said who it
     // belongs to. A socket without a student (the dashboard) gets messages only.
-    let mut rx = state.msg_hub.subscribe(course_id).await;
-    let student = student.filter(|s| !s.is_empty());
-    let mut ctrl_rx = match student.as_deref() {
-        Some(s) => Some(state.ctrl_hub.subscribe(course_id, s).await),
+    let mut rx = state.msg_hub.subscribe(&course_id).await;
+    let ctrl_key = student.filter(|s| !s.is_empty()).map(|s| (course_id, s));
+    let mut ctrl_rx = match &ctrl_key {
+        Some(key) => Some(state.ctrl_hub.subscribe(key).await),
         None => None,
     };
     loop {
@@ -569,12 +569,6 @@ async fn message_socket(
                 }
             }
         }
-    }
-
-    // Let the hub forget this student once their last editor is gone.
-    drop(ctrl_rx.take());
-    if let Some(s) = student.as_deref() {
-        state.ctrl_hub.release(course_id, s).await;
     }
 }
 
@@ -1361,7 +1355,7 @@ async fn stream_session(
     }
 
     let include_history = query.history.unwrap_or(true);
-    let rx = state.hub.subscribe(id).await;
+    let rx = state.hub.subscribe(&id).await;
     let db = state.db.clone();
 
     let stream = async_stream::stream! {

@@ -76,8 +76,7 @@ interface GitExtension {
     getAPI(version: 1): GitApi;
 }
 
-let gitApi: GitApi | undefined;
-let gitTried = false;
+let gitApi: Promise<GitApi | undefined> | undefined;
 
 /**
  * The built-in git extension's API, activated on first use.
@@ -85,23 +84,23 @@ let gitTried = false;
  * Reusing it means the baseline for a diff is read by git itself — the real
  * object store, honouring the student's actual HEAD — rather than anything we
  * reimplement. Absent (or a workspace that isn't a repo) simply means no diff.
+ *
+ * The *promise* is what's cached, so callers that arrive during activation
+ * wait for it rather than being told there is no git.
  */
-async function git(): Promise<GitApi | undefined> {
-    if (gitTried) {
-        return gitApi;
-    }
-    gitTried = true;
-    try {
-        const ext = vscode.extensions.getExtension<GitExtension>('vscode.git');
-        if (!ext) {
+function git(): Promise<GitApi | undefined> {
+    return (gitApi ??= (async () => {
+        try {
+            const ext = vscode.extensions.getExtension<GitExtension>('vscode.git');
+            if (!ext) {
+                return undefined;
+            }
+            const exports = ext.isActive ? ext.exports : await ext.activate();
+            return exports.getAPI(1);
+        } catch (_) {
             return undefined;
         }
-        const exports = ext.isActive ? ext.exports : await ext.activate();
-        gitApi = exports.getAPI(1);
-    } catch (_) {
-        gitApi = undefined;
-    }
-    return gitApi;
+    })());
 }
 
 /**
@@ -156,7 +155,10 @@ function diffAgainst(baseline: string, current: string, name: string): SnapshotD
                 removed++;
             }
         }
-        if (lines.length > budget) {
+        // Once the budget runs out, everything after it goes too: a diff with a
+        // hole in the middle reads as if it were complete. The server's own cap
+        // (MAX_DIFF_LINES in snapshots.rs) drops hunks the same way.
+        if (truncated || lines.length > budget) {
             truncated = true;
             continue;
         }
@@ -175,7 +177,8 @@ function diffAgainst(baseline: string, current: string, name: string): SnapshotD
 
 /** The document the student is looking at, and the editor showing it. */
 export interface SnapshotTarget {
-    doc: vscode.TextDocument;
+    /** Absent for a notebook with no cells: a file, but no buffer to read. */
+    doc?: vscode.TextDocument;
     editor?: vscode.TextEditor;
     /** The `file:` URI the document belongs to. */
     uri: vscode.Uri;
@@ -188,7 +191,7 @@ export interface SnapshotTarget {
  * it this instant, including unsaved edits.
  */
 export async function buildSnapshot(
-    target: SnapshotTarget,
+    target: SnapshotTarget & { doc: vscode.TextDocument },
     base: { student: string; relativePath?: string; exercise?: string },
 ): Promise<FileSnapshot> {
     const text = target.doc.getText();
