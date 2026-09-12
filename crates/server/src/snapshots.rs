@@ -67,6 +67,14 @@ pub struct Hunk {
     pub new_lines: i32,
     /// Lines prefixed the unified-diff way: ' ' context, '-' removed, '+' added.
     pub lines: Vec<String>,
+    /// Spans for this hunk's removed lines, in order, added server-side.
+    ///
+    /// Context and added lines are already in the buffer, so the page reads
+    /// their spans straight out of `FileSnapshot::highlight` by line number.
+    /// Removed lines exist only in the student's last commit, which we never
+    /// see, so they are the one side that has to be highlighted separately.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub removed_highlight: Option<Vec<Vec<crate::highlight::Token>>>,
 }
 
 /// The student's working changes to the file, against their last commit.
@@ -241,19 +249,62 @@ pub async fn ingest(
     // Highlight after clamping, so the spans describe the text we actually
     // kept, and once here rather than once per teacher per poll.
     let mut snapshot = snapshot.clamp();
+    let language = snapshot.language.clone();
+    let path = snapshot
+        .relative_path
+        .clone()
+        .or_else(|| snapshot.path.clone());
     if let Some(content) = snapshot.content.as_deref() {
-        snapshot.highlight = crate::highlight::highlight(
-            content,
-            snapshot.language.as_deref(),
-            snapshot
-                .relative_path
-                .as_deref()
-                .or(snapshot.path.as_deref()),
-        );
+        snapshot.highlight =
+            crate::highlight::highlight(content, language.as_deref(), path.as_deref());
+    }
+    // Only worth highlighting the removed side when the rest of the diff has
+    // spans to sit next to; a half-coloured diff is worse than a plain one.
+    if snapshot.highlight.is_some() {
+        if let Some(diff) = snapshot.diff.as_mut() {
+            highlight_removed(diff, language.as_deref(), path.as_deref());
+        }
     }
 
     state.snapshots.put(course_id, snapshot).await;
     StatusCode::OK.into_response()
+}
+
+/// Fills in each hunk's `removed_highlight`.
+///
+/// The removed lines are parsed together with the hunk's context lines — the
+/// old side of the hunk, in order — rather than on their own, so the parser
+/// sees whatever surroundings the hunk itself carries. Only the rows belonging
+/// to removed lines are kept; the rest of the diff reads its spans from the
+/// buffer.
+fn highlight_removed(diff: &mut Diff, language: Option<&str>, path: Option<&str>) {
+    for hunk in diff.hunks.iter_mut() {
+        let mut old_side = Vec::new();
+        let mut removed = Vec::new();
+        for line in &hunk.lines {
+            if line.starts_with('+') {
+                continue;
+            }
+            // Every diff line carries a one-byte ASCII sign, so this is always
+            // a char boundary.
+            old_side.push(line.get(1..).unwrap_or_default().to_string());
+            removed.push(line.starts_with('-'));
+        }
+        if !removed.iter().any(|r| *r) {
+            continue;
+        }
+        let Some(spans) = crate::highlight::highlight_lines(&old_side, language, path) else {
+            continue;
+        };
+        hunk.removed_highlight = Some(
+            spans
+                .into_iter()
+                .zip(&removed)
+                .filter(|(_, keep)| **keep)
+                .map(|(span, _)| span)
+                .collect(),
+        );
+    }
 }
 
 #[derive(Deserialize)]
@@ -372,6 +423,7 @@ mod tests {
             new_start: 1,
             new_lines: 1,
             lines: vec!["+x".to_string(); n],
+            removed_highlight: None,
         };
         let mut s = snapshot("x");
         s.diff = Some(Diff {
@@ -383,6 +435,63 @@ mod tests {
         let diff = s.clamp().diff.unwrap();
         assert_eq!(diff.hunks.len(), 1);
         assert_eq!(diff.truncated, Some(true));
+    }
+
+    #[test]
+    fn highlights_only_the_removed_side_of_a_hunk() {
+        let mut diff = Diff {
+            added: 1,
+            removed: 2,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 4,
+                new_start: 1,
+                new_lines: 3,
+                lines: vec![
+                    " def f():".to_string(),
+                    "-    return 1".to_string(),
+                    "-    # gone".to_string(),
+                    "+    return 2".to_string(),
+                    " ".to_string(),
+                ],
+                removed_highlight: None,
+            }],
+            truncated: None,
+        };
+        highlight_removed(&mut diff, Some("python"), None);
+
+        let spans = diff.hunks[0].removed_highlight.as_ref().expect("spans");
+        // One row per removed line, and nothing for context or added lines.
+        assert_eq!(spans.len(), 2);
+        let text = |row: &Vec<crate::highlight::Token>| -> String {
+            row.iter().map(|t| t.1.as_str()).collect()
+        };
+        assert_eq!(text(&spans[0]), "    return 1");
+        assert_eq!(text(&spans[1]), "    # gone");
+        assert!(
+            spans[1].iter().any(|t| t.0 == "c"),
+            "a removed comment is still a comment: {:?}",
+            spans[1]
+        );
+    }
+
+    #[test]
+    fn a_hunk_with_nothing_removed_gets_no_spans() {
+        let mut diff = Diff {
+            added: 1,
+            removed: 0,
+            hunks: vec![Hunk {
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 2,
+                lines: vec![" x = 1".to_string(), "+y = 2".to_string()],
+                removed_highlight: None,
+            }],
+            truncated: None,
+        };
+        highlight_removed(&mut diff, Some("python"), None);
+        assert!(diff.hunks[0].removed_highlight.is_none());
     }
 
     #[tokio::test]
