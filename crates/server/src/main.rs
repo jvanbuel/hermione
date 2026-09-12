@@ -7,6 +7,7 @@ mod exercises;
 mod files;
 mod github_app;
 mod grpc;
+mod highlight;
 mod http;
 mod identity;
 mod messages;

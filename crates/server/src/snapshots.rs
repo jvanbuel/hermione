@@ -120,6 +120,11 @@ pub struct FileSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub declined: Option<bool>,
     pub at_unix_ms: i64,
+    /// `content` split into one list of classed spans per line. Filled in here
+    /// on arrival, never accepted from a client: highlighting is the server's
+    /// reading of the buffer, and `content` stays the thing of record.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<Vec<Vec<crate::highlight::Token>>>,
 }
 
 impl FileSnapshot {
@@ -232,7 +237,22 @@ pub async fn ingest(
     if snapshot.student.is_empty() {
         return (StatusCode::BAD_REQUEST, "missing student").into_response();
     }
-    state.snapshots.put(course_id, snapshot.clamp()).await;
+
+    // Highlight after clamping, so the spans describe the text we actually
+    // kept, and once here rather than once per teacher per poll.
+    let mut snapshot = snapshot.clamp();
+    if let Some(content) = snapshot.content.as_deref() {
+        snapshot.highlight = crate::highlight::highlight(
+            content,
+            snapshot.language.as_deref(),
+            snapshot
+                .relative_path
+                .as_deref()
+                .or(snapshot.path.as_deref()),
+        );
+    }
+
+    state.snapshots.put(course_id, snapshot).await;
     StatusCode::OK.into_response()
 }
 
@@ -322,6 +342,7 @@ mod tests {
             diff: None,
             declined: None,
             at_unix_ms: 0,
+            highlight: None,
         }
     }
 

@@ -329,9 +329,11 @@
     }
 
     /* ---- File view: the buffer a student has on screen right now ----
-     * Deliberately unhighlighted. The point is to read someone's work over
-     * their shoulder — the cursor, the shape of the code, what changed — and a
-     * syntax theme fighting the diff washes helps none of that. */
+     * Highlighted from spans the backend computes (see crates/server/src/
+     * highlight.rs), mapped onto this board's own tokens so it follows the
+     * theme. The diff view stays uncoloured on purpose: there the signal is
+     * added-vs-removed, and syntax hues on top of the red/green washes would
+     * compete with it. */
     .pane > .filev { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .pane.mode-file > .filev { display: flex; }
     .pane.mode-file > .term { display: none; }
@@ -369,6 +371,13 @@
     }
     @keyframes caret-blink { 50% { opacity: 0; } }
     @media (prefers-reduced-motion: reduce) { .filev .caret { animation: none; } }
+    .filev .hl-c { color: var(--hl-comment); font-style: italic; }
+    .filev .hl-s { color: var(--hl-string); }
+    .filev .hl-n { color: var(--hl-number); }
+    .filev .hl-k { color: var(--hl-keyword); }
+    .filev .hl-f { color: var(--hl-function); }
+    .filev .hl-t { color: var(--hl-type); }
+    .filev .hl-o { color: var(--hl-operator); }
     .filev .dh {
       padding: 3px 8px; margin-top: 4px; color: var(--fg-subtle);
       background: var(--surface); border-top: 1px solid var(--border-subtle);
@@ -1261,7 +1270,10 @@
 
       // Re-rendering an unchanged buffer would throw away the teacher's scroll
       // position every poll, so only redraw when something actually moved.
-      const key = JSON.stringify([p.diff, s.relativePath, s.line, s.column, s.content, s.diff || null]);
+      // `language` is in here because it is what decides the highlighting, and
+      // it can change (a rename) while the text does not.
+      const key = JSON.stringify([p.diff, s.relativePath, s.language, s.line, s.column,
+        s.content, s.diff || null]);
       const headHtml = snapshotHead(s, data.ageMs);
       if (p.lastKey === key) {
         head.innerHTML = headHtml; // freshness still ticks
@@ -1313,14 +1325,46 @@
     /** The buffer, with the student's caret drawn where it actually is. */
     function codeHtml(s) {
       const lines = String(s.content).split('\n');
+      // The backend highlights into one span list per line, indexed the same
+      // way this splits. A line it couldn't classify just renders plain.
+      const hl = Array.isArray(s.highlight) ? s.highlight : null;
       const out = [];
       for (let i = 0; i < lines.length; i++) {
         const n = i + 1;
         const cur = n === s.line;
-        const text = cur ? caretLine(lines[i], s.column) : esc(lines[i]);
+        const spans = hl && Array.isArray(hl[i]) ? hl[i] : null;
+        const text = spans
+          ? spansHtml(spans, cur ? s.column : null)
+          : (cur ? caretLine(lines[i], s.column) : esc(lines[i]));
         out.push(`<div class="cl${cur ? ' cur' : ''}"><span class="n">${n}</span><span class="t">${text}</span></div>`);
       }
       return out.join('');
+    }
+
+    /**
+     * One highlighted line. The caret is spliced into whichever span holds the
+     * cursor's column rather than wrapped around the line, so it lands between
+     * two characters instead of displacing them.
+     */
+    function spansHtml(spans, column) {
+      let out = '';
+      let col = 1;           // 1-based column where the next span starts
+      let placed = column == null;
+      for (const [cls, text] of spans) {
+        const open = cls ? `<span class="hl-${cls}">` : '';
+        const close = cls ? '</span>' : '';
+        if (!placed && column < col + text.length) {
+          const at = Math.max(0, column - col);
+          out += open + esc(text.slice(0, at)) + '<span class="caret"></span>'
+            + esc(text.slice(at)) + close;
+          placed = true;
+        } else {
+          out += open + esc(text) + close;
+        }
+        col += text.length;
+      }
+      // A cursor sitting past the last character has no span to live in.
+      return placed ? out : out + '<span class="caret"></span>';
     }
 
     function caretLine(text, column) {
