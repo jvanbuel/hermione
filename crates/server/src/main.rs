@@ -11,6 +11,7 @@ mod http;
 mod identity;
 mod messages;
 mod repo;
+mod snapshots;
 mod state;
 mod tenancy;
 mod text;
@@ -259,6 +260,8 @@ async fn main() -> anyhow::Result<()> {
         db,
         hub: Hub::default(),
         msg_hub: crate::state::MsgHub::default(),
+        ctrl_hub: crate::state::CtrlHub::default(),
+        snapshots: crate::snapshots::SnapshotStore::default(),
         auth: Auth::new(),
         identity,
         admin_token: config.admin_token.clone(),

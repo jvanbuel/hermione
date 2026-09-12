@@ -206,6 +206,107 @@ function buildFixtures(now) {
 
   const activity = sessions.map(s => ({ student: s.student }));
 
+  // What a student has on screen right now: the buffer, the cursor, and the
+  // working changes against their last commit. Served by /api/students/file,
+  // which the dashboard polls while a file pane is open.
+  const openBuffer = [
+    '#include <stdlib.h>',
+    '#include "list.h"',
+    '',
+    '/* Append a value to the end of the list. */',
+    'node_t *list_append(node_t *head, int value)',
+    '{',
+    '    node_t *n = malloc(sizeof(node_t));',
+    '    if (n == NULL) {',
+    '        return head;',
+    '    }',
+    '    n->value = value;',
+    '    n->next = NULL;',
+    '',
+    '    if (head == NULL) {',
+    '        return n;',
+    '    }',
+    '',
+    '    node_t *cur = head;',
+    '    while (cur->next != NULL) {',
+    '        cur = cur->next;',
+    '    }',
+    '    cur->next = n;',
+    '    return head;',
+    '}',
+    '',
+    'void list_free(node_t *head)',
+    '{',
+    '    while (head != NULL) {',
+    '        free(head);',
+    '        head = head->next;',
+    '    }',
+    '}',
+    '',
+  ].join('\n');
+
+  const studentFile = {
+    student: 'Ada Lovelace',
+    connected: true,
+    ageMs: 900,
+    snapshot: {
+      student: 'Ada Lovelace',
+      path: '/home/ada/cs101/src/list.c',
+      relativePath: 'src/list.c',
+      language: 'c',
+      exercise: 'ex01-pointers',
+      // Parked on the use-after-free, which is the whole reason to look.
+      line: 29,
+      column: 15,
+      dirty: true,
+      content: openBuffer,
+      base: 'head',
+      diff: {
+        added: 8,
+        removed: 1,
+        hunks: [
+          {
+            oldStart: 5, oldLines: 6, newStart: 5, newLines: 9,
+            lines: [
+              ' node_t *list_append(node_t *head, int value)',
+              ' {',
+              '-    node_t *n = malloc(8);',
+              '+    node_t *n = malloc(sizeof(node_t));',
+              '+    if (n == NULL) {',
+              '+        return head;',
+              '+    }',
+              '     n->value = value;',
+              '     n->next = NULL;',
+              ' ',
+            ],
+          },
+          {
+            oldStart: 23, oldLines: 3, newStart: 26, newLines: 7,
+            lines: [
+              ' void list_free(node_t *head)',
+              ' {',
+              '+    while (head != NULL) {',
+              '+        free(head);',
+              '+        head = head->next;',
+              '+    }',
+              ' }',
+            ],
+          },
+        ],
+      },
+      atUnixMs: now - 900,
+    },
+  };
+
+  // A student who has turned content sharing off, so the "declined" state can
+  // be staged by asking for them by name.
+  const studentFileDeclined = {
+    student: 'Grace Hopper',
+    connected: true,
+    ageMs: 400,
+    snapshot: { student: 'Grace Hopper', declined: true, atUnixMs: now - 400 },
+  };
+
   const assistant = {
     available: true, enabled: true, configured: true,
     model: 'claude-sonnet-5',
@@ -214,6 +315,6 @@ function buildFixtures(now) {
     mcpServers: [{ name: 'docs', url: 'https://mcp.example.com/sse' }],
   };
 
-  return { courses, courseDetail, courseTree, courseExercises, overview, analytics, conversations, messages, sessions, activity, assistant };
+  return { courses, courseDetail, courseTree, courseExercises, overview, analytics, conversations, messages, sessions, activity, studentFile, studentFileDeclined, assistant };
 }
 module.exports = { buildFixtures };

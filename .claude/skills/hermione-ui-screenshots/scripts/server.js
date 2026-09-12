@@ -80,6 +80,14 @@ const server = http.createServer((req, res) => {
   if (p === '/api/analytics/time-per-file') return sendJson(res, F.analytics);
   if (p === '/api/sessions') return sendJson(res, F.sessions);
   if (p === '/api/students/activity') return sendJson(res, F.activity);
+  // The file pane polls this; each poll is also what asks the student's editor
+  // for a fresh snapshot in production.
+  if (p === '/api/students/file') {
+    const who = url.searchParams.get('student');
+    return sendJson(res, who === F.studentFileDeclined.student
+      ? F.studentFileDeclined
+      : { ...F.studentFile, student: who || F.studentFile.student });
+  }
   if (p === '/api/assistant/conversations') return sendJson(res, F.conversations);
   if (p.startsWith('/api/assistant/conversations/')) {
     const id = p.split('/')[4];

@@ -310,6 +310,74 @@
     .pane > .term { flex: 1 1 auto; min-height: 0; padding: 6px 8px; }
     .pane .note { margin: auto; color: var(--fg-muted); font-size: var(--fs-base); padding: 24px; text-align: center; }
 
+    /* ---- Pane mode switch: their terminal, or the file they're editing ---- */
+    .pane-head .modes {
+      margin-left: auto; display: flex; gap: 2px; background: var(--bg);
+      border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px;
+    }
+    .pane-head .modes button, .pane-head .diff {
+      cursor: pointer; border: none; background: none; color: var(--fg-muted);
+      font: inherit; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 4px;
+    }
+    .pane-head .modes button:hover, .pane-head .diff:hover { color: var(--fg); }
+    .pane-head .modes button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); }
+    .pane-head .diff { border: 1px solid var(--border-subtle); display: none; }
+    .pane.mode-file .pane-head .diff { display: block; }
+    .pane-head .diff[aria-pressed="true"] {
+      background: var(--accent-wash); color: var(--accent-text);
+      border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    }
+
+    /* ---- File view: the buffer a student has on screen right now ----
+     * Deliberately unhighlighted. The point is to read someone's work over
+     * their shoulder — the cursor, the shape of the code, what changed — and a
+     * syntax theme fighting the diff washes helps none of that. */
+    .pane > .filev { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
+    .pane.mode-file > .filev { display: flex; }
+    .pane.mode-file > .term { display: none; }
+    .filev .fv-head {
+      flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px; min-width: 0;
+      padding: 5px 10px; border-bottom: 1px solid var(--border-subtle);
+      font-size: var(--fs-xs); color: var(--fg-muted);
+    }
+    .filev .fv-head .fp {
+      color: var(--fg); font-family: ui-monospace, monospace;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .filev .fv-head .sum { margin-left: auto; flex: 0 0 auto; }
+    .filev .fv-head .plus { color: var(--green-text); }
+    .filev .fv-head .minus { color: var(--red-text); }
+    .filev .fv-head .stale { color: var(--amber); }
+    .filev .fv-body {
+      position: relative; flex: 1 1 auto; min-height: 0; overflow: auto;
+      font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+    }
+    .filev .fv-body.empty { display: flex; }
+    .filev .cl, .filev .dl { display: flex; white-space: pre; }
+    .filev .cl > .n, .filev .dl > .n {
+      flex: 0 0 auto; min-width: 4ch; padding: 0 8px; text-align: right;
+      color: var(--fg-subtle); user-select: none;
+    }
+    .filev .cl > .t, .filev .dl > .t { flex: 1 0 auto; padding-right: 12px; }
+    .filev .cl.cur { background: var(--accent-wash); }
+    .filev .cl.cur > .n { color: var(--accent-text); font-weight: 700; }
+    /* The cursor itself, at the column the student's caret is in. */
+    .filev .caret {
+      display: inline-block; width: 2px; height: 1.1em; margin: 0 -1px;
+      vertical-align: text-bottom; background: var(--accent);
+      animation: caret-blink 1.1s steps(1) infinite;
+    }
+    @keyframes caret-blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .filev .caret { animation: none; } }
+    .filev .dh {
+      padding: 3px 8px; margin-top: 4px; color: var(--fg-subtle);
+      background: var(--surface); border-top: 1px solid var(--border-subtle);
+    }
+    .filev .dl.add { background: color-mix(in srgb, var(--green) 16%, transparent); }
+    .filev .dl.del { background: color-mix(in srgb, var(--red) 16%, transparent); }
+    .filev .dl.add > .t { color: var(--green-text); }
+    .filev .dl.del > .t { color: var(--red-text); }
+
     /* ---- Broadcast composer (modal) ---- */
     .modal-backdrop { position: fixed; inset: 0; background: rgba(1,4,9,.6);
       display: grid; place-items: center; z-index: 2000; }
@@ -789,7 +857,9 @@
         b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname">${esc(s.student)}</span>`
           + (s.struggle === 'help' ? '<span class="pill help">needs help</span>'
             : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '');
-        b.onclick = () => openTerminal(s.student, s.terminalSessionId, s.exercise);
+        // Clicking someone in the file tree means "show me that file", not
+        // "show me their shell".
+        b.onclick = () => openTerminal(s.student, s.terminalSessionId, s.exercise, 'file');
       });
     }
 
@@ -982,10 +1052,14 @@
       loadRepoDirs(currentCourse);
     }
 
-    // ---- terminal panes ----
-    function openTerminal(student, sessionId, exercise) {
+    // ---- student panes (their terminal, and the file they have open) ----
+    function openTerminal(student, sessionId, exercise, mode) {
       if (!student) return;
-      if (openPanes.has(student)) { flashPane(student); return; }
+      if (openPanes.has(student)) {
+        if (mode) setPaneMode(student, mode);
+        flashPane(student);
+        return;
+      }
       if (!localStorage.getItem(HINT_KEY)) {
         localStorage.setItem(HINT_KEY, '1');
         document.getElementById('hint').style.display = 'none';
@@ -998,13 +1072,26 @@
         <div class="pane-head">
           ${avatarHtml(student, 'active')}
           <span><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
-          <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s terminal">${ICONS.close}</button>
+          <div class="modes" role="group" aria-label="What to watch for ${esc(student)}">
+            <button type="button" data-mode="term" aria-pressed="true">Terminal</button>
+            <button type="button" data-mode="file" aria-pressed="false">File</button>
+          </div>
+          <button class="diff" type="button" aria-pressed="false" title="Show the diff against their last commit">Diff</button>
+          <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s pane">${ICONS.close}</button>
         </div>
-        <div class="term"></div>`;
+        <div class="term"></div>
+        <div class="filev">
+          <div class="fv-head"></div>
+          <div class="fv-body empty"><div class="note">Asking ${esc(student)}'s editor…</div></div>
+        </div>`;
       dock.appendChild(pane);
       dock.classList.add('active');
       document.getElementById('divider').classList.add('active');
       pane.querySelector('.close').addEventListener('click', () => closeTerminal(student));
+      for (const b of pane.querySelectorAll('.modes button')) {
+        b.addEventListener('click', () => setPaneMode(student, b.dataset.mode));
+      }
+      pane.querySelector('.diff').addEventListener('click', () => toggleDiff(student));
 
       const body = pane.querySelector('.term');
       let term = null, fit = null, es = null;
@@ -1026,7 +1113,9 @@
         };
       }
 
-      openPanes.set(student, { term, fit, es, el: pane });
+      openPanes.set(student, { term, fit, es, el: pane, mode: 'term', diff: false, lastKey: null, lastLine: null });
+      // Opening from the tree means the teacher is already looking at files.
+      if (mode) setPaneMode(student, mode);
       relayout();
       markOpenCards();
     }
@@ -1038,6 +1127,7 @@
       if (p.term) p.term.dispose();
       p.el.remove();
       openPanes.delete(student);
+      syncSnapshotPolling();
       if (openPanes.size === 0) {
         document.getElementById('dock').classList.remove('active');
         const div = document.getElementById('divider');
@@ -1074,6 +1164,190 @@
 
     function refitPanes() { openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }); }
     window.addEventListener('resize', refitPanes);
+
+    // ---- the file a student has on screen ----
+    // Snapshots are pulled, not pushed: each poll asks that student's editor
+    // for what's in front of them, so nothing is sent while no pane is open.
+    const SNAPSHOT_POLL_MS = 1500;
+    // Past this, say so rather than pass an old buffer off as live.
+    const SNAPSHOT_STALE_MS = 8000;
+    let snapshotPoll = null;
+
+    function setPaneMode(student, mode) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      p.mode = (mode === 'file') ? 'file' : 'term';
+      p.el.classList.toggle('mode-file', p.mode === 'file');
+      for (const b of p.el.querySelectorAll('.modes button')) {
+        b.setAttribute('aria-pressed', String(b.dataset.mode === p.mode));
+      }
+      syncSnapshotPolling();
+      if (p.mode === 'file') {
+        pollSnapshot(student, p);
+      } else {
+        // Refit: xterm sizes to a hidden element as 0 columns.
+        setTimeout(() => { try { p.fit && p.fit.fit(); } catch (_) {} }, 0);
+      }
+    }
+
+    function toggleDiff(student) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      p.diff = !p.diff;
+      p.el.querySelector('.diff').setAttribute('aria-pressed', String(p.diff));
+      // The snapshot already carries the diff, so this is a re-render, not a
+      // round trip to the student's editor.
+      p.lastKey = null;
+      if (p.last) renderSnapshot(student, p, p.last);
+    }
+
+    function syncSnapshotPolling() {
+      const wanted = [...openPanes.values()].some(p => p.mode === 'file');
+      if (wanted && !snapshotPoll) {
+        snapshotPoll = setInterval(pollSnapshots, SNAPSHOT_POLL_MS);
+      } else if (!wanted && snapshotPoll) {
+        clearInterval(snapshotPoll);
+        snapshotPoll = null;
+      }
+    }
+
+    function pollSnapshots() {
+      const open = [...openPanes.entries()].filter(([, p]) => p.mode === 'file');
+      return Promise.all(open.map(([student, p]) => pollSnapshot(student, p)));
+    }
+
+    async function pollSnapshot(student, pane) {
+      try {
+        const url = `/api/students/file?course=${encodeURIComponent(currentCourse)}`
+          + `&student=${encodeURIComponent(student)}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const data = await res.json();
+        // The pane may have closed while the request was in flight.
+        if (openPanes.get(student) !== pane) return;
+        pane.last = data;
+        renderSnapshot(student, pane, data);
+      } catch (_) {
+        // Transient; the next poll tries again.
+      }
+    }
+
+    function renderSnapshot(student, p, data) {
+      const head = p.el.querySelector('.fv-head');
+      const body = p.el.querySelector('.fv-body');
+      const s = data.snapshot;
+
+      const empty = (html) => {
+        head.innerHTML = '';
+        body.classList.add('empty');
+        body.innerHTML = `<div class="note">${html}</div>`;
+        p.lastKey = null;
+      };
+
+      if (!s) {
+        empty(data.connected
+          ? `Asking <b>${esc(student)}</b>'s editor…`
+          : `<b>${esc(student)}</b>'s editor isn't connected.<br>The VSCode extension reports the file they have open.`);
+        return;
+      }
+      if (s.declined) {
+        empty(`<b>${esc(student)}</b> has file sharing turned off.`);
+        return;
+      }
+      if (!s.content) {
+        empty(`<b>${esc(student)}</b> has no file open.`);
+        return;
+      }
+
+      // Re-rendering an unchanged buffer would throw away the teacher's scroll
+      // position every poll, so only redraw when something actually moved.
+      const key = JSON.stringify([p.diff, s.relativePath, s.line, s.column, s.content, s.diff || null]);
+      const headHtml = snapshotHead(s, data.ageMs);
+      if (p.lastKey === key) {
+        head.innerHTML = headHtml; // freshness still ticks
+        return;
+      }
+      p.lastKey = key;
+      head.innerHTML = headHtml;
+
+      const html = p.diff ? diffHtml(s) : codeHtml(s);
+      const prevTop = body.scrollTop;
+      body.classList.toggle('empty', html === null);
+      body.innerHTML = html === null
+        ? `<div class="note">No changes since <b>${esc(student)}</b>'s last commit.</div>`
+        : html;
+
+      if (html === null) return;
+      // Follow the cursor when it moves; otherwise leave the teacher where they
+      // scrolled to.
+      const cursorMoved = !p.diff && s.line && s.line !== p.lastLine;
+      p.lastLine = s.line;
+      const cur = cursorMoved ? body.querySelector('.cl.cur') : null;
+      if (cur) {
+        body.scrollTop = Math.max(0, cur.offsetTop - body.clientHeight / 2);
+      } else {
+        body.scrollTop = prevTop;
+      }
+    }
+
+    function snapshotHead(s, ageMs) {
+      const bits = [`<span class="fp">${esc(s.relativePath || s.path || '')}</span>`];
+      if (s.dirty) bits.push('· unsaved');
+      if (s.truncated) bits.push('· truncated');
+      if (ageMs != null && ageMs > SNAPSHOT_STALE_MS) {
+        bits.push(`· <span class="stale">${Math.round(ageMs / 1000)}s ago</span>`);
+      }
+      bits.push(`<span class="sum">${diffSummary(s)}</span>`);
+      return bits.join(' ');
+    }
+
+    function diffSummary(s) {
+      if (s.base === 'untracked') return '<span class="plus">new file</span> · never committed';
+      if (s.base === 'none') return 'no git baseline';
+      const d = s.diff;
+      if (!d || !d.hunks.length) return 'no changes since last commit';
+      return `<span class="plus">+${d.added}</span> <span class="minus">−${d.removed}</span>`
+        + (d.truncated ? ' · diff truncated' : '');
+    }
+
+    /** The buffer, with the student's caret drawn where it actually is. */
+    function codeHtml(s) {
+      const lines = String(s.content).split('\n');
+      const out = [];
+      for (let i = 0; i < lines.length; i++) {
+        const n = i + 1;
+        const cur = n === s.line;
+        const text = cur ? caretLine(lines[i], s.column) : esc(lines[i]);
+        out.push(`<div class="cl${cur ? ' cur' : ''}"><span class="n">${n}</span><span class="t">${text}</span></div>`);
+      }
+      return out.join('');
+    }
+
+    function caretLine(text, column) {
+      const at = Math.max(0, Math.min(text.length, (column || 1) - 1));
+      return esc(text.slice(0, at)) + '<span class="caret"></span>' + esc(text.slice(at));
+    }
+
+    /** The student's working changes, as hunks against their last commit. */
+    function diffHtml(s) {
+      const d = s.diff;
+      if (!d || !d.hunks.length) return null;
+      const out = [];
+      for (const h of d.hunks) {
+        out.push(`<div class="dh">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`);
+        let o = h.oldStart, n = h.newStart;
+        for (const raw of h.lines) {
+          const sign = raw.charAt(0) || ' ';
+          let cls = 'ctx', on = '', nn = '';
+          if (sign === '+') { cls = 'add'; nn = n++; }
+          else if (sign === '-') { cls = 'del'; on = o++; }
+          else { on = o++; nn = n++; }
+          out.push(`<div class="dl ${cls}"><span class="n">${on}</span><span class="n">${nn}</span>`
+            + `<span class="t">${esc(raw)}</span></div>`);
+        }
+      }
+      return out.join('');
+    }
 
     // ---- draggable board/dock divider ----
     (function () {

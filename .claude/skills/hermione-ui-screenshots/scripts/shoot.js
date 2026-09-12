@@ -74,6 +74,26 @@ async function shoot(page, url, file, opts = {}) {
       wait: 900,
     });
 
+    // The file a student has open, with their live cursor…
+    const openFilePane = async (pg) => {
+      await pg.locator('.card').first().click();
+      await pg.locator('.pane .modes button[data-mode="file"]').click();
+      await pg.waitForTimeout(400);
+    };
+    await shoot(page, `${BASE}/`, `${LABEL}-file-${theme}.png`, {
+      action: openFilePane,
+      wait: 900,
+    });
+
+    // …and the same pane with the git diff toggled on.
+    await shoot(page, `${BASE}/`, `${LABEL}-file-diff-${theme}.png`, {
+      action: async (pg) => {
+        await openFilePane(pg);
+        await pg.locator('.pane .diff').click();
+      },
+      wait: 900,
+    });
+
     await shoot(page, `${BASE}/analytics`, `${LABEL}-analytics-${theme}.png`, {
       action: async (pg) => { await pg.selectOption('#student', { label: 'Ada Lovelace' }).catch(() => {}); },
       wait: 600,

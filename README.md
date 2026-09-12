@@ -62,6 +62,13 @@ A Rust workspace with five crates:
   process, so it reports file-focus, heartbeat, and edit-burst events as plain JSON to the
   Axum server (`POST /api/file-events`). Far less machinery than gRPC in a
   TypeScript extension, and it still lands in the same Postgres.
+- **File contents are pulled on demand, and never stored.** Activity is history
+  worth keeping; the buffer someone has on screen is not. When a teacher opens a
+  student's file, the backend sends a control frame down that student's existing
+  message WebSocket, their extension answers with one snapshot, and it lives in
+  memory for minutes. The diff is computed in the extension, against the
+  baseline `git` itself reports for HEAD — so it covers edits the student hasn't
+  saved yet, which `git diff` on its own would miss.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -151,6 +158,22 @@ cd vscode-extension && npm install && npm run compile
 # then press F5 in VSCode to launch an Extension Development Host
 ```
 
+### 6. (Optional) Watch a file
+
+With the extension installed, a student's pane on the board has a
+**Terminal / File** switch. **File** shows the buffer they have on screen right
+now — their cursor included — and **Diff** toggles it to the working changes
+against their last commit. Clicking someone in the tree view opens the file
+directly, since that's what you were already looking at.
+
+The contents of a file are **pulled, never pushed**: the backend asks that one
+student's editor for a snapshot only while a teacher has their file pane open,
+nothing is written to Postgres, and the cached snapshot expires in minutes.
+File *activity* (which file, which exercise, how long) works as before and is
+unaffected. The student's status bar says "teacher viewing" whenever this is
+happening, and either side can switch it off — `"shareFileContents": false` in
+the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
+
 ---
 
 ## API reference
@@ -175,6 +198,12 @@ cd vscode-extension && npm install && npm run compile
   VSCode extension).
 - `GET /api/students/activity` — the latest file activity per student (what each
   student has open right now).
+- `GET /api/students/file?student=alice` — the buffer that student has on
+  screen: its text, their cursor, and the diff against their last commit. Each
+  call also asks their editor for a fresh one, so nothing is captured unless a
+  teacher is looking (see **Watching a file** below).
+- `POST /api/file-snapshots` — one such snapshot, posted by the extension in
+  answer to that request.
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
 - `GET /api/courses` / `POST /api/courses` — list the courses the signed-in
@@ -395,6 +424,8 @@ gRPC ingest → Postgres → live web view.
 Milestone 2 (in progress) adds editor observability: the **VSCode extension**
 reports the student's active file and resolved exercise; the backend exposes
 live per-student activity and time-on-task analytics, surfaced in the viewer.
+On request it also serves the buffer itself, with the student's cursor and a
+toggleable diff against their last commit.
 
 Planned next:
 
