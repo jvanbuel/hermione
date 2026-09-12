@@ -1077,7 +1077,8 @@ async fn file_snapshots_are_scoped_to_the_course() {
 
     let student = format!("sn{s}");
     let payload = format!(
-        r#"{{"student":"{student}","relativePath":"ex1/main.py","line":4,"column":9,
+        r#"{{"student":"{student}","relativePath":"ex1/main.py","language":"python",
+             "line":4,"column":9,
              "content":"print('hi')\n","base":"head","atUnixMs":{}}}"#,
         chrono::Utc::now().timestamp_millis(),
     );
@@ -1119,6 +1120,17 @@ async fn file_snapshots_are_scoped_to_the_course() {
     assert_eq!(v["snapshot"]["content"], "print('hi')\n");
     assert_eq!(v["snapshot"]["line"], 4);
     assert_eq!(v["snapshot"]["column"], 9);
+
+    // Highlighting is added by the server, one token list per screen line.
+    let hl = v["snapshot"]["highlight"].as_array().expect("highlighted");
+    assert_eq!(hl.len(), 2, "one list per line, trailing newline included");
+    let rebuilt: String = hl[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t[1].as_str().unwrap())
+        .collect();
+    assert_eq!(rebuilt, "print('hi')", "spans rebuild the line verbatim");
 
     // A teacher of another course cannot reach it, by slug or by student name.
     let resp = get_with_cookie(&app, &uri, &other_cookie).await;

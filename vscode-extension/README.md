@@ -78,6 +78,10 @@ Notes on how it behaves:
   `hermione.shareFileContents` setting (the student's own veto). The more
   restrictive of the two wins, and the extension answers the request with a
   refusal so the dashboard says so rather than spinning forever.
+- **Syntax highlighting is the backend's job**, not the extension's. The server
+  classifies the buffer on arrival and sends the dashboard spans rather than
+  colours; the extension sends `language` (VSCode's language id) and the path,
+  which is all that choice needs.
 - Nothing here is written to the database. Snapshots are cached in the server's
   memory and expire in minutes.
 

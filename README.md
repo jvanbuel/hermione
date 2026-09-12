@@ -69,6 +69,14 @@ A Rust workspace with five crates:
   memory for minutes. The diff is computed in the extension, against the
   baseline `git` itself reports for HEAD — so it covers edits the student hasn't
   saved yet, which `git diff` on its own would miss.
+- **Syntax highlighting happens in the backend** (`crates/server/src/highlight.rs`,
+  [syntect]). A snapshot is highlighted once when it arrives rather than once per
+  teacher per poll, the dashboard gains no vendored language packs, and what
+  crosses the wire is **spans, not colours** — each line becomes `[class, text]`
+  pairs from a seven-class vocabulary that the page maps onto its own design
+  tokens, so highlighting follows the chalkboard/whiteboard themes instead of
+  importing a third palette. The page keeps control of escaping and of where the
+  student's caret goes.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -162,9 +170,16 @@ cd vscode-extension && npm install && npm run compile
 
 With the extension installed, a student's pane on the board has a
 **Terminal / File** switch. **File** shows the buffer they have on screen right
-now — their cursor included — and **Diff** toggles it to the working changes
-against their last commit. Clicking someone in the tree view opens the file
-directly, since that's what you were already looking at.
+now — syntax-highlighted, their cursor included — and **Diff** toggles it to the
+working changes against their last commit. Clicking someone in the tree view
+opens the file directly, since that's what you were already looking at.
+
+Highlighting covers the languages [syntect] ships (C/C++, Python, Rust, Go,
+Java, JavaScript, Ruby, PHP, shell, SQL, HTML/CSS/JSON/YAML, Markdown and more);
+TypeScript borrows the JavaScript syntax, and anything unrecognised — or over
+4000 lines — renders as plain text rather than wrongly coloured. The diff view
+is deliberately left uncoloured: there the signal is added-vs-removed, and
+syntax hues on top of the red/green washes would compete with it.
 
 The contents of a file are **pulled, never pushed**: the backend asks that one
 student's editor for a snapshot only while a teacher has their file pane open,
@@ -199,9 +214,10 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
 - `GET /api/students/activity` — the latest file activity per student (what each
   student has open right now).
 - `GET /api/students/file?student=alice` — the buffer that student has on
-  screen: its text, their cursor, and the diff against their last commit. Each
-  call also asks their editor for a fresh one, so nothing is captured unless a
-  teacher is looking (see **Watching a file** below).
+  screen: its text, their cursor, the diff against their last commit, and
+  `highlight` (one list of `[class, text]` spans per line, added server-side).
+  Each call also asks their editor for a fresh one, so nothing is captured
+  unless a teacher is looking (see **Watching a file** below).
 - `POST /api/file-snapshots` — one such snapshot, posted by the extension in
   answer to that request.
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
@@ -444,3 +460,4 @@ Planned next:
 - [ ] Richer offline analytics: replay timeline.
 
 [xterm.js]: https://xtermjs.org/
+[syntect]: https://github.com/trishume/syntect
