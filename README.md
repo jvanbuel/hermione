@@ -76,7 +76,8 @@ A Rust workspace with five crates:
   pairs from a seven-class vocabulary that the page maps onto its own design
   tokens, so highlighting follows the chalkboard/whiteboard themes instead of
   importing a third palette. The page keeps control of escaping and of where the
-  student's caret goes.
+  student's caret goes, and the diff view reuses the same spans by line number
+  rather than re-parsing anything.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -177,9 +178,16 @@ opens the file directly, since that's what you were already looking at.
 Highlighting covers the languages [syntect] ships (C/C++, Python, Rust, Go,
 Java, JavaScript, Ruby, PHP, shell, SQL, HTML/CSS/JSON/YAML, Markdown and more);
 TypeScript borrows the JavaScript syntax, and anything unrecognised — or over
-4000 lines — renders as plain text rather than wrongly coloured. The diff view
-is deliberately left uncoloured: there the signal is added-vs-removed, and
-syntax hues on top of the red/green washes would compete with it.
+4000 lines — renders as plain text rather than wrongly coloured.
+
+The **Diff** view is highlighted too, the way GitHub's is: added-or-removed is
+carried entirely by the row's background, and the foreground is left to the
+syntax. (GitHub's own `diffBlob.additionLine.fgColor` is plain
+`fgColor.default` — spending the foreground on the diff signal as well is what
+would make the two compete.) Context and added lines are lines of the buffer, so
+the page reads their spans out of `highlight` by line number; removed lines
+exist only in the last commit, which the backend never sees, so those are
+highlighted separately and travel with the hunk.
 
 The contents of a file are **pulled, never pushed**: the backend asks that one
 student's editor for a snapshot only while a teacher has their file pane open,

@@ -130,12 +130,41 @@ pub fn highlight(
     if content.split('\n').count() > MAX_LINES {
         return None;
     }
+    spans_for(syntax, ps, content.split('\n'))
+}
 
+/// Highlights a run of lines that isn't a whole file.
+///
+/// Used for the removed side of a diff hunk, which exists only in the
+/// student's last commit and so appears nowhere in the buffer we were sent.
+/// Parsing starts from a clean state, so a fragment that begins inside a
+/// multi-line construct can be mis-scoped — pass the hunk's context lines
+/// along with the removed ones to give the parser what context there is.
+pub fn highlight_lines(
+    lines: &[String],
+    language: Option<&str>,
+    path: Option<&str>,
+) -> Option<Vec<Vec<Token>>> {
+    let ps = syntax_set();
+    let syntax = syntax(ps, language, path)?;
+    if lines.len() > MAX_LINES {
+        return None;
+    }
+    spans_for(syntax, ps, lines.iter().map(String::as_str))
+}
+
+/// The parse loop shared by both entry points: one token list per input line,
+/// carrying parser state across lines so multi-line constructs stay coherent.
+fn spans_for<'a>(
+    syntax: &SyntaxReference,
+    ps: &SyntaxSet,
+    lines: impl Iterator<Item = &'a str>,
+) -> Option<Vec<Vec<Token>>> {
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
     let mut out = Vec::new();
 
-    for line in content.split('\n') {
+    for line in lines {
         // The parser wants the newline (some syntaxes end a context on it),
         // but it must not reach the page: the page draws the line break.
         let owned = format!("{line}\n");

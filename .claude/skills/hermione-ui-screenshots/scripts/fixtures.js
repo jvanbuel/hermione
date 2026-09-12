@@ -317,6 +317,12 @@ function buildFixtures(now) {
               '     n->next = NULL;',
               ' ',
             ],
+            // Removed lines live only in the last commit, so the backend sends
+            // their spans with the hunk; everything else reads them out of
+            // `highlight` by line number.
+            removedHighlight: [
+              [["","    node_t "],["o","*"],["","n "],["o","="],[""," "],["f","malloc"],["","("],["n","8"],["",");"]],
+            ],
           },
           {
             oldStart: 23, oldLines: 3, newStart: 26, newLines: 7,

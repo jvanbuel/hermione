@@ -331,9 +331,8 @@
     /* ---- File view: the buffer a student has on screen right now ----
      * Highlighted from spans the backend computes (see crates/server/src/
      * highlight.rs), mapped onto this board's own tokens so it follows the
-     * theme. The diff view stays uncoloured on purpose: there the signal is
-     * added-vs-removed, and syntax hues on top of the red/green washes would
-     * compete with it. */
+     * theme. The diff view is highlighted from the same spans — see the .dl
+     * rules below for why that doesn't fight the added/removed washes. */
     .pane > .filev { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .pane.mode-file > .filev { display: flex; }
     .pane.mode-file > .term { display: none; }
@@ -382,10 +381,17 @@
       padding: 3px 8px; margin-top: 4px; color: var(--fg-subtle);
       background: var(--surface); border-top: 1px solid var(--border-subtle);
     }
-    .filev .dl.add { background: color-mix(in srgb, var(--green) 16%, transparent); }
-    .filev .dl.del { background: color-mix(in srgb, var(--red) 16%, transparent); }
-    .filev .dl.add > .t { color: var(--green-text); }
-    .filev .dl.del > .t { color: var(--red-text); }
+    /* Added-or-removed lives entirely in the background, the way GitHub's diff
+     * does it (their diffBlob additionLine/deletionLine fgColor is plain
+     * fgColor.default). Spending the foreground on it too is what would make
+     * syntax colour "compete" — so the text here is left to the highlighter,
+     * and the washes are kept pale enough to read through. */
+    .filev .dl.add { background: var(--diff-add-wash); }
+    .filev .dl.del { background: var(--diff-del-wash); }
+    /* The +/- itself is the one bit of the row that is about the diff. */
+    .filev .dl > .t > .sg { color: var(--fg-subtle); }
+    .filev .dl.add > .n:last-of-type, .filev .dl.add > .t > .sg { color: var(--green-text); }
+    .filev .dl.del > .n:first-of-type, .filev .dl.del > .t > .sg { color: var(--red-text); }
 
     /* ---- Broadcast composer (modal) ---- */
     .modal-backdrop { position: fixed; inset: 0; background: rgba(1,4,9,.6);
@@ -1372,25 +1378,49 @@
       return esc(text.slice(0, at)) + '<span class="caret"></span>' + esc(text.slice(at));
     }
 
-    /** The student's working changes, as hunks against their last commit. */
+    /**
+     * The student's working changes, as hunks against their last commit.
+     *
+     * Highlighted like the file view, because added-or-removed is carried by
+     * the row's background and leaves the foreground free. Context and added
+     * lines are lines of the buffer, so their spans are read straight out of
+     * `highlight` by line number; removed lines exist only in the last commit,
+     * so the backend sends their spans with the hunk.
+     */
     function diffHtml(s) {
       const d = s.diff;
       if (!d || !d.hunks.length) return null;
+      const hl = Array.isArray(s.highlight) ? s.highlight : null;
       const out = [];
       for (const h of d.hunks) {
         out.push(`<div class="dh">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`);
-        let o = h.oldStart, n = h.newStart;
+        const removed = Array.isArray(h.removedHighlight) ? h.removedHighlight : null;
+        let o = h.oldStart, n = h.newStart, ri = 0;
         for (const raw of h.lines) {
           const sign = raw.charAt(0) || ' ';
-          let cls = 'ctx', on = '', nn = '';
-          if (sign === '+') { cls = 'add'; nn = n++; }
-          else if (sign === '-') { cls = 'del'; on = o++; }
-          else { on = o++; nn = n++; }
+          const text = raw.slice(1);
+          let cls = 'ctx', on = '', nn = '', spans = null;
+          if (sign === '+') { cls = 'add'; nn = n++; spans = hl && hl[nn - 1]; }
+          else if (sign === '-') { cls = 'del'; on = o++; spans = removed && removed[ri++]; }
+          else { on = o++; nn = n++; spans = hl && hl[nn - 1]; }
           out.push(`<div class="dl ${cls}"><span class="n">${on}</span><span class="n">${nn}</span>`
-            + `<span class="t">${esc(raw)}</span></div>`);
+            + `<span class="t"><span class="sg">${sign}</span>${lineHtml(spans, text)}</span></div>`);
         }
       }
       return out.join('');
+    }
+
+    /**
+     * A diff line's text, highlighted when the spans we have really are this
+     * line's. They can disagree — a buffer clamped at the size cap has fewer
+     * lines than the diff refers to — and showing text the student never typed
+     * is the one failure worth guarding against, so the spans have to prove
+     * themselves before they're used.
+     */
+    function lineHtml(spans, text) {
+      if (!Array.isArray(spans)) return esc(text);
+      const joined = spans.reduce((acc, t) => acc + t[1], '');
+      return joined === text ? spansHtml(spans, null) : esc(text);
     }
 
     // ---- draggable board/dock divider ----
