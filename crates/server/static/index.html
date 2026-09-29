@@ -1154,6 +1154,33 @@
       };
       ws.onclose = () => { if (msgSocket === ws) { msgSocket = null; setTimeout(connectMessages, 5000); } };
     }
+    /**
+     * Opens a dialog from its markup (a `.modal` element) and returns
+     * `{ backdrop, close }`. Every dialog behaves the same: Escape or a click on
+     * the backdrop closes it, Tab stays inside it, and focus returns to whatever
+     * opened it — so a dialog can't leave a keyboard user tabbing through the
+     * page behind it.
+     */
+    function openDialog(html) {
+      const opener = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = html;
+      document.body.appendChild(backdrop);
+      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+      backdrop.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { close(); return; }
+        if (e.key !== 'Tab') return;
+        const stops = [...backdrop.querySelectorAll('input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')]
+          .filter(x => !x.disabled && x.offsetParent !== null);
+        if (!stops.length) return;
+        const first = stops[0], last = stops[stops.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !backdrop.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && (document.activeElement === last || !backdrop.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+      });
+      return { backdrop, close };
+    }
     function toast(text) {
       const c = document.getElementById('toasts');
       const el = document.createElement('div');
@@ -1635,13 +1662,10 @@
     // ---- broadcast composer ----
     function openBroadcast() {
       if (!currentCourse) return;
-      const opener = document.activeElement;
       const courseName = document.querySelector('#course option:checked')?.textContent || currentCourse;
       const max = 280;
 
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bc-title">
           <h2 id="bc-title">Broadcast message</h2>
           <p class="sub">To ${lastAudience} student${lastAudience === 1 ? '' : 's'} in ${esc(courseName)}</p>
@@ -1651,30 +1675,18 @@
             <button class="btn" id="bc-cancel" type="button">Cancel</button>
             <button class="btn primary" id="bc-send" type="button" disabled>Send</button>
           </div>
-        </div>`;
-      document.body.appendChild(backdrop);
+        </div>`);
 
       const ta = backdrop.querySelector('#bc-text');
       const ct = backdrop.querySelector('#bc-ct');
       const send = backdrop.querySelector('#bc-send');
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
 
       ta.focus();
       ta.addEventListener('input', () => {
         ct.textContent = `${ta.value.length} / ${max}`;
         send.disabled = ta.value.trim().length === 0;
       });
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
       backdrop.querySelector('#bc-cancel').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { close(); return; }
-        if (e.key === 'Tab') { // simple focus trap
-          const f = [...backdrop.querySelectorAll('textarea,button')].filter(x => !x.disabled);
-          const first = f[0], last = f[f.length - 1];
-          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-        }
-      });
       send.addEventListener('click', async () => {
         const text = ta.value.trim();
         if (!text) return;
@@ -1692,10 +1704,7 @@
 
     // ---- create / link a course ----
     function openNewCourse() {
-      const opener = document.activeElement;
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nc-title">
           <h2 id="nc-title">New course</h2>
           <p class="sub">Create a course, or link an existing git repo as one.</p>
@@ -1720,13 +1729,9 @@
             <button class="btn primary" id="nc-create" type="button">Create</button>
           </div>
           <div id="nc-archived"></div>
-        </div>`;
-      document.body.appendChild(backdrop);
+        </div>`);
 
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
       backdrop.querySelector('#nc-cancel').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       const name = backdrop.querySelector('#nc-name');
       name.focus();
       renderArchivedCourses(backdrop.querySelector('#nc-archived'));
@@ -1807,10 +1812,7 @@
     // A course is only useful once students can enroll into it, so surface the
     // freshly minted enrollment token with a one-click copy.
     function showEnrollmentToken(c) {
-      const opener = document.activeElement;
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="et-title">
           <h2 id="et-title">Course created</h2>
           <p class="sub">Share this enrollment token so students (recorder / extension) can join ${esc(c.name)}.</p>
@@ -1823,12 +1825,8 @@
             <button class="btn" id="et-copy" type="button">Copy</button>
             <button class="btn primary" id="et-done" type="button">Done</button>
           </div>
-        </div>`;
-      document.body.appendChild(backdrop);
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+        </div>`);
       backdrop.querySelector('#et-done').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       const field = backdrop.querySelector('#et-token');
       field.focus(); field.select();
       backdrop.querySelector('#et-copy').addEventListener('click', async () => {
@@ -1849,10 +1847,7 @@
         c = await res.json();
       } catch (_) { toast('Failed to load course settings'); return; }
 
-      const opener = document.activeElement;
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="cs-title">
           <h2 id="cs-title">Course settings</h2>
           <p class="sub">${esc(c.name)}</p>
@@ -1912,12 +1907,8 @@
             <button class="btn" id="cs-cancel" type="button">Close</button>
             <button class="btn primary" id="cs-save" type="button">Save</button>
           </div>
-        </div>`;
-      document.body.appendChild(backdrop);
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+        </div>`);
       backdrop.querySelector('#cs-cancel').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       backdrop.querySelector('#cs-name').focus();
 
       // Members list, re-rendered after add/remove.
@@ -2019,10 +2010,7 @@
         list = await res.json();
       } catch (_) { toast('Failed to load exercises'); return; }
 
-      const opener = document.activeElement;
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ex-title">
           <h2 id="ex-title">Exercises</h2>
           <p class="sub">For ${esc(courseName || slug)} — one per line, in order. Matches the names in the repo's <code>.hermione.json</code>.</p>
@@ -2035,12 +2023,8 @@
             <button class="btn" id="ex-cancel" type="button">Cancel</button>
             <button class="btn primary" id="ex-save" type="button">Save</button>
           </div>
-        </div>`;
-      document.body.appendChild(backdrop);
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+        </div>`);
       backdrop.querySelector('#ex-cancel').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       const ta = backdrop.querySelector('#ex-text');
       ta.focus();
 
@@ -2101,11 +2085,8 @@
         cfg = await res.json();
       } catch (_) { toast('Failed to load assistant settings'); return; }
 
-      const opener = document.activeElement;
       const courseName = document.querySelector('#course option:checked')?.textContent || currentCourse;
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
+      const { backdrop, close } = openDialog(`
         <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="as-title">
           <h2 id="as-title">AI assistant</h2>
           <p class="sub">For ${esc(courseName)}</p>
@@ -2134,12 +2115,8 @@
             <button class="btn" id="as-cancel" type="button">Cancel</button>
             <button class="btn primary" id="as-save" type="button">Save</button>
           </div>
-        </div>`;
-      document.body.appendChild(backdrop);
-      const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+        </div>`);
       backdrop.querySelector('#as-cancel').addEventListener('click', close);
-      backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
       backdrop.querySelector('#as-system').focus();
 
       const save = backdrop.querySelector('#as-save');

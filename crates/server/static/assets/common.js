@@ -83,7 +83,10 @@ function fmtDuration(secs) {
     if (open && focusFirst) items()[0].focus();
   };
   btn.addEventListener('click', () => setOpen(menu.hidden, true));
-  menu.addEventListener('click', () => setOpen(false));
+  // In the capture phase, so it runs before the chosen item's own handler: focus
+  // goes back to the button first, which is what a dialog the item opens will
+  // hand focus back to — the item itself is hidden once the menu closes.
+  menu.addEventListener('click', () => { btn.focus(); setOpen(false); }, true);
   document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) setOpen(false); });
   wrap.addEventListener('focusout', (e) => { if (!wrap.contains(e.relatedTarget)) setOpen(false); });
   wrap.addEventListener('keydown', (e) => {
