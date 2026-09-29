@@ -274,7 +274,10 @@ class Reporter {
 
         let ws: WebSocket;
         try {
-            ws = new WebSocket(`${base}/ws?${params.toString()}`);
+            // The identity goes with the socket as it does with every other
+            // request: where students are verified, the backend routes this
+            // editor's frames by who it proves to be, not by the `student` above.
+            ws = new WebSocket(`${base}/ws?${params.toString()}`, { headers: this.authHeaders() });
         } catch (_) {
             this.scheduleReconnect();
             return;

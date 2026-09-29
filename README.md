@@ -236,7 +236,10 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
   the diff as rows, `untracked`, or `none`. Each call also asks their editor for
   a fresh one, so nothing is captured unless a teacher is looking (see
   **Watching a file** below). `ageMs` is by the server's clock, and `rev`
-  changes with every snapshot received.
+  changes with every snapshot received. A snapshot whose text is unchanged from
+  the last (a cursor move, which is most of them) reuses that one's highlight
+  rather than parsing the buffer again — about 13 µs against 300 ms for a
+  2,000-line file.
 - `POST /api/file-snapshots` — one such snapshot, posted by the extension in
   answer to that request. A report that describes an impossible state — a blank
   student, a cursor on line 0, a diff line with no sign — is refused with a 4xx
@@ -386,7 +389,11 @@ cargo run -p hermione-server
   discovery + JWKS. Add more by listing them (issuer + clientId).
 - Once configured, identity is **enforced**: ingest without a valid identity token
   is rejected, and the verified student (e.g. `github:alice`) overrides any
-  self-asserted name.
+  self-asserted name. That includes the message socket: a snapshot request is
+  addressed to one student, and the address says who a teacher is looking at, so
+  a socket is subscribed as the student it *proves* to be — never as the one it
+  claims in `?student=`, which only routes where nothing verifies students. A
+  teacher's own socket receives no student's requests at all.
 - **Agents:** the **extension** uses VSCode's GitHub sign-in (silent in
   Codespaces) and exchanges it at `POST /api/auth/exchange`. The **recorder**
   (`--auth-url`) uses the same exchange in Codespaces (the platform

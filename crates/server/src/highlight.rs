@@ -180,6 +180,13 @@ impl Grammar {
         lines: impl IntoIterator<Item = &'a str>,
     ) -> Result<Highlighted, Error> {
         let ps = syntax_set();
+        let lines = lines.into_iter();
+        // A caller that knows its length up front — a slice, a vector — is
+        // refused before a single line is parsed, rather than after parsing
+        // MAX_LINES of them to find out.
+        if lines.size_hint().0 > MAX_LINES {
+            return Err(Error::TooLong);
+        }
         let mut state = ParseState::new(self.0);
         let mut stack = ScopeStack::new();
         let mut out = Vec::new();
@@ -396,6 +403,22 @@ mod tests {
         assert_eq!(python().highlight(lines(&long)), Err(Error::TooLong));
         let fits = "x = 1\n".repeat(MAX_LINES - 1);
         assert!(python().highlight(lines(&fits)).is_ok());
+    }
+
+    #[test]
+    fn a_length_known_up_front_is_refused_before_anything_is_parsed() {
+        /// Claims more lines than the cap, and fails the test if asked for one.
+        struct NeverRead;
+        impl Iterator for NeverRead {
+            type Item = &'static str;
+            fn next(&mut self) -> Option<&'static str> {
+                panic!("a line was parsed before the length was checked");
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (MAX_LINES + 1, Some(MAX_LINES + 1))
+            }
+        }
+        assert_eq!(python().highlight(NeverRead), Err(Error::TooLong));
     }
 
     #[test]

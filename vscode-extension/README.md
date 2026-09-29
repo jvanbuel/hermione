@@ -81,8 +81,16 @@ Notes on how it behaves:
 - **The diff covers unsaved work.** The baseline is the committed file as `git`
   reports it (via the built-in git extension), and it is compared against the
   live buffer — not the file on disk, which is what `git diff` alone would show.
-  A notebook cell reports the cell, with no baseline; a file with no committed
-  version reports `base: "untracked"`.
+  A notebook cell reports the cell, with no baseline (`"none"`, as does a file
+  outside any git repository); a file with no committed version reports
+  `"untracked"`.
+- **Git is asked once per commit, not once per snapshot.** While watched, a
+  snapshot is built on every keystroke and cursor move, and each question to git
+  is a child process on the student's machine. The committed text is cached per
+  file and keyed on HEAD's commit — exact, since nothing but a new commit changes
+  what HEAD holds — and the diff is reused while the buffer is the same. "No such
+  file" is only believed for ten seconds, so a transient git failure can't leave
+  a tracked file looking untracked until the next commit.
 - **The student can see it.** While a teacher is looking, the status bar reads
   *"teacher viewing"* and is highlighted; it clears on its own when they stop.
 - **Either side can switch it off.** `"shareFileContents": false` in the
@@ -143,6 +151,7 @@ Files that match no rule simply have no exercise.
 ```bash
 npm install
 npm run compile      # type-check (tsc --noEmit)
+npm test             # unit tests for the git baseline cache (node:test, no VSCode needed)
 npm run bundle       # build out/extension.js (esbuild, inlines `ws`)
 npm run package      # produce hermione-vscode.vsix
 ```

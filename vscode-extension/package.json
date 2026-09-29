@@ -81,6 +81,7 @@
   "scripts": {
     "vscode:prepublish": "npm run bundle",
     "compile": "tsc -p ./ --noEmit",
+    "test": "esbuild src/*.test.ts --bundle --platform=node --target=node18 --outdir=out/test && node --test out/test/*.js",
     "bundle": "esbuild src/extension.ts --bundle --platform=node --target=node18 --format=cjs --external:vscode --external:bufferutil --external:utf-8-validate --outfile=out/extension.js",
     "watch": "tsc -watch -p ./ --noEmit",
     "package": "vsce package -o hermione-vscode.vsix"

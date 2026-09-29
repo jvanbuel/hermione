@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use crate::auth::{constant_time_eq, AuthCtx};
 use crate::state::{AppState, MessageOut};
-use crate::student::{Slot, Student};
+use crate::student::{BlankName, Slot, Student};
 use crate::tenancy::{self, DEFAULT_COURSE_ID};
 
 /// Static frontend assets, embedded at build time from `static/` (see build.rs).
@@ -331,20 +331,49 @@ async fn require_ingest(
         None => return (StatusCode::UNAUTHORIZED, "enrollment token required").into_response(),
     };
 
-    // Verified student identity (Hermione identity token), enforced when OIDC is
-    // configured. When enforced, the trusted student replaces any self-asserted one.
-    let verified = request
-        .headers()
-        .get("x-hermione-identity")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|t| state.identity.verify(t));
-    if state.identity.enforced() && verified.is_none() {
-        return (StatusCode::UNAUTHORIZED, "verified identity required").into_response();
-    }
+    // Verified student identity, enforced when OIDC is configured. When enforced,
+    // the trusted student replaces any self-asserted one.
+    let verified = match verified_student(&state, request.headers()) {
+        Ok(verified) => verified,
+        Err(refusal) => return refusal,
+    };
 
     request.extensions_mut().insert(CourseCtx(course_id));
     request.extensions_mut().insert(VerifiedStudent(verified));
     next.run(request).await
+}
+
+/// Who a request's identity token says the student is (`x-hermione-identity`).
+///
+/// `Ok(None)` means the deployment doesn't verify students and this request
+/// carries no valid token, so whatever name it asserts is all there is. `Err` is
+/// the refusal to send back when the deployment does enforce identity and the
+/// request has none. Shared by everything an editor connects to, so the routes
+/// can't disagree about what "verified" means.
+fn verified_student(state: &AppState, headers: &HeaderMap) -> Result<Option<String>, Response> {
+    let verified = headers
+        .get("x-hermione-identity")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|token| state.identity.verify(token));
+    if state.identity.enforced() && verified.is_none() {
+        return Err((StatusCode::UNAUTHORIZED, "verified identity required").into_response());
+    }
+    Ok(verified)
+}
+
+/// Which student a socket's control frames are for.
+///
+/// A verified identity wins. The name a socket claims is used only where nothing
+/// verifies students: elsewhere it would be a way to listen in on someone
+/// else's frames, and those frames say when a teacher is looking at their file.
+fn routing_student(
+    verified: Option<String>,
+    claimed: Option<Student>,
+) -> Result<Option<Student>, BlankName> {
+    match verified {
+        Some(name) => Student::try_from(name).map(Some),
+        None => Ok(claimed),
+    }
 }
 
 // --- student identity (OIDC / GitHub) --------------------------------------
@@ -462,10 +491,20 @@ async fn ws_handler(
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let course_id = if let Some(token) = q.token.as_deref() {
-        match tenancy::course_by_token(&state.db, token).await {
-            Some(course) => course.id,
+    let (course_id, student) = if let Some(token) = q.token.as_deref() {
+        let course = match tenancy::course_by_token(&state.db, token).await {
+            Some(course) => course,
             None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),
+        };
+        // An editor's socket is routed by student, so who it says it is has to be
+        // true where students are verified.
+        let verified = match verified_student(&state, &headers) {
+            Ok(verified) => verified,
+            Err(refusal) => return refusal,
+        };
+        match routing_student(verified, q.student) {
+            Ok(student) => (course.id, student),
+            Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
         }
     } else {
         let ctx = match state
@@ -478,12 +517,14 @@ async fn ws_handler(
             None => return (StatusCode::UNAUTHORIZED, "login required").into_response(),
         };
         match resolve_course(&state, ctx, q.course.clone()).await {
-            Ok(id) => id,
+            // A teacher's socket takes the course's messages only, never anyone's
+            // control frames, whatever `student` it passes.
+            Ok(id) => (id, None),
             Err(resp) => return resp,
         }
     };
 
-    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since, q.student))
+    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since, student))
 }
 
 /// Sends any missed messages (when `since` is given), then tails live ones
@@ -1477,4 +1518,38 @@ async fn transcript(
         body,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn student(name: &str) -> Student {
+        Student::try_from(name.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_verified_identity_beats_the_name_a_socket_claims() {
+        let routed = routing_student(Some("github:bob".into()), Some(student("alice")));
+        assert_eq!(routed, Ok(Some(student("github:bob"))));
+    }
+
+    #[test]
+    fn the_claimed_name_is_used_only_where_nothing_verifies() {
+        assert_eq!(
+            routing_student(None, Some(student("alice"))),
+            Ok(Some(student("alice")))
+        );
+        assert_eq!(routing_student(None, None), Ok(None));
+    }
+
+    #[test]
+    fn an_unusable_verified_identity_is_an_error_not_a_fallback() {
+        // Falling back to the claimed name would let an editor pick its own on
+        // exactly the deployments that verify them.
+        assert_eq!(
+            routing_student(Some(" ".into()), Some(student("alice"))),
+            Err(BlankName)
+        );
+    }
 }

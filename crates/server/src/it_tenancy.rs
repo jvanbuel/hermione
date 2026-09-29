@@ -1224,3 +1224,227 @@ async fn impossible_snapshots_are_refused_at_the_door() {
         assert!(post(bad).await.is_client_error(), "{why} should be refused");
     }
 }
+
+// --- who a socket may listen as ---------------------------------------------
+//
+// A snapshot request goes down the control channel of the student whose file a
+// teacher has open, which is to say the channel itself says who is being
+// watched. These run a real server and a real WebSocket client, because the
+// property is about what a connection is allowed to receive.
+
+mod control_socket {
+    use super::*;
+    use crate::state::Control;
+    use crate::student::{Slot, Student};
+    use futures::StreamExt;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn student(name: &str) -> Student {
+        Student::try_from(name.to_string()).unwrap()
+    }
+
+    fn github() -> crate::identity::Provider {
+        use crate::identity::{Provider, ProviderKind};
+        Provider {
+            name: "github".into(),
+            kind: ProviderKind::Github,
+            issuer: None,
+            client_id: "client".into(),
+            client_secret: None,
+            scopes: None,
+        }
+    }
+
+    /// Serves the app on an ephemeral port and returns its address.
+    async fn serve(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn connect(
+        addr: std::net::SocketAddr,
+        query: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<Socket, tokio_tungstenite::tungstenite::Error> {
+        let mut request = format!("ws://{addr}/ws?{query}")
+            .into_client_request()
+            .unwrap();
+        for (name, value) in headers {
+            request.headers_mut().insert(
+                header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        tokio_tungstenite::connect_async(request)
+            .await
+            .map(|(s, _)| s)
+    }
+
+    /// The upgrade completes before the server subscribes the socket, so wait
+    /// for the subscription rather than racing it.
+    async fn listening(state: &AppState, slot: &Slot) {
+        for _ in 0..100 {
+            if state.ctrl_hub.is_listening(slot).await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("nothing ever listened on {slot:?}");
+    }
+
+    /// The next text frame, or `None` if nothing arrives soon.
+    async fn next_frame(socket: &mut Socket) -> Option<String> {
+        match tokio::time::timeout(Duration::from_millis(400), socket.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => Some(t.to_string()),
+            _ => None,
+        }
+    }
+
+    async fn course(state: &AppState) -> hermione_entity::courses::Model {
+        tenancy::create_course(&state.db, &format!("ws{}", rnd()), "Ws", None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_verified_identity_decides_whose_frames_a_socket_gets() {
+        let identity = crate::identity::Identity::for_test("secret", vec![github()]);
+        let bob_token = identity.issue("github:bob").unwrap();
+        let (state, app) = app_with_identity(identity).await;
+        let course = course(&state).await;
+        let addr = serve(app).await;
+
+        // Bob's editor claims to be alice — and proves it is bob.
+        let query = format!("token={}&student=alice", course.enrollment_token);
+        let mut socket = connect(addr, &query, &[("x-hermione-identity", &bob_token)])
+            .await
+            .expect("a verified editor may connect");
+
+        let bob = Slot {
+            course: course.id,
+            student: student("github:bob"),
+        };
+        let alice = Slot {
+            course: course.id,
+            student: student("alice"),
+        };
+        listening(&state, &bob).await;
+        assert!(
+            !state.ctrl_hub.is_listening(&alice).await,
+            "the claimed name must not have been listened on"
+        );
+
+        // A teacher opening alice's file says nothing to this socket...
+        state
+            .ctrl_hub
+            .publish(&alice, Control::SnapshotRequest)
+            .await;
+        assert_eq!(next_frame(&mut socket).await, None);
+        // ...and one for bob, whose identity it proved, gets through.
+        state.ctrl_hub.publish(&bob, Control::SnapshotRequest).await;
+        assert_eq!(
+            next_frame(&mut socket).await.as_deref(),
+            Some(r#"{"kind":"snapshot-request"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn where_students_are_verified_an_unverified_socket_is_refused() {
+        let identity = crate::identity::Identity::for_test("secret", vec![github()]);
+        let (state, app) = app_with_identity(identity).await;
+        let course = course(&state).await;
+        let addr = serve(app).await;
+
+        let query = format!("token={}&student=alice", course.enrollment_token);
+        let refused = connect(addr, &query, &[]).await;
+        let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = refused else {
+            panic!("expected the upgrade to be refused");
+        };
+        assert_eq!(response.status(), 401);
+        assert!(
+            !state
+                .ctrl_hub
+                .is_listening(&Slot {
+                    course: course.id,
+                    student: student("alice")
+                })
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn where_nothing_verifies_students_the_claimed_name_routes() {
+        let (state, app) = app().await;
+        let course = course(&state).await;
+        let addr = serve(app).await;
+
+        let query = format!("token={}&student=alice", course.enrollment_token);
+        let mut socket = connect(addr, &query, &[]).await.unwrap();
+        let alice = Slot {
+            course: course.id,
+            student: student("alice"),
+        };
+        let bob = Slot {
+            course: course.id,
+            student: student("bob"),
+        };
+        listening(&state, &alice).await;
+
+        state.ctrl_hub.publish(&bob, Control::SnapshotRequest).await;
+        assert_eq!(
+            next_frame(&mut socket).await,
+            None,
+            "another student's frame"
+        );
+        state
+            .ctrl_hub
+            .publish(&alice, Control::SnapshotRequest)
+            .await;
+        assert!(next_frame(&mut socket).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_teachers_socket_never_gets_control_frames() {
+        let (state, app) = app().await;
+        let s = rnd();
+        let course = tenancy::create_course(&state.db, &format!("wt{s}"), "Wt", None)
+            .await
+            .unwrap();
+        let admin = tenancy::create_admin(&state.db, &format!("wt{s}"), "pw")
+            .await
+            .unwrap();
+        tenancy::grant_membership(&state.db, admin.id, course.id)
+            .await
+            .unwrap();
+        let cookie = login(&app, &format!("wt{s}"), "pw").await.unwrap();
+        let addr = serve(app).await;
+
+        // The dashboard passes a student too; it must not become a listener.
+        let query = format!("course=wt{s}&student=alice");
+        let mut socket = connect(addr, &query, &[("cookie", &cookie)]).await.unwrap();
+        let alice = Slot {
+            course: course.id,
+            student: student("alice"),
+        };
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !state.ctrl_hub.is_listening(&alice).await,
+            "a teacher's socket must not subscribe to a student's frames"
+        );
+        state
+            .ctrl_hub
+            .publish(&alice, Control::SnapshotRequest)
+            .await;
+        assert_eq!(next_frame(&mut socket).await, None);
+    }
+}

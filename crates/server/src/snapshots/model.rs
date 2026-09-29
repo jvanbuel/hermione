@@ -12,6 +12,7 @@
 //! no way to be written down.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -61,9 +62,11 @@ pub struct File {
     #[serde(flatten)]
     text: Text,
     /// `text` as one list of classed spans per line. Absent when the language
-    /// is unknown or the file too long; the page then draws it plain.
+    /// is unknown or the file too long; the page then draws it plain. Shared,
+    /// because a cursor move sends the same text again and the next snapshot
+    /// simply keeps this one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    highlight: Option<Highlighted>,
+    highlight: Option<Arc<Highlighted>>,
     baseline: Baseline,
 }
 
@@ -110,26 +113,46 @@ impl Text {
     }
 }
 
-impl From<report::State> for Snapshot {
-    /// Does the work of turning a report into something to show. It parses the
-    /// whole buffer, which is tens to hundreds of milliseconds of solid CPU:
-    /// call it off the async runtime's worker threads.
-    fn from(state: report::State) -> Self {
+impl Snapshot {
+    /// Turns a report into something to show.
+    ///
+    /// Parsing a buffer is tens to hundreds of milliseconds of solid CPU, so call
+    /// this off the async runtime's worker threads. `previous` is the student's
+    /// last snapshot, if there is a fresh one: most reports differ from it only
+    /// by where the cursor is, and for those the parse is not done again.
+    pub fn from_report(state: report::State, previous: Option<&Snapshot>) -> Self {
         match state {
             report::State::Declined => Self::Declined,
             report::State::Empty => Self::Empty,
-            report::State::File(file) => Self::File(Box::new(File::from(file))),
+            report::State::File(file) => {
+                let previous = match previous {
+                    Some(Self::File(f)) => Some(&**f),
+                    _ => None,
+                };
+                Self::File(Box::new(File::from_report(file, previous)))
+            }
         }
     }
 }
 
-impl From<report::File> for File {
-    fn from(f: report::File) -> Self {
+impl File {
+    fn from_report(f: report::File, previous: Option<&File>) -> Self {
         let text = Text::new(f.content, f.truncated);
         let grammar = Grammar::detect(&f.language, &f.relative_path);
-        let highlight = grammar.and_then(|g| g.highlight(text.lines()).ok());
+
+        // The same text in the same language, at the same path (which decides
+        // the grammar when the language id doesn't), colours the same way. That
+        // includes failing to: a file too long to highlight is not retried.
+        let highlight = match previous {
+            Some(p) if p.colours_like(&text, &f.language, &f.relative_path) => p.highlight.clone(),
+            _ => grammar.and_then(|g| {
+                // A vector, so its length is known before any of it is parsed.
+                let lines: Vec<&str> = text.lines().collect();
+                g.highlight(lines).ok().map(Arc::new)
+            }),
+        };
         let colour = grammar
-            .zip(highlight.as_ref())
+            .zip(highlight.as_deref())
             .map(|(grammar, buffer)| Colour { buffer, grammar });
 
         let baseline = match f.baseline {
@@ -151,14 +174,35 @@ impl From<report::File> for File {
     }
 }
 
+impl File {
+    /// Whether this file's highlight is also the right one for `text` in
+    /// `language` at `relative_path`.
+    fn colours_like(&self, text: &Text, language: &str, relative_path: &str) -> bool {
+        self.text.content == text.content
+            && self.language == language
+            && self.relative_path == relative_path
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{json, Value};
 
     fn snapshot(v: Value) -> Value {
+        serde_json::to_value(build(v, None)).unwrap()
+    }
+
+    fn build(v: Value, previous: Option<&Snapshot>) -> Snapshot {
         let report: report::Report = serde_json::from_value(v).unwrap();
-        serde_json::to_value(Snapshot::from(report.state)).unwrap()
+        Snapshot::from_report(report.state, previous)
+    }
+
+    fn highlight_of(s: &Snapshot) -> Option<&Arc<Highlighted>> {
+        match s {
+            Snapshot::File(f) => f.highlight.as_ref(),
+            _ => panic!("expected a file"),
+        }
     }
 
     fn file(content: &str, baseline: Value) -> Value {
@@ -181,6 +225,81 @@ mod tests {
         assert!(s.get("truncated").is_none());
         // One span list per screen line, the trailing newline's empty line included.
         assert_eq!(s["highlight"].as_array().unwrap().len(), 2);
+    }
+
+    fn untracked() -> Value {
+        json!({"kind": "untracked"})
+    }
+
+    #[test]
+    fn a_cursor_move_keeps_the_previous_parse() {
+        let first = build(file("x = 1\n", untracked()), None);
+        let mut moved = file("x = 1\n", untracked());
+        moved["cursor"] = json!({"line": 2, "column": 1});
+        let second = build(moved, Some(&first));
+
+        let (a, b) = (
+            highlight_of(&first).unwrap(),
+            highlight_of(&second).unwrap(),
+        );
+        assert!(Arc::ptr_eq(a, b), "the same text must not be parsed twice");
+        // ...and it is still what a fresh parse would have produced.
+        let fresh = build(file("x = 1\n", untracked()), None);
+        assert_eq!(**b, **highlight_of(&fresh).unwrap());
+    }
+
+    #[test]
+    fn edited_text_is_parsed_afresh() {
+        let first = build(file("x = 1\n", untracked()), None);
+        let second = build(file("x = 12\n", untracked()), Some(&first));
+        assert!(!Arc::ptr_eq(
+            highlight_of(&first).unwrap(),
+            highlight_of(&second).unwrap()
+        ));
+        let text: String = serde_json::to_value(&second).unwrap()["highlight"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|span| span[1].as_str().unwrap())
+            .collect();
+        assert_eq!(text, "x = 12");
+    }
+
+    #[test]
+    fn the_same_text_in_another_language_or_at_another_path_is_parsed_afresh() {
+        let first = build(file("x = 1\n", untracked()), None);
+
+        let mut other_language = file("x = 1\n", untracked());
+        other_language["language"] = json!("ruby");
+        let second = build(other_language, Some(&first));
+        assert!(!Arc::ptr_eq(
+            highlight_of(&first).unwrap(),
+            highlight_of(&second).unwrap()
+        ));
+
+        let mut other_path = file("x = 1\n", untracked());
+        other_path["relativePath"] = json!("ex2/main.py");
+        let third = build(other_path, Some(&first));
+        assert!(!Arc::ptr_eq(
+            highlight_of(&first).unwrap(),
+            highlight_of(&third).unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_previous_snapshot_of_another_kind_is_no_help() {
+        let declined = build(json!({"student": "a", "state": "declined"}), None);
+        let s = build(file("x = 1\n", untracked()), Some(&declined));
+        assert!(highlight_of(&s).is_some());
+    }
+
+    #[test]
+    fn a_file_too_long_to_colour_is_not_retried_on_every_report() {
+        let long = "x = 1\n".repeat(5000);
+        let first = build(file(&long, untracked()), None);
+        assert!(highlight_of(&first).is_none());
+        let again = build(file(&long, untracked()), Some(&first));
+        assert!(highlight_of(&again).is_none());
     }
 
     #[test]

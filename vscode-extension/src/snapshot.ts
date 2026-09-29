@@ -1,5 +1,5 @@
-import { structuredPatch } from 'diff';
 import * as vscode from 'vscode';
+import { BaselineCache, DiffMemo, diffHunks, Hunk } from './baselines';
 
 /**
  * What the student's editor answers a snapshot request with: the buffer's text,
@@ -50,15 +50,6 @@ export type Baseline =
     /** Nothing to compare with: a notebook cell, or no git. */
     | { kind: 'none' };
 
-export interface Hunk {
-    /** 1-based line in the committed file this hunk begins at. */
-    oldStart: number;
-    /** 1-based line in the buffer this hunk begins at. */
-    newStart: number;
-    /** Unified-diff lines: ' ' context, '-' removed, '+' added. */
-    lines: string[];
-}
-
 /**
  * Enough of a file to be worth reading on a projector. Past this the buffer is
  * cut short (and flagged), which keeps one enormous generated file from
@@ -66,15 +57,14 @@ export interface Hunk {
  */
 const MAX_CONTENT_CHARS = 200_000;
 
-/** Lines of unchanged context kept around each change. */
-const DIFF_CONTEXT = 3;
-
 // The git extension's API, narrowed to the two things we need. Declared
 // structurally rather than depending on the extension's own typings, which
 // aren't published as a package.
 interface GitRepository {
     /** The file's contents at a ref. Rejects when the ref has no such file. */
     show(ref: string, path: string): Promise<string>;
+    /** `HEAD.commit` is absent on an unborn branch, before the first commit. */
+    readonly state: { readonly HEAD?: { readonly commit?: string } };
 }
 
 interface GitApi {
@@ -112,47 +102,29 @@ function git(): Promise<GitApi | undefined> {
     })());
 }
 
-/**
- * The committed text of a file, or undefined when there isn't one (untracked,
- * or not a git working tree at all).
- */
-async function committedText(uri: vscode.Uri): Promise<string | undefined> {
-    const api = await git();
-    if (!api) {
-        return undefined;
-    }
-    try {
-        const repo = api.getRepository(uri);
-        if (!repo) {
-            return undefined;
-        }
-        return await repo.show('HEAD', uri.fsPath);
-    } catch (_) {
-        // No committed version of this file (or git errored) — either way there
-        // is nothing to diff against.
-        return undefined;
-    }
-}
+/** What the last commit says about a file. */
+type Committed =
+    /** Not in a git working tree, or git is unavailable. */
+    | { kind: 'no-repo' }
+    /** In a repository, but the last commit has no such file: never committed. */
+    | { kind: 'absent' }
+    | { kind: 'text'; text: string; commit: string };
 
-/**
- * Diffs the student's live buffer against their last commit.
- *
- * The baseline comes from git and the comparison from jsdiff, so that what the
- * teacher sees includes edits the student hasn't saved yet — `git diff` alone
- * compares what's on disk, and the interesting moment is usually the one before
- * anyone hits save.
- */
-function diffAgainst(baseline: string, current: string, name: string): Hunk[] {
-    const patch = structuredPatch(name, name, baseline, current, '', '', {
-        context: DIFF_CONTEXT,
-    });
-    return patch.hunks.map((h) => ({
-        oldStart: h.oldStart,
-        newStart: h.newStart,
-        // jsdiff marks a missing trailing newline with a `\` line, which is
-        // noise in a live view of someone's editor.
-        lines: h.lines.filter((l) => !l.startsWith('\\')),
-    }));
+const baselines = new BaselineCache();
+const diffs = new DiffMemo();
+
+async function committed(uri: vscode.Uri): Promise<Committed> {
+    const repo = (await git())?.getRepository(uri);
+    if (!repo) {
+        return { kind: 'no-repo' };
+    }
+    const commit = repo.state.HEAD?.commit;
+    const text = await baselines.get(uri.fsPath, commit, () =>
+        // Rejecting is how git says the commit has no such file.
+        repo.show('HEAD', uri.fsPath).catch(() => null),
+    );
+    // No commit at all means nothing can have been committed.
+    return text === null || commit === undefined ? { kind: 'absent' } : { kind: 'text', text, commit };
 }
 
 /** The document the student is looking at, and the editor showing it. */
@@ -203,8 +175,18 @@ async function baselineFor(
     if (target.cell) {
         return { kind: 'none' };
     }
-    const committed = await committedText(target.uri);
-    return committed === undefined
-        ? { kind: 'untracked' }
-        : { kind: 'head', hunks: diffAgainst(committed, text, relativePath) };
+    const found = await committed(target.uri);
+    switch (found.kind) {
+        case 'no-repo':
+            return { kind: 'none' };
+        case 'absent':
+            return { kind: 'untracked' };
+        case 'text':
+            return {
+                kind: 'head',
+                hunks: diffs.get(target.uri.fsPath, found.commit, text, () =>
+                    diffHunks(found.text, text, relativePath),
+                ),
+            };
+    }
 }

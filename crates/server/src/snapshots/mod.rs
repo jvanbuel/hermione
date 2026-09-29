@@ -70,13 +70,18 @@ pub async fn ingest(
     // hundreds of milliseconds of solid CPU, and a watched student sends one
     // every few hundred ms. On a Tokio worker that stalls every other request
     // sharing the thread, so it goes where argon2 goes (see tenancy.rs).
+    let slot = Slot { course, student };
+    let previous = state.snapshots.latest(&slot).map(|latest| latest.snapshot);
     let state_of = report.state;
-    let snapshot = match tokio::task::spawn_blocking(move || Snapshot::from(state_of)).await {
+    let built =
+        tokio::task::spawn_blocking(move || Snapshot::from_report(state_of, previous.as_deref()))
+            .await;
+    let snapshot = match built {
         Ok(snapshot) => snapshot,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    state.snapshots.insert(Slot { course, student }, snapshot);
+    state.snapshots.insert(slot, snapshot);
     StatusCode::OK.into_response()
 }
 
