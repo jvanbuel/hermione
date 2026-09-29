@@ -57,6 +57,15 @@ and "is anyone touching `ex04` yet?" at a glance.
   to collapse it; your choice is remembered per course.
 - Click a student to open their pane, on their file.
 
+## The table view
+
+The third button beside the board and tree switch lists every student on one line:
+who they are, their exercise and file, how long they have been on the exercise,
+when they last did anything, and what stands out (typing, or the first reason they
+are flagged). Those who need help come first, then those to watch, then everyone
+else by name — so a class of thirty fits on one screen. Click a row to open the
+pane; **N** and the ✓ marks work here too.
+
 ## A student's pane
 
 Each pane has a **Terminal / File** switch, and **Diff** (and **Solution**, where the course has reference solutions) when a file is showing.

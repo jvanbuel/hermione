@@ -15,6 +15,7 @@ const BASE = `http://localhost:${process.env.PORT || 8799}`;
 const scenes = {
   'board': async (p) => {},
   'tree': async (p) => { await p.locator('button[data-view="tree"]').click(); await p.waitForTimeout(500); },
+  'table': async (p) => { await p.locator('button[data-view="table"]').click(); await p.waitForTimeout(500); },
   'menu open': async (p) => { await p.locator('#more').click(); await p.waitForTimeout(200); },
   'file pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.waitForTimeout(900); },
   'diff pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.locator('.pane').last().locator('.diff').click(); await p.waitForTimeout(900); },

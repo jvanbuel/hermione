@@ -131,6 +131,33 @@
       flex: 1 1 0; min-width: 0; overflow-x: auto;
       display: flex; gap: 16px; padding: 16px; align-items: flex-start;
     }
+    /* ---- Table view: one line per student, who needs help first ---- */
+    #board.table { display: block; padding: 16px max(16px, calc((100% - 1280px) / 2)) 32px; overflow: auto; }
+    .stable { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-sm);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+    .stable th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600; color: var(--fg-muted);
+      padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .stable th:first-child { border-top-left-radius: 9px; } .stable th:last-child { border-top-right-radius: 9px; }
+    .stable td { padding: 5px 12px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle;
+      max-width: 22em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stable tr:last-child td { border-bottom: none; }
+    .stable tbody tr:hover td { background: var(--surface-2); }
+    .stable tr.struggle-help td:first-child { box-shadow: inset 3px 0 0 var(--red-text); }
+    .stable tr.struggle-watch td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+    .stable tr.struggle-help td { background: var(--help-wash); }
+    .stable tr.struggle-watch td { background: var(--watch-wash); }
+    .stable tr.open td { outline: none; }
+    .stable tr.open td:first-child { font-weight: 600; }
+    .stable .who-cell { display: flex; align-items: center; gap: 8px; }
+    .stable .who-cell .avatar { width: 22px; height: 22px; font-size: 9px; }
+    .stable .who-cell .avatar .dot { width: 8px; height: 8px; }
+    .stable button.open-row { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; color: var(--fg); }
+    .stable button.open-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+    .stable .file-cell { font-family: ui-monospace, monospace; color: var(--fg-muted); }
+    .stable .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .stable .typing { color: var(--green-text, var(--green)); }
+    .stable .reason { color: var(--amber-text); }
+
     /* ---- Tree view: the repo, pruned to what people actually have open ---- */
     /* The grid lives on the container, and each row is display:contents, so the
      * name column lines up across every row however deep the path goes. */
@@ -559,6 +586,9 @@
       <button type="button" data-view="tree" aria-pressed="false" aria-label="Tree view" title="Tree — the files everyone has open">
         <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 1.5v10.5h4M3 6.5h4M11 2.2h3.2M11 7.2h3.2M11 12.2h3.2" stroke-linecap="round"/></svg>
       </button>
+      <button type="button" data-view="table" aria-pressed="false" aria-label="Table view" title="Table — one line per student, who needs help first">
+        <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 3.5h12M2 7h12M2 10.5h12M2 14h12" stroke-linecap="round"/></svg>
+      </button>
     </div>
     <span id="alert" aria-live="assertive"></span>
     <span class="spacer"></span>
@@ -640,9 +670,10 @@
 
     // ---- which view of the class is on screen ----
     const VIEW_KEY = 'hermione.view';
+    const VIEWS = ['board', 'tree', 'table'];
     let currentView = 'board';
     function setView(view) {
-      currentView = (view === 'tree') ? 'tree' : 'board';
+      currentView = VIEWS.includes(view) ? view : 'board';
       try { localStorage.setItem(VIEW_KEY, currentView); } catch (_) {}
       for (const b of document.querySelectorAll('#view-toggle button')) {
         b.setAttribute('aria-pressed', String(b.dataset.view === currentView));
@@ -943,6 +974,7 @@
       trackAttention(allStudents);
       setAlert(allStudents.filter(s => s.struggle === 'help').length);
       board.classList.toggle('tree', currentView === 'tree');
+      board.classList.toggle('table', currentView === 'table');
 
       if (data.exercises.length === 0 && data.noExercise.length === 0) {
         const empty = document.createElement('div');
@@ -952,6 +984,7 @@
         return;
       }
       if (currentView === 'tree') renderTree(board, data);
+      else if (currentView === 'table') renderTable(board, allStudents);
       else renderBoard(board, data);
     }
 
@@ -1171,6 +1204,46 @@
         cols.push({ key: '__none__', kind: 'none', g: { title: 'No exercise', students: data.noExercise } });
       }
       reconcile(board, cols, c => c.key, createColumn, updateColumn);
+    }
+
+    // One row per student, those who need help first, then those to watch, then
+    // everyone else by name — a class of thirty fits on a screen, where the board
+    // spreads them over columns.
+    const TABLE_HEAD = ['Student', 'Exercise', 'File', 'On exercise', 'Last active', 'Signals'];
+    function renderTable(board, students) {
+      let table = board.querySelector('table.stable');
+      if (!table) {
+        table = document.createElement('table');
+        table.className = 'stable';
+        table.setAttribute('aria-label', 'Students');
+        table.innerHTML = `<thead><tr>${TABLE_HEAD.map((h, i) =>
+          `<th scope="col"${i === 3 ? ' class="num"' : ''}>${h}</th>`).join('')}</tr></thead><tbody></tbody>`;
+        board.replaceChildren(table);
+      }
+      const rank = s => (s.struggle === 'help' ? 2 : s.struggle === 'watch' ? 1 : 0);
+      const rows = students.slice().sort((a, b) =>
+        rank(b) - rank(a) || a.student.localeCompare(b.student));
+      reconcile(table.tBodies[0], rows, s => s.student, () => document.createElement('tr'), updateTableRow);
+    }
+    function updateTableRow(tr, s) {
+      tr.className = (s.struggle === 'help' ? 'struggle-help' : s.struggle === 'watch' ? 'struggle-watch' : '')
+        + (openPanes.has(s.student) ? ' open' : '');
+      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
+        : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '';
+      const typing = s.status === 'active' && s.editsRecent > 0
+        ? `<span class="typing">${ICONS.pencil}typing</span>` : '';
+      const reason = (s.struggleReasons && s.struggleReasons.length)
+        ? `<span class="reason" title="${esc(s.struggleReasons.join(' · '))}">${esc(s.struggleReasons[0])}</span>` : '';
+      tr.innerHTML = `
+        <td><div class="who-cell"><button type="button" class="open-row" aria-label="Open ${esc(s.student)}${s.exercise ? ', ' + esc(s.exercise) : ''}, ${esc(s.status)}${s.struggle ? ', ' + (s.struggle === 'help' ? 'needs help' : 'watch') : ''}${s.seen ? ', already looked at' : ''}">
+          ${avatarHtml(s.student, s.status)}<span class="sn">${esc(s.student)}</span></button>${pill}</div></td>
+        <td>${esc(s.exercise || '—')}</td>
+        <td class="file-cell" title="${esc(s.file || '')}">${esc(s.file || '—')}</td>
+        <td class="num">${fmtDuration(s.secondsOnExercise)}</td>
+        <td>${timeAgo(s.lastSeenUnixMs)}</td>
+        <td>${[typing, reason].filter(Boolean).join(' ') || ''}</td>`;
+      tr.querySelector('.open-row').onclick = () => openTerminal(s.student, s.terminalSessionId || null, s.exercise || null);
+      tr.onclick = (e) => { if (!e.target.closest('button')) openTerminal(s.student, s.terminalSessionId || null, s.exercise || null); };
     }
 
     let currentCourse = null;
@@ -1482,6 +1555,9 @@
     function markOpenCards() {
       document.querySelectorAll('.card').forEach(el => {
         el.classList.toggle('open', openPanes.has(el.dataset.student));
+      });
+      document.querySelectorAll('.stable tbody tr').forEach(el => {
+        el.classList.toggle('open', openPanes.has(el.dataset.key));
       });
     }
 
@@ -2497,7 +2573,7 @@
       await loadCourses();
       let storedView = null;
       try { storedView = localStorage.getItem(VIEW_KEY); } catch (_) {}
-      currentView = storedView === 'tree' ? 'tree' : 'board';
+      currentView = VIEWS.includes(storedView) ? storedView : 'board';
       for (const b of document.querySelectorAll('#view-toggle button')) {
         b.setAttribute('aria-pressed', String(b.dataset.view === currentView));
         b.addEventListener('click', () => setView(b.dataset.view));
