@@ -198,6 +198,10 @@ remembered by the browser. **Larger text** enlarges the type (terminals included
 student's card, row or pane, so a mirrored screen doesn't show the class each
 other's names while you can still tell who is who. Initials are hidden too.
 
+On a phone-sized screen the bar wraps onto a second row, the keyboard hints go,
+and opening a student's pane gives it the whole screen (close it to get the board
+back) — handy for walking round the room with a tablet or phone.
+
 The strip along the bottom says how fresh the board is (*Updated 2s ago*) and shows
 the one-time hint for new users.
 

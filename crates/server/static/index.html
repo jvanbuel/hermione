@@ -75,6 +75,19 @@
     @media (max-width: 960px) {
       header h1, .course-repo span { display: none; }
     }
+    /* Phone width: the bar wraps to a second row rather than pushing its buttons
+     * off the screen; the keyboard hints (no keyboard) go; and an open pane takes
+     * the whole screen — beside a board it was neither readable nor closable. */
+    @media (max-width: 640px) {
+      header { flex-wrap: wrap; row-gap: 6px; padding: 8px 12px; }
+      #hint, #hint-next { display: none; }
+      #content:has(#dock.active) #board, #divider { display: none; }
+      #dock.active { flex: 1 1 auto; }
+      #dock .pane .pane-head { flex-wrap: wrap; row-gap: 4px; }
+      #dock .pane .pane-head .who { flex: 1 1 100%; order: -1; }
+      #dock .pane .pane-head .close { margin-left: auto; }
+      .modal { width: calc(100vw - 24px); }
+    }
     /* Only the course-settings gear stays beside the switcher. */
     #course-settings { padding: 5px; }
     #course-settings .ico { width: 15px; height: 15px; }
