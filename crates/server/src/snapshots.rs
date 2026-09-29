@@ -36,6 +36,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::auth::AuthCtx;
+use crate::highlight::Token;
 use crate::http::{resolve_course, CourseCtx, VerifiedStudent};
 use crate::state::{AppState, ControlOut};
 
@@ -57,7 +58,9 @@ const MAX_DIFF_LINES: usize = 2000;
 /// Students tracked per process before the store is pruned of expired entries.
 const PRUNE_THRESHOLD: usize = 256;
 
-/// One hunk of a unified diff, as produced by the extension.
+/// One hunk of a unified diff. It arrives from the extension as `lines` and
+/// leaves for the dashboard as `rows`: the server does the work of finding each
+/// line's spans once, so the page just draws what it is given.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hunk {
@@ -65,16 +68,29 @@ pub struct Hunk {
     pub old_lines: i32,
     pub new_start: i32,
     pub new_lines: i32,
-    /// Lines prefixed the unified-diff way: ' ' context, '-' removed, '+' added.
+    /// As sent, prefixed the unified-diff way: ' ' context, '-' removed, '+'
+    /// added. Consumed into `rows` on arrival and never sent on.
+    #[serde(skip_serializing)]
     pub lines: Vec<String>,
-    /// Spans for this hunk's removed lines, in order, added server-side.
-    ///
-    /// Context and added lines are already in the buffer, so the page reads
-    /// their spans straight out of `FileSnapshot::highlight` by line number.
-    /// Removed lines exist only in the student's last commit, which we never
-    /// see, so they are the one side that has to be highlighted separately.
-    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
-    pub removed_highlight: Option<Vec<Vec<crate::highlight::Token>>>,
+    /// The same lines, ready to draw. Filled in here, never accepted from a client.
+    #[serde(skip_deserializing)]
+    pub rows: Vec<Row>,
+}
+
+/// One line of a hunk. The text is the concatenation of `spans`, exactly as
+/// with `FileSnapshot::highlight`; an unhighlighted line is a single classless
+/// span.
+#[derive(Clone, Debug, Serialize)]
+pub struct Row {
+    /// ' ' context, '-' removed, '+' added.
+    pub sign: char,
+    /// Line number in the committed file. Absent on an added line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old: Option<i32>,
+    /// Line number in the buffer. Absent on a removed line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new: Option<i32>,
+    pub spans: Vec<crate::highlight::Token>,
 }
 
 /// The student's working changes to the file, against their last commit.
@@ -285,46 +301,108 @@ fn highlight_snapshot(snapshot: &mut FileSnapshot) {
         .as_deref()
         .and_then(|c| crate::highlight::highlight(c, language, path));
 
-    // Only worth highlighting the removed side when the rest of the diff has
-    // spans to sit next to; a half-coloured diff is worse than a plain one.
-    if highlight.is_some() {
-        if let Some(diff) = snapshot.diff.as_mut() {
-            highlight_removed(diff, language, path);
+    // Rows are built even when there is nothing to highlight: the page draws
+    // rows, not raw lines, so an unhighlighted diff is rows of plain spans.
+    if let Some(diff) = snapshot.diff.as_mut() {
+        for hunk in diff.hunks.iter_mut() {
+            build_rows(hunk, highlight.as_deref(), language, path);
         }
     }
     snapshot.highlight = highlight;
 }
 
-/// Fills in each hunk's `removed_highlight`.
+/// Turns a hunk's `lines` into `rows`, each with the spans it will be drawn in.
 ///
-/// The removed lines are parsed together with the hunk's context lines — the
-/// old side of the hunk, in order — rather than on their own, so the parser
-/// sees whatever surroundings the hunk itself carries. Only the rows belonging
-/// to removed lines are kept; the rest of the diff reads its spans from the
-/// buffer.
-fn highlight_removed(diff: &mut Diff, language: Option<&str>, path: Option<&str>) {
-    for hunk in diff.hunks.iter_mut() {
-        if !hunk.lines.iter().any(|l| l.starts_with('-')) {
-            continue;
+/// Context and added lines are lines of the buffer, so their spans are read out
+/// of `buffer` by line number and get the whole file's context for free.
+/// Removed lines exist only in the student's last commit, which we never see,
+/// so they are the one side highlighted separately: the hunk's old side —
+/// context and removed lines, in order — is parsed as one fragment, so the
+/// parser sees whatever surroundings the hunk carries.
+///
+/// Spans are only used for a line if they rebuild that line's text exactly. A
+/// buffer clamped at the size cap has fewer lines than its diff refers to, and
+/// drawing text a student never typed is the one failure worth guarding
+/// against. Doing the check here means it happens once per snapshot, not once
+/// per row per poll in the browser.
+fn build_rows(
+    hunk: &mut Hunk,
+    buffer: Option<&[Vec<Token>]>,
+    language: Option<&str>,
+    path: Option<&str>,
+) {
+    let lines = std::mem::take(&mut hunk.lines);
+    // Every diff line carries a one-byte ASCII sign, so slicing from 1 is
+    // always a char boundary.
+    let text_of = |line: &str| line.get(1..).unwrap_or_default().to_string();
+
+    let old_side: Vec<String> = lines
+        .iter()
+        .filter(|l| !l.starts_with('+'))
+        .map(|l| text_of(l))
+        .collect();
+    let old_spans = (buffer.is_some() && lines.iter().any(|l| l.starts_with('-')))
+        .then(|| {
+            let text: Vec<&str> = old_side.iter().map(String::as_str).collect();
+            crate::highlight::highlight_lines(&text, language, path)
+        })
+        .flatten();
+
+    let (mut old, mut new) = (hunk.old_start, hunk.new_start);
+    let mut old_index = 0;
+    hunk.rows = lines
+        .iter()
+        .map(|line| {
+            let sign = line.chars().next().unwrap_or(' ');
+            let text = text_of(line);
+            let (old_no, new_no, spans) = match sign {
+                '+' => {
+                    let spans = buffer_spans(buffer, new);
+                    new += 1;
+                    (None, Some(new - 1), spans)
+                }
+                '-' => {
+                    let spans = old_spans.as_ref().and_then(|s| s.get(old_index));
+                    old += 1;
+                    old_index += 1;
+                    (Some(old - 1), None, spans)
+                }
+                _ => {
+                    let spans = buffer_spans(buffer, new);
+                    old += 1;
+                    new += 1;
+                    old_index += 1;
+                    (Some(old - 1), Some(new - 1), spans)
+                }
+            };
+            Row {
+                sign,
+                old: old_no,
+                new: new_no,
+                spans: match spans {
+                    Some(spans) if rebuilds(spans, &text) => spans.clone(),
+                    _ => vec![Token("", text)],
+                },
+            }
+        })
+        .collect();
+}
+
+/// The buffer's spans for a 1-based line number, if there are any.
+fn buffer_spans(buffer: Option<&[Vec<Token>]>, line: i32) -> Option<&Vec<Token>> {
+    buffer?.get(usize::try_from(line.checked_sub(1)?).ok()?)
+}
+
+/// Whether `spans` concatenate back to exactly `text`.
+fn rebuilds(spans: &[Token], text: &str) -> bool {
+    let mut rest = text;
+    for span in spans {
+        match rest.strip_prefix(span.1.as_str()) {
+            Some(after) => rest = after,
+            None => return false,
         }
-        // The old side, sign stripped. Every diff line carries a one-byte
-        // ASCII sign, so slicing from 1 is always a char boundary.
-        let old_side = || hunk.lines.iter().filter(|l| !l.starts_with('+'));
-        let text: Vec<&str> = old_side().map(|l| l.get(1..).unwrap_or_default()).collect();
-        let Some(spans) = crate::highlight::highlight_lines(&text, language, path) else {
-            continue;
-        };
-        // Zipping back over the same filter is what keeps the rows aligned
-        // with the lines they came from.
-        hunk.removed_highlight = Some(
-            spans
-                .into_iter()
-                .zip(old_side())
-                .filter(|(_, line)| line.starts_with('-'))
-                .map(|(span, _)| span)
-                .collect(),
-        );
     }
+    rest.is_empty()
 }
 
 #[derive(Deserialize)]
@@ -439,7 +517,7 @@ mod tests {
             new_start: 1,
             new_lines: 1,
             lines: vec!["+x".to_string(); n],
-            removed_highlight: None,
+            rows: vec![],
         };
         let mut s = snapshot("x");
         s.diff = Some(Diff {
@@ -454,61 +532,107 @@ mod tests {
         assert_eq!(diff.truncated, Some(true));
     }
 
-    #[test]
-    fn highlights_only_the_removed_side_of_a_hunk() {
-        let mut diff = Diff {
-            added: 1,
-            removed: 2,
-            hunks: vec![Hunk {
-                old_start: 1,
-                old_lines: 4,
-                new_start: 1,
-                new_lines: 3,
-                lines: vec![
-                    " def f():".to_string(),
-                    "-    return 1".to_string(),
-                    "-    # gone".to_string(),
-                    "+    return 2".to_string(),
-                    " ".to_string(),
-                ],
-                removed_highlight: None,
-            }],
-            truncated: None,
-        };
-        highlight_removed(&mut diff, Some("python"), None);
+    /// A hunk over a small Python file, as the extension would send it.
+    fn hunk(lines: &[&str]) -> Hunk {
+        Hunk {
+            old_start: 1,
+            old_lines: 4,
+            new_start: 1,
+            new_lines: 3,
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+            rows: vec![],
+        }
+    }
 
-        let spans = diff.hunks[0].removed_highlight.as_ref().expect("spans");
-        // One row per removed line, and nothing for context or added lines.
-        assert_eq!(spans.len(), 2);
-        let text = |row: &Vec<crate::highlight::Token>| -> String {
-            row.iter().map(|t| t.1.as_str()).collect()
-        };
-        assert_eq!(text(&spans[0]), "    return 1");
-        assert_eq!(text(&spans[1]), "    # gone");
+    fn text(row: &Row) -> String {
+        row.spans.iter().map(|t| t.1.as_str()).collect()
+    }
+
+    #[test]
+    fn rows_carry_signs_numbers_and_their_own_spans() {
+        // The buffer is what the student sees now: the removed lines are not in it.
+        let buffer = "def f():\n    return 2\n\n";
+        let spans = crate::highlight::highlight(buffer, Some("python"), None).unwrap();
+
+        let mut h = hunk(&[
+            " def f():",
+            "-    return 1",
+            "-    # gone",
+            "+    return 2",
+            " ",
+        ]);
+        build_rows(&mut h, Some(&spans), Some("python"), None);
+
+        assert!(h.lines.is_empty(), "consumed into rows");
+        let signs: String = h.rows.iter().map(|r| r.sign).collect();
+        assert_eq!(signs, " --+ ");
+        // Old and new numbers advance independently, and are absent on the side
+        // a row isn't on.
+        let nums: Vec<_> = h.rows.iter().map(|r| (r.old, r.new)).collect();
+        assert_eq!(
+            nums,
+            [
+                (Some(1), Some(1)),
+                (Some(2), None),
+                (Some(3), None),
+                (None, Some(2)),
+                (Some(4), Some(3)),
+            ]
+        );
+        // Every row draws exactly the text it was sent.
+        let drawn: Vec<_> = h.rows.iter().map(text).collect();
+        assert_eq!(
+            drawn,
+            ["def f():", "    return 1", "    # gone", "    return 2", ""]
+        );
+        // A removed comment — which exists in no buffer — is still a comment.
         assert!(
-            spans[1].iter().any(|t| t.0 == "c"),
-            "a removed comment is still a comment: {:?}",
-            spans[1]
+            h.rows[2].spans.iter().any(|t| t.0 == "c"),
+            "{:?}",
+            h.rows[2]
+        );
+        // An added line takes the buffer's spans, keyword and all.
+        assert!(
+            h.rows[3].spans.iter().any(|t| t.0 == "k"),
+            "{:?}",
+            h.rows[3]
         );
     }
 
     #[test]
-    fn a_hunk_with_nothing_removed_gets_no_spans() {
-        let mut diff = Diff {
-            added: 1,
-            removed: 0,
-            hunks: vec![Hunk {
-                old_start: 1,
-                old_lines: 1,
-                new_start: 1,
-                new_lines: 2,
-                lines: vec![" x = 1".to_string(), "+y = 2".to_string()],
-                removed_highlight: None,
-            }],
-            truncated: None,
-        };
-        highlight_removed(&mut diff, Some("python"), None);
-        assert!(diff.hunks[0].removed_highlight.is_none());
+    fn rows_are_plain_when_there_is_nothing_to_highlight() {
+        let mut h = hunk(&[" x = 1", "-y = 2", "+y = 3"]);
+        build_rows(&mut h, None, Some("python"), None);
+        for row in &h.rows {
+            assert_eq!(row.spans.len(), 1, "{row:?}");
+            assert_eq!(row.spans[0].0, "");
+        }
+        assert_eq!(text(&h.rows[1]), "y = 2");
+    }
+
+    #[test]
+    fn spans_that_do_not_belong_to_a_line_are_not_used() {
+        // A buffer clamped short: line 2 of the diff points at a line that is
+        // not in the spans, and line 1's spans are for different text entirely.
+        let spans = crate::highlight::highlight("z = 9\n", Some("python"), None).unwrap();
+        let mut h = hunk(&[" a = 1", "+b = 2"]);
+        build_rows(&mut h, Some(&spans), Some("python"), None);
+        assert_eq!(text(&h.rows[0]), "a = 1");
+        assert_eq!(text(&h.rows[1]), "b = 2");
+        for row in &h.rows {
+            assert_eq!(row.spans.len(), 1, "fell back to plain: {row:?}");
+        }
+    }
+
+    #[test]
+    fn rows_serialize_without_the_raw_lines() {
+        let mut h = hunk(&[" a = 1", "+b = 2"]);
+        build_rows(&mut h, None, None, None);
+        let json = serde_json::to_value(&h).unwrap();
+        assert!(json.get("lines").is_none(), "raw lines are not sent on");
+        assert_eq!(json["rows"][1]["sign"], "+");
+        assert_eq!(json["rows"][1]["new"], 2);
+        assert!(json["rows"][1].get("old").is_none());
     }
 
     #[tokio::test]

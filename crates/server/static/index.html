@@ -1338,7 +1338,10 @@
       for (let i = 0; i < lines.length; i++) {
         const n = i + 1;
         const cur = n === s.line;
-        const text = lineHtml(hl && hl[i], lines[i], cur ? s.column : null);
+        // A line the backend couldn't classify is just one classless span. The
+        // spans come from the same clamped string as `content`, so they cannot
+        // disagree with it.
+        const text = spansHtml((hl && hl[i]) || [['', lines[i]]], cur ? s.column : null);
         out.push(`<div class="cl${cur ? ' cur' : ''}"><span class="n">${n}</span><span class="t">${text}</span></div>`);
       }
       return out.join('');
@@ -1375,48 +1378,23 @@
      * The student's working changes, as hunks against their last commit.
      *
      * Highlighted like the file view, because added-or-removed is carried by
-     * the row's background and leaves the foreground free. Context and added
-     * lines are lines of the buffer, so their spans are read straight out of
-     * `highlight` by line number; removed lines exist only in the last commit,
-     * so the backend sends their spans with the hunk.
+     * the row's background and leaves the foreground free. Each row arrives
+     * with its own sign, line numbers and spans, so there is nothing to look up
+     * or count here — the backend did that once, when the snapshot arrived.
      */
     function diffHtml(s) {
       const d = s.diff;
       if (!d || !d.hunks.length) return null;
-      const hl = Array.isArray(s.highlight) ? s.highlight : null;
       const out = [];
       for (const h of d.hunks) {
         out.push(`<div class="dh">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`);
-        const removed = Array.isArray(h.removedHighlight) ? h.removedHighlight : null;
-        let o = h.oldStart, n = h.newStart, ri = 0;
-        for (const raw of h.lines) {
-          const sign = raw.charAt(0) || ' ';
-          const text = raw.slice(1);
-          let cls = 'ctx', on = '', nn = '', spans = null;
-          if (sign === '+') { cls = 'add'; nn = n++; spans = hl && hl[nn - 1]; }
-          else if (sign === '-') { cls = 'del'; on = o++; spans = removed && removed[ri++]; }
-          else { on = o++; nn = n++; spans = hl && hl[nn - 1]; }
-          out.push(`<div class="dl ${cls}"><span class="n">${on}</span><span class="n">${nn}</span>`
-            + `<span class="t"><span class="sg">${sign}</span>${lineHtml(spans, text, null)}</span></div>`);
+        for (const r of h.rows) {
+          const cls = r.sign === '+' ? 'add' : r.sign === '-' ? 'del' : 'ctx';
+          out.push(`<div class="dl ${cls}"><span class="n">${r.old ?? ''}</span><span class="n">${r.new ?? ''}</span>`
+            + `<span class="t"><span class="sg">${r.sign}</span>${spansHtml(r.spans, null)}</span></div>`);
         }
       }
       return out.join('');
-    }
-
-    /**
-     * One line of code, highlighted when the spans we have really are this
-     * line's. They can disagree — a buffer clamped at the size cap has fewer
-     * lines than its diff refers to — and showing text the student never typed
-     * is the one failure worth guarding against, so the spans prove themselves
-     * first. Summing their lengths catches that without rebuilding the string.
-     *
-     * An unhighlighted line is just one classless span, which is why there is
-     * only one renderer below rather than a plain path and a highlighted one.
-     */
-    function lineHtml(spans, text, column) {
-      const ok = Array.isArray(spans)
-        && spans.reduce((n, t) => n + t[1].length, 0) === text.length;
-      return spansHtml(ok ? spans : [['', text]], column);
     }
 
     // ---- draggable board/dock divider ----

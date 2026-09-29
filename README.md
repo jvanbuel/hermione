@@ -76,8 +76,8 @@ A Rust workspace with five crates:
   pairs from a seven-class vocabulary that the page maps onto its own design
   tokens, so highlighting follows the chalkboard/whiteboard themes instead of
   importing a third palette. The page keeps control of escaping and of where the
-  student's caret goes, and the diff view reuses the same spans by line number
-  rather than re-parsing anything.
+  student's caret goes. The diff arrives as rows that each carry their own sign,
+  line numbers and spans, so the page has nothing to look up or count.
 - **Live web view: Server-Sent Events.** Browsers can't speak raw gRPC, so the
   Axum server exposes an SSE endpoint that replays history then tails live. The
   bundled viewer renders it with [xterm.js]. Native/programmatic observers can
@@ -184,10 +184,16 @@ The **Diff** view is highlighted too, the way GitHub's is: added-or-removed is
 carried entirely by the row's background, and the foreground is left to the
 syntax. (GitHub's own `diffBlob.additionLine.fgColor` is plain
 `fgColor.default` — spending the foreground on the diff signal as well is what
-would make the two compete.) Context and added lines are lines of the buffer, so
-the page reads their spans out of `highlight` by line number; removed lines
-exist only in the last commit, which the backend never sees, so those are
-highlighted separately and travel with the hunk.
+would make the two compete.)
+
+The extension sends each hunk as unified-diff `lines`; the backend answers with
+`rows`. Context and added lines are lines of the buffer, so their spans are read
+out of the highlighted buffer by line number. Removed lines exist only in the
+last commit, which the backend never sees, so the hunk's old side is parsed as a
+fragment and only the removed rows are kept. A row's spans are used only if
+they rebuild that row's text exactly — a buffer clamped at the size cap has
+fewer lines than its diff refers to — and that check happens once, when the
+snapshot arrives, rather than per row in the browser.
 
 The contents of a file are **pulled, never pushed**: the backend asks that one
 student's editor for a snapshot only while a teacher has their file pane open,
