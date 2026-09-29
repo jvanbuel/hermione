@@ -82,20 +82,28 @@
     .summary-card .total .lbl { color: var(--fg-subtle); font-size: var(--fs-xs);
       text-transform: uppercase; letter-spacing: .04em; }
 
-    section { margin-bottom: 26px; }
+    /* Each breakdown is a bordered panel — a tinted title bar over ruled rows —
+     * so it has edges to read against, the same as the board's tree view. */
+    section {
+      margin-bottom: 22px; overflow: hidden;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-1);
+    }
     section > h2 {
       font-size: var(--fs-sm); font-weight: 600; color: var(--fg-muted);
-      text-transform: uppercase; letter-spacing: .04em; margin: 0 0 10px;
+      text-transform: uppercase; letter-spacing: .04em; margin: 0;
+      padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border);
     }
 
     /* Horizontal bar rows — used for both exercise and file breakdowns. */
-    .bars { display: flex; flex-direction: column; gap: 2px; }
+    .bars { display: flex; flex-direction: column; }
     .bar-row {
       display: grid; grid-template-columns: minmax(0, 240px) 1fr auto;
-      align-items: center; gap: 12px; padding: 5px 8px; margin: 0 -8px;
-      border-radius: var(--radius-sm); transition: background .12s var(--ease);
+      align-items: center; gap: 12px; padding: 9px 16px;
+      border-top: 1px solid var(--border-subtle); transition: background .12s var(--ease);
     }
-    .bar-row:hover { background: var(--surface); }
+    .bar-row:first-child { border-top: 0; }
+    .bar-row:hover { background: var(--surface-2); }
     .bar-row .label {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       font-size: var(--fs-sm);
