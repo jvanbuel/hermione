@@ -15,6 +15,7 @@
   <link rel="icon" type="image/svg+xml" href="/assets/hermione-mark.svg" />
   <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
   <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/assets/more-menu.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
@@ -93,23 +94,6 @@
      * Analytics, Transcripts, Broadcast. What is used once a term — a new
      * course, the assistant's settings, the theme, signing out — lives behind
      * one button, so the bar reads as a few things rather than a dozen. */
-    #more-wrap { position: relative; flex: none; }
-    #more { padding: 5px; }
-    #more .ico { width: 16px; height: 16px; }
-    #more-menu {
-      position: absolute; right: 0; top: calc(100% + 8px); z-index: 60; min-width: 210px;
-      display: flex; flex-direction: column; padding: 4px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-      box-shadow: var(--shadow-2);
-    }
-    #more-menu[hidden] { display: none; }
-    #more-menu button {
-      width: 100%; justify-content: flex-start; gap: 10px; padding: 7px 10px;
-      background: none; border-color: transparent; box-shadow: none; font-size: var(--fs-base);
-    }
-    #more-menu button:hover, #more-menu button:focus-visible { background: var(--surface-2); }
-    #more-menu .ico { width: 15px; height: 15px; color: var(--fg-muted); }
-    #more-menu hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 4px 2px; }
     /* On a narrower window the bar gives up words before it gives up controls:
      * the actions keep their icons (and their names, for screen readers), then
      * the wordmark and repo name go. */
@@ -622,6 +606,7 @@
   </footer>
   <div id="toasts" role="status" aria-live="polite"></div>
 
+  <script src="/assets/more-menu.js"></script>
   <script>
     // xterm palettes per theme — kept in step with --bg / --fg in tokens.css so
     // the embedded terminals match the page chrome (dark = chalkboard slate).
@@ -2240,33 +2225,6 @@
       await fetch('/api/logout', { method: 'POST' });
       window.location.href = '/login';
     });
-    // The "more" menu: a button that opens a short list. It closes on Escape
-    // (returning focus to its button), on a click elsewhere, when focus leaves
-    // it, and after an item is chosen; arrows move between items.
-    (function moreMenu() {
-      const wrap = document.getElementById('more-wrap');
-      const btn = document.getElementById('more');
-      const menu = document.getElementById('more-menu');
-      const items = () => [...menu.querySelectorAll('[role="menuitem"]')];
-      const setOpen = (open, focusFirst = false) => {
-        menu.hidden = !open;
-        btn.setAttribute('aria-expanded', String(open));
-        if (open && focusFirst) items()[0].focus();
-      };
-      btn.addEventListener('click', () => setOpen(menu.hidden, true));
-      menu.addEventListener('click', () => setOpen(false));
-      document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) setOpen(false); });
-      wrap.addEventListener('focusout', (e) => { if (!wrap.contains(e.relatedTarget)) setOpen(false); });
-      wrap.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !menu.hidden) { setOpen(false); btn.focus(); return; }
-        const list = items(), at = list.indexOf(document.activeElement);
-        if (e.target === btn && e.key === 'ArrowDown') { e.preventDefault(); setOpen(true, true); }
-        else if (at >= 0 && e.key === 'ArrowDown') { e.preventDefault(); list[(at + 1) % list.length].focus(); }
-        else if (at >= 0 && e.key === 'ArrowUp') { e.preventDefault(); list[(at - 1 + list.length) % list.length].focus(); }
-        else if (at >= 0 && e.key === 'Home') { e.preventDefault(); list[0].focus(); }
-        else if (at >= 0 && e.key === 'End') { e.preventDefault(); list[list.length - 1].focus(); }
-      });
-    })();
     document.getElementById('broadcast').addEventListener('click', openBroadcast);
     document.getElementById('new-course').addEventListener('click', openNewCourse);
     document.getElementById('course-settings').addEventListener('click', openCourseSettings);

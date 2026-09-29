@@ -1537,6 +1537,31 @@ mod tests {
         Student::try_from(name.to_string()).unwrap()
     }
 
+    /// Every page's header links these; a missing one leaves the menu button
+    /// dead and unstyled, and only in a built binary, not in the fixtures server.
+    #[test]
+    fn the_header_menu_ships_with_the_binary() {
+        for (path, content_type) in [
+            (
+                "assets/more-menu.js",
+                "application/javascript; charset=utf-8",
+            ),
+            ("assets/more-menu.css", "text/css; charset=utf-8"),
+        ] {
+            assert!(
+                asset(path).is_some_and(|b| !b.is_empty()),
+                "{path} is embedded"
+            );
+            assert_eq!(super::content_type(path), content_type);
+        }
+        for page in ["index.html", "analytics.html", "transcripts.html"] {
+            let html = String::from_utf8(asset(page).unwrap().to_vec()).unwrap();
+            for link in ["/assets/more-menu.css", "/assets/more-menu.js"] {
+                assert!(html.contains(link), "{page} links {link}");
+            }
+        }
+    }
+
     #[test]
     fn a_verified_identity_beats_the_name_a_socket_claims() {
         let routed = routing_student(Some("github:bob".into()), Some(student("alice")));
