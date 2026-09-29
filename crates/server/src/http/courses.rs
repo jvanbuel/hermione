@@ -176,19 +176,7 @@ async fn seed_exercises(state: &AppState, course: &courses::Model) -> (usize, Op
     let credential = state.github.credential_for(&owner, &name).await;
     let found = match crate::repo::discover_exercises(&owner, &name, credential.token()).await {
         Ok(found) => found,
-        // When a shared token exists but this owner isn't allow-listed (and no
-        // App token covered it), say so — otherwise the failure looks like a
-        // missing token.
-        Err(e) if credential.withheld() => {
-            return (
-                0,
-                Some(format!(
-                    "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS \
-                     and no GitHub App is installed on the repo, so no token was used"
-                )),
-            )
-        }
-        Err(e) => return (0, Some(e)),
+        Err(e) => return (0, Some(e.for_teacher(&owner, &credential))),
     };
     if found.is_empty() {
         return (0, None);
@@ -315,7 +303,7 @@ pub(super) async fn course_tree(
     let credential = state.github.credential_for(&owner, &name).await;
     match crate::repo::fetch_dirs(&owner, &name, credential.token()).await {
         Ok(dirs) => Ok(Json(serde_json::json!({ "dirs": dirs }))),
-        Err(e) => note(&e),
+        Err(e) => note(&e.for_teacher(&owner, &credential)),
     }
 }
 

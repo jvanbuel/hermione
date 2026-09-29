@@ -20,8 +20,11 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+
+use crate::github_access::{api_request, ACCEPT_JSON};
 
 /// A configured GitHub App: its id and the RSA private key that signs app JWTs.
 #[derive(Clone)]
@@ -155,44 +158,46 @@ impl GithubApp {
         let jwt = self.app_jwt()?;
 
         // Which installation covers this repo? (404 ⇒ app not installed there.)
-        let install: Installation = client
-            .get(format!(
-                "https://api.github.com/repos/{owner}/{repo}/installation"
-            ))
-            .header("Authorization", format!("Bearer {jwt}"))
-            .header("User-Agent", "hermione")
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|_| format!("the GitHub App is not installed on {owner}/{repo}"))?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
+        let install: Installation = api_request(
+            &client,
+            Method::GET,
+            format!("https://api.github.com/repos/{owner}/{repo}/installation"),
+            Some(&jwt),
+            ACCEPT_JSON,
+        )
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|_| format!("the GitHub App is not installed on {owner}/{repo}"))?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Mint a token scoped to just this repo — it can read nothing else.
         let body = serde_json::json!({
             "repositories": [repo],
             "permissions": { "contents": "read", "metadata": "read" },
         });
-        let minted: InstallationToken = client
-            .post(format!(
+        let minted: InstallationToken = api_request(
+            &client,
+            Method::POST,
+            format!(
                 "https://api.github.com/app/installations/{}/access_tokens",
                 install.id
-            ))
-            .header("Authorization", format!("Bearer {jwt}"))
-            .header("User-Agent", "hermione")
-            .header("Accept", "application/vnd.github+json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|_| "could not mint a GitHub App installation token".to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
+            ),
+            Some(&jwt),
+            ACCEPT_JSON,
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|_| "could not mint a GitHub App installation token".to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
         let expires_at = minted
             .expires_at
             .as_deref()

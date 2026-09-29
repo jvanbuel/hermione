@@ -10,6 +10,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Deserialize;
 
+use crate::github_access::{api_request, Credential, ACCEPT_JSON};
 use crate::http::{normalize_slug, title_from_slug};
 
 /// An exercise discovered in a repo (slug + display title).
@@ -62,6 +63,49 @@ pub fn owner_allowed(owner: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|a| a.trim().eq_ignore_ascii_case(owner))
 }
 
+/// Why a linked repo could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum RepoError {
+    #[error("repository not found or not accessible (private repos need a token)")]
+    NotFound,
+    #[error("GitHub API returned {0}")]
+    Status(reqwest::StatusCode),
+    #[error("could not read GitHub's answer: {0}")]
+    Transport(#[from] reqwest::Error),
+}
+
+impl RepoError {
+    /// What the teacher who linked the repo is told. What GitHub said stays in
+    /// the log: it is a status code or a network error, never something to act
+    /// on, so a transport failure reads only as "could not reach GitHub".
+    ///
+    /// `credential` is what was tried: when a shared token exists but was
+    /// deliberately not sent for this owner, a "not found" is really "not
+    /// allowed", and the message says so — otherwise it reads as a missing token.
+    pub fn for_teacher(&self, owner: &str, credential: &Credential) -> String {
+        tracing::debug!(error = %self, %owner, "linked repo could not be read");
+        match self {
+            Self::Transport(_) => "could not reach GitHub".to_string(),
+            e if credential.withheld() => format!(
+                "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS and no GitHub \
+                 App is installed on the repo, so no token was used"
+            ),
+            e => e.to_string(),
+        }
+    }
+}
+
+/// A GitHub answer that is JSON on success and a status we can name otherwise.
+async fn json_or_refusal<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, RepoError> {
+    match resp.status() {
+        s if s.is_success() => Ok(resp.json().await?),
+        reqwest::StatusCode::NOT_FOUND => Err(RepoError::NotFound),
+        s => Err(RepoError::Status(s)),
+    }
+}
+
 #[derive(Deserialize)]
 struct ContentEntry {
     #[serde(rename = "type")]
@@ -81,7 +125,7 @@ pub async fn discover_exercises(
     owner: &str,
     repo: &str,
     token: Option<&str>,
-) -> Result<Vec<DiscoveredExercise>, String> {
+) -> Result<Vec<DiscoveredExercise>, RepoError> {
     let client = crate::github_access::client();
 
     // Prefer .hermione.json — the same file the extension resolves against.
@@ -119,20 +163,11 @@ pub async fn fetch_dirs(
     owner: &str,
     repo: &str,
     token: Option<&str>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, RepoError> {
     let client = crate::github_access::client();
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1");
-    let resp = gh_get(&client, token, &url).await?;
-    let tree: TreeResponse = match resp.status() {
-        s if s.is_success() => resp.json().await.map_err(|e| e.to_string())?,
-        reqwest::StatusCode::NOT_FOUND => {
-            return Err(
-                "repository not found or not accessible (private repos need a token)".into(),
-            )
-        }
-        s => return Err(format!("GitHub API returned {s}")),
-    };
+    let tree: TreeResponse = json_or_refusal(gh_get(&client, token, &url).await?).await?;
 
     let mut dirs: Vec<String> = tree
         .tree
@@ -164,17 +199,9 @@ async fn fetch_root(
     token: Option<&str>,
     owner: &str,
     repo: &str,
-) -> Result<Vec<ContentEntry>, String> {
+) -> Result<Vec<ContentEntry>, RepoError> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/");
-    let resp = gh_get(client, token, &url).await?;
-    match resp.status() {
-        s if s.is_success() => resp.json().await.map_err(|e| e.to_string()),
-        reqwest::StatusCode::NOT_FOUND => Err(
-            "repository not found or not accessible (private repos need HERMIONE_GITHUB_TOKEN)"
-                .into(),
-        ),
-        s => Err(format!("GitHub API returned {s}")),
-    }
+    json_or_refusal(gh_get(client, token, &url).await?).await
 }
 
 async fn fetch_hermione_json(
@@ -206,15 +233,12 @@ async fn gh_get(
     client: &reqwest::Client,
     token: Option<&str>,
     url: &str,
-) -> Result<reqwest::Response, String> {
-    let mut req = client
-        .get(url)
-        .header("User-Agent", "hermione")
-        .header("Accept", "application/vnd.github+json");
-    if let Some(token) = token {
-        req = req.header("Authorization", format!("Bearer {token}"));
-    }
-    req.send().await.map_err(|e| e.to_string())
+) -> Result<reqwest::Response, RepoError> {
+    Ok(
+        api_request(client, reqwest::Method::GET, url, token, ACCEPT_JSON)
+            .send()
+            .await?,
+    )
 }
 
 /// Extracts exercises from a parsed `.hermione.json`, preserving its order.

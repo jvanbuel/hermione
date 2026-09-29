@@ -231,14 +231,15 @@ impl Identity {
         struct GithubUser {
             login: String,
         }
-        let resp = self
-            .http
-            .get("https://api.github.com/user")
-            .header("Authorization", format!("Bearer {access_token}"))
-            .header("User-Agent", "hermione")
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await?;
+        let resp = crate::github_access::api_request(
+            &crate::github_access::client(),
+            reqwest::Method::GET,
+            "https://api.github.com/user",
+            Some(access_token),
+            crate::github_access::ACCEPT_JSON,
+        )
+        .send()
+        .await?;
         let status = resp.status();
         if status.is_client_error() {
             return Err(IdentityError::Rejected("github rejected the token".into()));

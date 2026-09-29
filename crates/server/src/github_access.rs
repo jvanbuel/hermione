@@ -46,6 +46,31 @@ pub fn client() -> reqwest::Client {
     }
 }
 
+/// The `Accept` value for GitHub's JSON API.
+pub const ACCEPT_JSON: &str = "application/vnd.github+json";
+
+/// A request to api.github.com carrying the headers every call sends, with
+/// `token` (when there is one) as the bearer credential. Every GitHub read is
+/// built here, so the token is only ever attached alongside [`client`]'s
+/// no-redirect policy and the same identifying headers.
+pub fn api_request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: impl reqwest::IntoUrl,
+    token: Option<&str>,
+    accept: &str,
+) -> reqwest::RequestBuilder {
+    let request = client
+        .request(method, url)
+        .header("User-Agent", "hermione")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("Accept", accept);
+    match token {
+        Some(t) => request.bearer_auth(t),
+        None => request,
+    }
+}
+
 /// The GitHub credentials the server was configured with.
 #[derive(Clone, Default)]
 pub struct GitHubAccess {

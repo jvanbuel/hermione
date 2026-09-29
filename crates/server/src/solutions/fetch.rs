@@ -130,16 +130,7 @@ impl GitHub {
     }
 
     fn get(&self, url: reqwest::Url, token: Option<&str>, accept: &str) -> reqwest::RequestBuilder {
-        let request = self
-            .client
-            .get(url)
-            .header("User-Agent", "hermione")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("Accept", accept);
-        match token {
-            Some(t) => request.bearer_auth(t),
-            None => request,
-        }
+        crate::github_access::api_request(&self.client, reqwest::Method::GET, url, token, accept)
     }
 }
 
