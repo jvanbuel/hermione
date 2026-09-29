@@ -160,7 +160,9 @@ export async function buildOpenFile(
         dirty: target.doc.isDirty,
         content: truncated ? text.slice(0, MAX_CONTENT_CHARS) : text,
         truncated: truncated || undefined,
-        baseline: await baselineFor(target, text, where.relativePath),
+        // Diffing is synchronous work on the thread the student types on, and its
+        // result is unbounded, so a buffer too big to send whole is not diffed.
+        baseline: truncated ? { kind: 'none' } : await baselineFor(target, text, where.relativePath),
     };
 }
 

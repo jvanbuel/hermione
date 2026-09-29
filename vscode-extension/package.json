@@ -14,6 +14,12 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a workspace you have not trusted, the backend and token in its .hermione.json are ignored, so a downloaded repository cannot choose where your activity and sign-in are sent."
+    }
+  },
   "categories": [
     "Education",
     "Other"

@@ -1,13 +1,19 @@
+import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
+
+/** What a streamed turn reports as it goes. */
+export interface StreamHandlers {
+    status: (text: string) => void;
+    message: (text: string) => void;
+    error: (text: string) => void;
+}
 
 /** What the panel needs from the reporter to talk to the backend. */
 export interface AssistantClient {
     assistantStatus(): Promise<boolean>;
     assistantHistory(): Promise<{ role: string; body: string }[]>;
-    assistantChatStream(
-        message: string,
-        on: { status: (t: string) => void; message: (t: string) => void; error: (t: string) => void },
-    ): Promise<void>;
+    /** Resolves when the turn has ended; reports failures through `on.error`. */
+    assistantChatStream(message: string, on: StreamHandlers): Promise<void>;
 }
 
 let panel: vscode.WebviewPanel | undefined;
@@ -36,7 +42,17 @@ export function registerAssistant(context: vscode.ExtensionContext, client: Assi
                 vscode.ViewColumn.Beside,
                 { enableScripts: true, retainContextWhenHidden: true },
             );
-            panel.onDidDispose(() => (panel = undefined), null, context.subscriptions);
+            // Owned by the panel: they go when it does, instead of piling up in
+            // the extension's subscriptions once per time the panel is opened.
+            const own: vscode.Disposable[] = [];
+            panel.onDidDispose(
+                () => {
+                    panel = undefined;
+                    own.forEach((d) => d.dispose());
+                },
+                null,
+                own,
+            );
             panel.webview.html = chatHtml(panel.webview);
             panel.webview.onDidReceiveMessage(
                 async (msg) => {
@@ -50,28 +66,28 @@ export function registerAssistant(context: vscode.ExtensionContext, client: Assi
                         }
                         const post = (m: object) => panel?.webview.postMessage(m);
                         post({ type: 'status', body: 'thinking…' });
-                        await client.assistantChatStream(text, {
-                            status: (t) => post({ type: 'status', body: t }),
-                            message: (t) => post({ type: 'message', body: t }),
-                            error: (t) => post({ type: 'error', body: t }),
-                        });
-                        post({ type: 'done' });
+                        try {
+                            await client.assistantChatStream(text, {
+                                status: (t) => post({ type: 'status', body: t }),
+                                message: (t) => post({ type: 'message', body: t }),
+                                error: (t) => post({ type: 'error', body: t }),
+                            });
+                        } finally {
+                            // The panel disables its input while a turn runs; if
+                            // this were skipped it would stay disabled for good.
+                            post({ type: 'done' });
+                        }
                     }
                 },
                 undefined,
-                context.subscriptions,
+                own,
             );
         }),
     );
 }
 
 function nonce(): string {
-    let s = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-        s += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return s;
+    return randomBytes(16).toString('hex');
 }
 
 function chatHtml(webview: vscode.Webview): string {

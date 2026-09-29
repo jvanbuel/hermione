@@ -98,6 +98,10 @@ Notes on how it behaves:
   `hermione.shareFileContents` setting (the student's own veto). The more
   restrictive of the two wins, and the extension answers the request with a
   refusal so the dashboard says so rather than spinning forever.
+- **Only course files are ever shown.** A file outside every workspace folder,
+  or one that holds credentials (`.env*`, `*.pem`, `*.key`, `id_rsa*`, anything
+  under `.ssh`/`.aws`/`.gnupg`, and similar), is answered with the same refusal
+  as an opt-out, whatever the teacher opens.
 - **Syntax highlighting is the backend's job**, not the extension's. The server
   classifies the buffer on arrival and sends the dashboard spans rather than
   colours; the extension sends `language` (VSCode's language id) and the path,
@@ -145,6 +149,14 @@ trust model.
 ```
 
 Files that match no rule simply have no exercise.
+
+**Trust.** A repository you have just cloned can carry any `.hermione.json`, so
+until you trust the workspace the `backend` and `token` in it are ignored (your
+own settings apply) and a notice says so. The GitHub token used to sign in is
+only ever sent over `https`, or to this machine. A `.hermione.json` that is
+present but not valid JSON is reported rather than silently ignored.
+
+Diagnostics go to the **Hermione** output channel.
 
 ## Develop
 

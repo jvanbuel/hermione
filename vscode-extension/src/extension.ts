@@ -1,39 +1,20 @@
-import { execSync } from 'child_process';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import WebSocket from 'ws';
-import { registerAssistant } from './assistant';
+import { registerAssistant, StreamHandlers } from './assistant';
+import { backoffMs } from './backoff';
+import { CourseFile, readCourseFiles } from './course';
 import { ExerciseMap } from './exercises';
+import { gitConfig } from './git-config';
+import {
+    mayReceiveCredentials,
+    mayShareContents,
+    parseRepo,
+    resolveConnection,
+    resolveStudent,
+} from './settings';
 import { buildOpenFile, Report, SnapshotTarget } from './snapshot';
-
-interface CourseConfig {
-    backend?: string;
-    token?: string;
-    identity?: string;
-    authProvider?: string;
-    shareFileContents?: boolean;
-}
-
-/** Reads the course config from the workspace's `.hermione.json`. */
-async function readCourseConfig(): Promise<CourseConfig> {
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
-        try {
-            const uri = vscode.Uri.joinPath(folder.uri, '.hermione.json');
-            const bytes = await vscode.workspace.fs.readFile(uri);
-            const cfg = JSON.parse(Buffer.from(bytes).toString('utf8'));
-            return {
-                backend: cfg.backend,
-                token: cfg.token,
-                identity: cfg.identity,
-                authProvider: cfg.authProvider,
-                shareFileContents: cfg.shareFileContents,
-            };
-        } catch (_) {
-            // try the next folder
-        }
-    }
-    return {};
-}
+import { sseEvents } from './sse';
 
 interface FileEvent {
     student: string;
@@ -109,6 +90,33 @@ function fileUri(uri: vscode.Uri): vscode.Uri {
     return notebook ? notebook.uri : uri.with({ scheme: 'file', authority: '', fragment: '' });
 }
 
+/** Longest a request may take before it is given up on, so a hung backend can't stall the editor. */
+const REQUEST_TIMEOUT_MS = 10_000;
+/** A chat turn streams for as long as the assistant works. */
+const STREAM_TIMEOUT_MS = 180_000;
+/** Events kept while the backend is unreachable; the oldest go first. */
+const MAX_QUEUED_EVENTS = 1_000;
+/** A batch the backend refused for what it *is* will never succeed, however often it is resent. */
+const PERMANENT_REFUSALS = new Set([400, 403, 413]);
+/** How often a stale identity may interrupt the student with a sign-in prompt. */
+const SIGN_IN_PROMPT_COOLDOWN_MS = 10 * 60_000;
+/** How often the message socket is checked for being silently dead (a laptop woke up, a NAT dropped it). */
+const PING_INTERVAL_MS = 30_000;
+
+class HttpError extends Error {
+    constructor(readonly status: number) {
+        super(`HTTP ${status}`);
+    }
+}
+
+/** Cancels a timer (or interval) and returns `undefined`, so it can be assigned back. */
+function cancel(timer: NodeJS.Timeout | undefined): undefined {
+    if (timer) {
+        clearTimeout(timer);
+    }
+    return undefined;
+}
+
 /**
  * Watches which file the student has active and reports it to the Hermione
  * backend — on focus changes, via periodic heartbeats (so we can measure
@@ -118,10 +126,10 @@ function fileUri(uri: vscode.Uri): vscode.Uri {
  */
 class Reporter {
     private enabled = false;
+    private starting = false;
     private student = '';
     private studentSource = '';
     private repo = '';
-    private identityToken = '';
     private authProvider = '';
     private serverUrl = '';
     private heartbeatSeconds = 15;
@@ -132,6 +140,8 @@ class Reporter {
 
     private exercises = new ExerciseMap();
     private queue: FileEvent[] = [];
+    /** Consecutive failed flushes, for backing off. */
+    private flushFailures = 0;
     private pendingEdits = new Map<
         string,
         { doc: vscode.TextDocument; count: number; at: number }
@@ -141,6 +151,10 @@ class Reporter {
     private editTimer?: NodeJS.Timeout;
     private socket?: WebSocket;
     private reconnectTimer?: NodeJS.Timeout;
+    private pingTimer?: NodeJS.Timeout;
+    private reconnectAttempts = 0;
+    /** Bumped whenever the socket is replaced, so a slow connect can tell it was overtaken. */
+    private socketGeneration = 0;
     private lastMessageId = 0;
     private windowFocused = true;
 
@@ -151,18 +165,46 @@ class Reporter {
     private snapshotTimer?: NodeJS.Timeout;
     private snapshotSending = false;
 
+    private identityPending?: Promise<string | undefined>;
+    private lastSignInPrompt = 0;
+    private warned = new Set<string>();
+
     private statusBar: vscode.StatusBarItem;
+    private output: vscode.OutputChannel;
     private disposables: vscode.Disposable[] = [];
 
     constructor(private context: vscode.ExtensionContext) {
         this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         this.statusBar.command = 'hermione.setStudent';
-        context.subscriptions.push(this.statusBar);
+        this.output = vscode.window.createOutputChannel('Hermione');
+        context.subscriptions.push(this.statusBar, this.output);
+    }
+
+    /** Diagnostics for whoever is debugging the extension; never shown unprompted. */
+    private log(message: string): void {
+        this.output.appendLine(`${new Date().toISOString()} ${message}`);
+    }
+
+    /** Tells the student once per distinct problem, however often config is reloaded. */
+    private warnOnce(message: string): void {
+        this.log(message);
+        if (!this.warned.has(message)) {
+            this.warned.add(message);
+            void vscode.window.showWarningMessage(`Hermione: ${message}`);
+        }
     }
 
     async start(): Promise<void> {
-        await this.loadConfig();
-        await this.exercises.load();
+        // Starting twice would stack a second set of listeners on the first.
+        if (this.enabled || this.starting) {
+            return;
+        }
+        this.starting = true;
+        try {
+            await this.reload();
+        } finally {
+            this.starting = false;
+        }
         this.enabled = true;
 
         this.disposables.push(
@@ -177,91 +219,131 @@ class Reporter {
             // Moving the cursor changes nothing worth reporting as activity,
             // but it is most of what a teacher watching the file wants to see.
             vscode.window.onDidChangeTextEditorSelection(() => this.pushSnapshot()),
-            vscode.workspace.onDidCloseTextDocument((doc) => this.onClose(doc)),
-            vscode.workspace.onDidCloseNotebookDocument((nb) => this.onCloseNotebook(nb)),
-            vscode.workspace.onDidChangeWorkspaceFolders(async () => {
-                await this.loadConfig();
-                await this.exercises.load();
-            }),
-            vscode.workspace.onDidChangeConfiguration(async (e) => {
-                if (e.affectsConfiguration('hermione')) {
-                    const before = this.student;
-                    await this.loadConfig();
-                    this.restartHeartbeat();
-                    // Snapshot requests are routed by student name, so a
-                    // renamed identity needs a fresh socket — the open one is
-                    // still subscribed under the name we connected with.
-                    if (this.student !== before) {
-                        this.reconnectMessages();
-                    }
+            vscode.workspace.onDidCloseTextDocument((doc) => {
+                // Deleting or collapsing a cell closes that cell's document
+                // while the notebook stays open, so cells are left to the
+                // notebook's own close.
+                if (doc.uri.scheme === 'file') {
+                    this.closeFile(doc.uri);
                 }
             }),
+            vscode.workspace.onDidCloseNotebookDocument((nb) => this.closeFile(nb.uri)),
+            vscode.workspace.onDidChangeWorkspaceFolders(() => this.reload()),
+            vscode.workspace.onDidChangeConfiguration((e) => {
+                if (e.affectsConfiguration('hermione')) {
+                    void this.reload();
+                }
+            }),
+            vscode.workspace.onDidGrantWorkspaceTrust(() => this.reload()),
         );
 
         this.restartHeartbeat();
         this.onFocus(); // report current file immediately
 
         // Surface teacher broadcasts for this course over a live WebSocket.
-        this.lastMessageId = this.context.globalState.get(this.messageKey(), 0);
-        this.connectMessages();
+        this.reconnectMessages();
 
         this.updateStatusBar();
     }
 
     stop(): void {
         this.enabled = false;
-        if (this.heartbeatTimer) {
-            clearInterval(this.heartbeatTimer);
-        }
-        if (this.editTimer) {
-            clearTimeout(this.editTimer);
-            this.editTimer = undefined;
-        }
+        this.heartbeatTimer = cancel(this.heartbeatTimer);
+        this.editTimer = cancel(this.editTimer);
+        this.snapshotTimer = cancel(this.snapshotTimer);
+        this.watchTimer = cancel(this.watchTimer);
+        // Reporting is off: what is still queued must not be sent, and a retry
+        // must not keep the backend busy after the student turned it off.
+        this.flushTimer = cancel(this.flushTimer);
+        this.queue = [];
+        this.flushFailures = 0;
         this.pendingEdits.clear();
-        if (this.snapshotTimer) {
-            clearTimeout(this.snapshotTimer);
-            this.snapshotTimer = undefined;
-        }
-        if (this.watchTimer) {
-            clearTimeout(this.watchTimer);
-            this.watchTimer = undefined;
-        }
         // start() reports the current file immediately; leaving this set would
         // suppress exactly that.
         this.focusedPath = '';
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = undefined;
-        }
-        if (this.socket) {
-            try {
-                this.socket.close();
-            } catch (_) {
-                // already closing
-            }
-            this.socket = undefined;
-        }
+        this.reconnectTimer = cancel(this.reconnectTimer);
+        this.closeSocket();
         this.disposables.forEach((d) => d.dispose());
         this.disposables = [];
         this.updateStatusBar();
+    }
+
+    /**
+     * Re-reads configuration and applies it: the course file and settings can
+     * change under a running editor (a folder is added, a setting edited, a
+     * workspace is trusted), and anything already connected must follow.
+     */
+    private async reload(): Promise<void> {
+        const before = this.connectionKey();
+        const course = await readCourseFiles();
+        for (const problem of course.problems) {
+            this.warnOnce(problem);
+        }
+        this.exercises.load(course.files);
+        await this.loadConfig(course.files[0] ?? {});
+        if (!this.enabled) {
+            return;
+        }
+        this.restartHeartbeat();
+        // The socket is subscribed under the server, token and student name it
+        // connected with, and snapshot requests are routed by that name.
+        if (this.connectionKey() !== before) {
+            this.reconnectMessages();
+        }
+        this.updateStatusBar();
+    }
+
+    private connectionKey(): string {
+        return [this.serverUrl, this.token, this.authProvider, this.student].join('\n');
     }
 
     private messageKey(): string {
         return `hermione.lastMessageId:${this.serverUrl}`;
     }
 
+    // ---- the message socket ----
+
+    /** Replaces the message socket immediately, without the reconnect delay. */
+    private reconnectMessages(): void {
+        this.closeSocket();
+        this.reconnectTimer = cancel(this.reconnectTimer);
+        this.reconnectAttempts = 0;
+        this.lastMessageId = this.context.globalState.get(this.messageKey(), 0);
+        void this.connectMessages();
+    }
+
+    private closeSocket(): void {
+        this.socketGeneration++;
+        this.pingTimer = cancel(this.pingTimer);
+        const old = this.socket;
+        this.socket = undefined;
+        try {
+            old?.terminate();
+        } catch (_) {
+            // already closed
+        }
+    }
+
     /**
      * Opens the message WebSocket. On connect the server replays anything
-     * missed (via `since`), then pushes new broadcasts live; we reconnect with a
-     * fixed backoff if the connection drops.
+     * missed (via `since`), then pushes new broadcasts live; when the connection
+     * drops we reconnect with a growing, jittered delay.
      */
-    private connectMessages(): void {
+    private async connectMessages(): Promise<void> {
         if (!this.enabled) {
             return;
         }
-        const base = this.serverUrl.replace(/^http/, 'ws');
+        const generation = ++this.socketGeneration;
         // The enrollment token goes in the Authorization header with the rest of
         // `authHeaders()`, not in the URL, where proxies and access logs keep it.
+        // Credentials go with the socket as they do with every other request:
+        // where students are verified, the backend routes this editor's frames
+        // by who it proves to be, not by the `student` below.
+        const headers = await this.authHeaders();
+        if (!this.enabled || generation !== this.socketGeneration) {
+            return; // stopped, or replaced while signing in
+        }
+
         const params = new URLSearchParams();
         params.set('since', String(this.lastMessageId));
         // Lets the backend route snapshot requests to this editor alone rather
@@ -273,16 +355,32 @@ class Reporter {
 
         let ws: WebSocket;
         try {
-            // Credentials go with the socket as they do with every other request:
-            // where students are verified, the backend routes this editor's
-            // frames by who it proves to be, not by the `student` above.
-            ws = new WebSocket(`${base}/ws?${params.toString()}`, { headers: this.authHeaders() });
-        } catch (_) {
+            ws = new WebSocket(`${this.serverUrl.replace(/^http/, 'ws')}/ws?${params}`, { headers });
+        } catch (e) {
+            this.log(`could not open the message socket: ${String(e)}`);
             this.scheduleReconnect();
             return;
         }
         this.socket = ws;
 
+        let alive = true;
+        ws.on('open', () => {
+            this.reconnectAttempts = 0;
+            // A half-open socket never fires `close`, and snapshot requests
+            // would be lost silently until the window was reloaded.
+            this.pingTimer = setInterval(() => {
+                if (!alive) {
+                    this.log('message socket stopped answering; reconnecting');
+                    ws.terminate();
+                    return;
+                }
+                alive = false;
+                ws.ping();
+            }, PING_INTERVAL_MS);
+        });
+        ws.on('pong', () => {
+            alive = true;
+        });
         ws.on('message', (data: WebSocket.RawData) => {
             try {
                 const m = JSON.parse(data.toString()) as { id: number; body: string; kind?: string };
@@ -295,10 +393,10 @@ class Reporter {
                     return;
                 }
                 if (m && m.body) {
-                    vscode.window.showInformationMessage(`📣 ${m.body}`);
+                    void vscode.window.showInformationMessage(`📣 ${m.body}`);
                     if (m.id > this.lastMessageId) {
                         this.lastMessageId = m.id;
-                        this.context.globalState.update(this.messageKey(), this.lastMessageId);
+                        void this.context.globalState.update(this.messageKey(), this.lastMessageId);
                     }
                 }
             } catch (_) {
@@ -312,29 +410,17 @@ class Reporter {
                 return;
             }
             this.socket = undefined;
+            this.pingTimer = cancel(this.pingTimer);
             this.scheduleReconnect();
         });
-        ws.on('error', () => {
+        ws.on('error', (e) => {
+            this.log(`message socket: ${e.message}`);
             try {
-                ws.close();
+                ws.terminate();
             } catch (_) {
-                // already closing
+                // already closed
             }
         });
-    }
-
-    /** Replaces the message socket immediately, without the reconnect delay. */
-    private reconnectMessages(): void {
-        const old = this.socket;
-        this.socket = undefined;
-        if (old) {
-            try {
-                old.close();
-            } catch (_) {
-                // already closing
-            }
-        }
-        this.connectMessages();
     }
 
     private scheduleReconnect(): void {
@@ -343,38 +429,143 @@ class Reporter {
         }
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = undefined;
-            this.connectMessages();
-        }, 5000);
+            void this.connectMessages();
+        }, backoffMs(this.reconnectAttempts++));
+    }
+
+    // ---- talking to the backend ----
+
+    /** The credentials every request carries; signs in silently if the identity has lapsed. */
+    private async authHeaders(): Promise<Record<string, string>> {
+        const headers: Record<string, string> = {};
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
+        const identity = await this.ensureIdentity();
+        if (identity) {
+            headers['X-Hermione-Identity'] = identity;
+        }
+        return headers;
+    }
+
+    /** One authenticated request. The caller decides what each status means. */
+    private async api(
+        path: string,
+        init: { body?: string; stream?: boolean } = {},
+    ): Promise<Response> {
+        const headers = await this.authHeaders();
+        if (init.body !== undefined) {
+            headers['Content-Type'] = 'application/json';
+        }
+        return fetch(`${this.serverUrl}${path}`, {
+            method: init.body === undefined ? 'GET' : 'POST',
+            headers,
+            body: init.body,
+            signal: AbortSignal.timeout(init.stream ? STREAM_TIMEOUT_MS : REQUEST_TIMEOUT_MS),
+        });
+    }
+
+    /**
+     * One authenticated POST. Every caller shares the `401` handling, because a
+     * stale identity token is a property of the connection rather than of the
+     * payload — a snapshot that silently 401s forever would leave the teacher
+     * staring at "Asking…" with no way to find out why.
+     */
+    private async post(path: string, body: string): Promise<void> {
+        const res = await this.api(path, { body });
+        if (res.status === 401) {
+            // Backend requires a verified identity — renew it, then let the
+            // caller decide whether this one is worth resending.
+            await this.renewIdentity();
+        }
+        if (!res.ok) {
+            throw new HttpError(res.status);
+        }
+    }
+
+    // ---- identity ----
+
+    private identityKey(): string {
+        return `hermione.identity:${this.serverUrl}:${this.authProvider}`;
+    }
+
+    /** The Hermione identity token: the cached one while it is good, else a silent sign-in. */
+    private ensureIdentity(): Promise<string | undefined> {
+        const cached = this.context.globalState.get<{ token: string; exp: number }>(this.identityKey());
+        if (cached && cached.exp > Date.now() / 1000 + 60) {
+            return Promise.resolve(cached.token);
+        }
+        // Concurrent requests share one sign-in rather than each starting their own.
+        return (this.identityPending ??= this.signIn(false).finally(() => {
+            this.identityPending = undefined;
+        }));
+    }
+
+    /**
+     * The backend rejected our identity, so the cached one is no good whatever
+     * its expiry says. Renew silently if VSCode still has a session; only
+     * prompt when it does not, and no more than once in a while.
+     */
+    private async renewIdentity(): Promise<void> {
+        if ((await this.signIn(false)) !== undefined) {
+            return;
+        }
+        if (Date.now() - this.lastSignInPrompt > SIGN_IN_PROMPT_COOLDOWN_MS) {
+            this.lastSignInPrompt = Date.now();
+            await this.signIn(true);
+        }
+    }
+
+    /**
+     * Exchanges VSCode's GitHub session (silent in Codespaces) for a Hermione
+     * identity token at the backend. `interactive` may prompt to sign in.
+     */
+    private async signIn(interactive: boolean): Promise<string | undefined> {
+        if (!mayReceiveCredentials(this.serverUrl)) {
+            this.warnOnce(
+                `not signing in to ${this.serverUrl}: a GitHub token is only sent over https or to this machine`,
+            );
+            return undefined;
+        }
+        try {
+            const session = await vscode.authentication.getSession(
+                'github',
+                ['read:user'],
+                interactive ? { createIfNone: true } : { silent: true },
+            );
+            if (!session) {
+                return undefined;
+            }
+            const res = await fetch(`${this.serverUrl}/api/auth/exchange`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider: this.authProvider, token: session.accessToken }),
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            if (!res.ok) {
+                this.log(`identity exchange refused: HTTP ${res.status}`);
+                return undefined;
+            }
+            const data = (await res.json()) as { identityToken: string; expiresIn: number };
+            await this.context.globalState.update(this.identityKey(), {
+                token: data.identityToken,
+                exp: Math.floor(Date.now() / 1000) + (data.expiresIn || 28800),
+            });
+            return data.identityToken;
+        } catch (e) {
+            // Identity unavailable; ingest will 401 if the backend enforces it.
+            this.log(`identity exchange failed: ${String(e)}`);
+            return undefined;
+        }
     }
 
     // ---- AI assistant (chat panel) ----
 
-    private authHeaders(): Record<string, string> {
-        const h: Record<string, string> = {};
-        if (this.token) {
-            h['Authorization'] = `Bearer ${this.token}`;
-        }
-        if (this.identityToken) {
-            h['X-Hermione-Identity'] = this.identityToken;
-        }
-        return h;
-    }
-
     /** Whether the course this workspace is enrolled in has the assistant on. */
     async assistantStatus(): Promise<boolean> {
-        if (!this.serverUrl) {
-            await this.loadConfig();
-        }
-        await this.ensureIdentity(false);
         try {
-            const res = await fetch(`${this.serverUrl}/api/assistant/status`, {
-                headers: this.authHeaders(),
-            });
-            if (!res.ok) {
-                return false;
-            }
-            const data = (await res.json()) as { enabled?: boolean };
-            return !!data.enabled;
+            const res = await this.api('/api/assistant/status');
+            return res.ok && !!((await res.json()) as { enabled?: boolean }).enabled;
         } catch (_) {
             return false;
         }
@@ -383,101 +574,58 @@ class Reporter {
     /** This student's prior turns with the assistant. */
     async assistantHistory(): Promise<{ role: string; body: string }[]> {
         try {
-            const url = `${this.serverUrl}/api/assistant/history?student=${encodeURIComponent(this.student)}`;
-            const res = await fetch(url, { headers: this.authHeaders() });
+            const res = await this.api(
+                `/api/assistant/history?student=${encodeURIComponent(this.student)}`,
+            );
             return res.ok ? ((await res.json()) as { role: string; body: string }[]) : [];
         } catch (_) {
             return [];
         }
     }
 
+    /** The question, grounded with the file the student is looking at. */
     private chatBody(message: string): string {
-        const editor = vscode.window.activeTextEditor;
-        const onFile = editor && tracked(editor.document);
-        const file = onFile ? vscode.workspace.asRelativePath(fileUri(editor!.document.uri), false) : undefined;
-        const language = onFile ? editor!.document.languageId : undefined;
-        return JSON.stringify({ message, student: this.student, file, language });
-    }
-
-    /** Sends one question, grounded with the current file, and returns the reply. */
-    async assistantChat(message: string): Promise<string> {
-        await this.ensureIdentity(false);
-        const res = await fetch(`${this.serverUrl}/api/assistant/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-            body: this.chatBody(message),
+        const target = this.activeTarget();
+        return JSON.stringify({
+            message,
+            student: this.student,
+            file: target && this.locate(target.uri).relativePath,
+            language: target?.doc?.languageId,
         });
-        if (!res.ok) {
-            throw new Error((await res.text()) || `HTTP ${res.status}`);
-        }
-        const data = (await res.json()) as { reply: string };
-        return data.reply;
     }
 
     /**
      * Streams one turn. Managed Agents streams at message granularity, so
-     * `onMessage` fires once per complete agent message; `onStatus` reports
-     * progress between tool calls. Resolves when the turn ends.
+     * `message` fires once per complete agent message; `status` reports progress
+     * between tool calls. Resolves when the turn ends, however it ends: every
+     * failure is reported through `error`, never thrown, because the panel is
+     * waiting on this to re-enable its input.
      */
-    async assistantChatStream(
-        message: string,
-        on: { status: (t: string) => void; message: (t: string) => void; error: (t: string) => void },
-    ): Promise<void> {
-        await this.ensureIdentity(false);
-        let res: Awaited<ReturnType<typeof fetch>>;
+    async assistantChatStream(message: string, on: StreamHandlers): Promise<void> {
         try {
-            res = await fetch(`${this.serverUrl}/api/assistant/chat/stream`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+            const res = await this.api('/api/assistant/chat/stream', {
                 body: this.chatBody(message),
+                stream: true,
             });
-        } catch (e) {
-            on.error(e instanceof Error ? e.message : 'Request failed');
-            return;
-        }
-        if (!res.ok || !res.body) {
-            on.error((await res.text().catch(() => '')) || `HTTP ${res.status}`);
-            return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        let event = 'message';
-        for (;;) {
-            const { done, value } = await reader.read();
-            if (done) {
-                break;
+            if (!res.ok || !res.body) {
+                on.error((await res.text().catch(() => '')) || `HTTP ${res.status}`);
+                return;
             }
-            buf += decoder.decode(value, { stream: true });
-            let nl: number;
-            while ((nl = buf.indexOf('\n')) >= 0) {
-                const line = buf.slice(0, nl).replace(/\r$/, '');
-                buf = buf.slice(nl + 1);
-                if (line === '') {
-                    event = 'message';
-                } else if (line.startsWith(':')) {
-                    // keep-alive comment
-                } else if (line.startsWith('event:')) {
-                    event = line.slice(6).trim();
-                } else if (line.startsWith('data:')) {
-                    let payload: { text?: string } = {};
-                    try {
-                        payload = JSON.parse(line.slice(5).trim());
-                    } catch (_) {
-                        // ignore malformed frame
-                    }
-                    const text = payload.text || '';
-                    if (event === 'status') {
-                        on.status(text);
-                    } else if (event === 'error') {
-                        on.error(text);
-                    } else if (event === 'message') {
-                        on.message(text);
-                    }
-                    // 'done' ends the turn; the stream closes right after.
+            for await (const { event, data } of sseEvents(res.body)) {
+                let text = '';
+                try {
+                    text = (JSON.parse(data) as { text?: string }).text || '';
+                } catch (_) {
+                    continue; // ignore a malformed frame
+                }
+                // 'done' ends the turn; the stream closes right after.
+                if (event === 'status' || event === 'error' || event === 'message') {
+                    on[event](text);
                 }
             }
+        } catch (e) {
+            this.log(`assistant stream failed: ${String(e)}`);
+            on.error('The connection to the assistant was lost.');
         }
     }
 
@@ -490,127 +638,58 @@ class Reporter {
             await vscode.workspace
                 .getConfiguration('hermione')
                 .update('student', value, vscode.ConfigurationTarget.Global);
-            await this.loadConfig();
-            this.updateStatusBar();
+            await this.reload();
         }
     }
 
     /**
-     * Loads configuration. The committed course file (`.hermione.json`) is the
+     * Applies configuration. The committed course file (`.hermione.json`) is the
      * single source of truth a teacher controls — it can carry `backend`,
      * `token`, and an `identity` source — falling back to VSCode settings/env.
+     * The rules themselves are in `settings.ts`.
      */
-    private async loadConfig(): Promise<void> {
-        const cfg = vscode.workspace.getConfiguration('hermione');
-        const course = await readCourseConfig();
-        this.serverUrl = (course.backend || cfg.get<string>('serverUrl') || 'http://localhost:8080')
-            .replace(/\/$/, '');
-        this.heartbeatSeconds = Math.max(5, cfg.get<number>('heartbeatSeconds') ?? 15);
-        this.token = course.token || cfg.get<string>('token') || process.env.HERMIONE_TOKEN || '';
-        const id = this.resolveStudent(course.identity);
+    private async loadConfig(course: CourseFile): Promise<void> {
+        const settings = vscode.workspace.getConfiguration('hermione');
+        // A folder opened from anywhere can carry a `.hermione.json`. Until the
+        // student trusts it, it may not choose where their activity, file
+        // contents and sign-in go.
+        const trusted = vscode.workspace.isTrusted;
+        if (!trusted && (course.backend || course.token)) {
+            this.warnOnce(
+                "this workspace isn't trusted, so the backend and token in its .hermione.json are ignored",
+            );
+        }
+        const connection = resolveConnection(
+            trusted ? course : { ...course, backend: undefined, token: undefined },
+            {
+                serverUrl: settings.get<string>('serverUrl'),
+                token: settings.get<string>('token'),
+                shareFileContents: settings.get<boolean>('shareFileContents'),
+            },
+            process.env.HERMIONE_TOKEN,
+        );
+        this.serverUrl = connection.serverUrl;
+        this.token = connection.token;
+        this.authProvider = connection.authProvider;
+        this.shareFileContents = connection.shareFileContents;
+        this.heartbeatSeconds = Math.max(5, settings.get<number>('heartbeatSeconds') ?? 15);
+
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const id = await resolveStudent({
+            preference: course.identity,
+            explicit: settings.get<string>('student') || process.env.HERMIONE_STUDENT || '',
+            githubUser: process.env.GITHUB_USER || '',
+            gitEmail: () => gitConfig(['user.email'], cwd),
+            osUser: () => os.userInfo().username,
+        });
         this.student = id.value;
         this.studentSource = id.source;
-        this.repo = this.resolveRepo();
-        this.authProvider = course.authProvider || 'github';
-        // Either side may withhold file contents: the course sets the policy,
-        // and the student keeps a veto over their own buffer. Both must allow
-        // it, so the more restrictive of the two wins.
-        this.shareFileContents =
-            course.shareFileContents !== false &&
-            (cfg.get<boolean>('shareFileContents') ?? true);
-        await this.ensureIdentity(false);
-    }
-
-    private identityKey(): string {
-        return `hermione.identity:${this.serverUrl}:${this.authProvider}`;
-    }
-
-    /**
-     * Obtains a Hermione identity token via VSCode's GitHub auth (silent in
-     * Codespaces) exchanged at the backend. Cached until expiry; `interactive`
-     * triggers a sign-in prompt when needed.
-     */
-    private async ensureIdentity(interactive: boolean): Promise<void> {
-        const cached = this.context.globalState.get<{ token: string; exp: number }>(this.identityKey());
-        if (cached && cached.exp > Date.now() / 1000 + 60) {
-            this.identityToken = cached.token;
-            return;
-        }
-        try {
-            const session = await vscode.authentication.getSession(
-                'github',
-                ['read:user'],
-                interactive ? { createIfNone: true } : { silent: true },
-            );
-            if (!session) {
-                return;
-            }
-            const res = await fetch(`${this.serverUrl}/api/auth/exchange`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider: this.authProvider, token: session.accessToken }),
-            });
-            if (!res.ok) {
-                return;
-            }
-            const data = (await res.json()) as { identityToken: string; expiresIn: number };
-            this.identityToken = data.identityToken;
-            await this.context.globalState.update(this.identityKey(), {
-                token: data.identityToken,
-                exp: Math.floor(Date.now() / 1000) + (data.expiresIn || 28800),
-            });
-        } catch (_) {
-            // identity unavailable; ingest will 401 if the backend enforces it
-        }
-    }
-
-    /**
-     * Derives the student identity from the container environment — no login —
-     * along with which signal produced it (provenance). The auto path does NOT
-     * fall back to the OS username (it collides in shared devcontainers); an
-     * unresolved identity is reported as "unknown" so it's visible.
-     */
-    private resolveStudent(pref?: string): { value: string; source: string } {
-        const cfg = vscode.workspace.getConfiguration('hermione');
-        const explicit = cfg.get<string>('student') || process.env.HERMIONE_STUDENT || '';
-        const ghUser = process.env.GITHUB_USER || '';
-        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        const gitEmail = (): string => {
-            try {
-                return execSync('git config user.email', { cwd, encoding: 'utf8' }).trim();
-            } catch (_) {
-                return '';
-            }
-        };
-        const pick = (val: string, src: string) => (val ? { value: val, source: src } : null);
-        let r: { value: string; source: string } | null;
-        switch (pref) {
-            case 'github': r = pick(ghUser, 'github') || pick(explicit, 'config'); break;
-            case 'git-email': r = pick(gitEmail(), 'git-email') || pick(explicit, 'config'); break;
-            case 'env': r = pick(explicit, 'config'); break;
-            case 'os': r = pick(os.userInfo().username, 'os'); break;
-            default:
-                r = pick(explicit, 'config') || pick(ghUser, 'github') || pick(gitEmail(), 'git-email');
-        }
-        return r || { value: 'unknown', source: 'unknown' };
-    }
-
-    /** The repo (owner/name) the activity comes from, for identity provenance. */
-    private resolveRepo(): string {
-        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        try {
-            const url = execSync('git config --get remote.origin.url', { cwd, encoding: 'utf8' }).trim();
-            const m = url.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/);
-            return m ? m[1] : '';
-        } catch (_) {
-            return '';
-        }
+        // The repo (owner/name) the activity comes from, for identity provenance.
+        this.repo = parseRepo(await gitConfig(['--get', 'remote.origin.url'], cwd));
     }
 
     private restartHeartbeat(): void {
-        if (this.heartbeatTimer) {
-            clearInterval(this.heartbeatTimer);
-        }
+        this.heartbeatTimer = cancel(this.heartbeatTimer);
         this.heartbeatTimer = setInterval(() => {
             if (this.enabled && this.windowFocused) {
                 this.report('heartbeat');
@@ -656,10 +735,7 @@ class Reporter {
     }
 
     private flushEdits(): void {
-        if (this.editTimer) {
-            clearTimeout(this.editTimer);
-            this.editTimer = undefined;
-        }
+        this.editTimer = cancel(this.editTimer);
         for (const { doc, count, at } of this.pendingEdits.values()) {
             // Stamped when the typing happened, not when the timer fired —
             // otherwise an edit lands up to a window later than it occurred and
@@ -678,35 +754,20 @@ class Reporter {
         return editor && editor.document === doc ? editor.selection.active.line + 1 : undefined;
     }
 
-    private onClose(doc: vscode.TextDocument): void {
-        // Deleting or collapsing a cell closes that cell's document while the
-        // notebook stays open, so cells are left to onCloseNotebook.
-        if (this.enabled && doc.uri.scheme === 'file') {
-            // Flush first so a final typing burst isn't lost, and so the close
-            // stays last in the stream.
-            this.flushEdits();
-            this.forgetFocus(doc.uri);
-            this.enqueue(this.buildEvent('close', doc.uri, undefined));
-        }
-    }
-
-    private onCloseNotebook(nb: vscode.NotebookDocument): void {
+    /** A file (or notebook) was closed. */
+    private closeFile(uri: vscode.Uri): void {
         if (!this.enabled) {
             return;
         }
+        // Flush first so a final typing burst isn't lost, and so the close
+        // stays last in the stream.
         this.flushEdits();
-        this.forgetFocus(nb.uri);
-        this.enqueue(this.buildEvent('close', nb.uri, undefined));
-    }
-
-    /**
-     * Closing a file has to clear it, or reopening the same one is mistaken for
-     * focus that never moved and is never reported.
-     */
-    private forgetFocus(uri: vscode.Uri): void {
+        // Closing a file has to clear it, or reopening the same one is mistaken
+        // for focus that never moved and is never reported.
         if (uri.fsPath === this.focusedPath) {
             this.focusedPath = '';
         }
+        this.enqueue(this.buildEvent('close', uri, undefined));
     }
 
     /**
@@ -763,7 +824,7 @@ class Reporter {
         const wasWatched = this.watched;
         // The timer is the whole state: it lapses when the requests stop, which
         // drops the "being viewed" badge rather than leaving a stale one.
-        clearTimeout(this.watchTimer);
+        cancel(this.watchTimer);
         this.watchTimer = setTimeout(() => {
             this.watchTimer = undefined;
             this.updateStatusBar();
@@ -772,7 +833,7 @@ class Reporter {
             // Make it visible in the student's own editor the moment it starts.
             this.updateStatusBar();
         }
-        this.sendSnapshot();
+        void this.sendSnapshot();
     }
 
     /** Pushes a fresh snapshot, but only while someone is actually looking. */
@@ -783,9 +844,32 @@ class Reporter {
         this.snapshotTimer = setTimeout(() => {
             this.snapshotTimer = undefined;
             if (this.watched) {
-                this.sendSnapshot();
+                void this.sendSnapshot();
             }
         }, SNAPSHOT_DEBOUNCE_MS);
+    }
+
+    /** What to answer a snapshot request with, given what is on screen. */
+    private async buildReport(): Promise<Report> {
+        const { student } = this;
+        if (!this.shareFileContents) {
+            // Answer anyway. Silence is indistinguishable from a disconnected
+            // editor, and the teacher deserves to be told which one it is.
+            return { student, state: 'declined' };
+        }
+        const target = this.activeTarget();
+        if (!target?.doc) {
+            return { student, state: 'empty' };
+        }
+        const where = this.locate(target.uri);
+        // The buffer is only read for a file that belongs to the course: one
+        // elsewhere on the machine, or one that holds credentials, is declined
+        // exactly as if the student had opted out.
+        const inside = vscode.workspace.getWorkspaceFolder(target.uri) !== undefined;
+        if (!mayShareContents(where.relativePath, inside)) {
+            return { student, state: 'declined' };
+        }
+        return { student, ...(await buildOpenFile({ ...target, doc: target.doc }, where)) };
     }
 
     /**
@@ -795,34 +879,26 @@ class Reporter {
      */
     private async sendSnapshot(): Promise<void> {
         // Two triggers drive this — the backend's request and the student's own
-        // typing — and they must not stack into overlapping uploads.
+        // typing — and they must not stack into overlapping uploads. Claimed
+        // before anything is awaited, or two callers could both pass the check.
         if (this.snapshotSending) {
             return;
         }
-        const target = this.activeTarget();
-        const doc = target?.doc;
-        const { student } = this;
-        let report: Report;
-        if (!this.shareFileContents) {
-            // Answer anyway. Silence is indistinguishable from a disconnected
-            // editor, and the teacher deserves to be told which one it is.
-            report = { student, state: 'declined' };
-        } else if (!target || !doc) {
-            report = { student, state: 'empty' };
-        } else {
-            report = {
-                student,
-                ...(await buildOpenFile({ ...target, doc }, this.locate(target.uri))),
-            };
-        }
-
         this.snapshotSending = true;
         try {
-            // Never queued or retried: a snapshot describes one instant, and a
-            // stale one is worse than none at all.
+            let report: Report;
+            try {
+                report = await this.buildReport();
+            } catch (e) {
+                // Whatever went wrong reading the buffer or git, the teacher's
+                // pane must not be left asking forever: say nothing is open.
+                this.log(`could not build a snapshot: ${String(e)}`);
+                report = { student: this.student, state: 'empty' };
+            }
             await this.post('/api/file-snapshots', JSON.stringify(report));
-        } catch (_) {
+        } catch (e) {
             // The teacher's next poll re-asks; nothing to recover here.
+            this.log(`snapshot not sent: ${String(e)}`);
         } finally {
             this.snapshotSending = false;
         }
@@ -854,17 +930,16 @@ class Reporter {
         at?: number,
     ): FileEvent {
         const file = fileUri(uri);
-        const folder = vscode.workspace.getWorkspaceFolder(file);
-        const relativePath = vscode.workspace.asRelativePath(file, false);
+        const { relativePath, exercise } = this.locate(file);
         return {
             student: this.student,
             studentSource: this.studentSource || undefined,
             repo: this.repo || undefined,
-            workspace: folder?.name,
+            workspace: vscode.workspace.getWorkspaceFolder(file)?.name,
             path: file.fsPath,
             relativePath,
             language,
-            exercise: this.exercises.resolve(relativePath),
+            exercise,
             kind,
             line,
             atUnixMs: at ?? Date.now(),
@@ -874,32 +949,7 @@ class Reporter {
     private enqueue(event: FileEvent): void {
         this.queue.push(event);
         // Debounce: coalesce bursts (e.g. rapid focus changes) into one POST.
-        if (!this.flushTimer) {
-            this.flushTimer = setTimeout(() => this.flush(), 250);
-        }
-    }
-
-    /**
-     * One authenticated POST. Every caller shares the `401` handling, because a
-     * stale identity token is a property of the connection rather than of the
-     * payload — a snapshot that silently 401s forever would leave the teacher
-     * staring at "Asking…" with no way to find out why.
-     */
-    private async post(path: string, body: string): Promise<void> {
-        const res = await fetch(`${this.serverUrl}${path}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-            body,
-        });
-        if (res.status === 401) {
-            // Backend requires a verified identity — sign in, then let the
-            // caller decide whether this one is worth resending.
-            await this.ensureIdentity(true);
-            throw new Error('identity required');
-        }
-        if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-        }
+        this.flushTimer ??= setTimeout(() => void this.flush(), 250);
     }
 
     private async flush(): Promise<void> {
@@ -911,42 +961,60 @@ class Reporter {
         this.queue = [];
         try {
             await this.post('/api/file-events', JSON.stringify(batch));
-        } catch {
-            // Re-queue and retry on the next tick so we don't lose events.
-            this.queue = batch.concat(this.queue);
-            if (!this.flushTimer) {
-                this.flushTimer = setTimeout(() => this.flush(), 5000);
+            this.flushFailures = 0;
+        } catch (e) {
+            if (e instanceof HttpError && PERMANENT_REFUSALS.has(e.status)) {
+                // Resending the same batch would be refused forever and block
+                // everything behind it.
+                this.log(`dropped ${batch.length} events the backend refused (${e.message})`);
+                this.flushFailures = 0;
+            } else {
+                // Re-queue and retry with a growing delay, so an outage costs
+                // the backend a trickle of requests rather than one per five
+                // seconds from every student, and never grows without bound.
+                this.queue = batch.concat(this.queue).slice(-MAX_QUEUED_EVENTS);
+                this.flushTimer ??= setTimeout(
+                    () => void this.flush(),
+                    backoffMs(this.flushFailures++),
+                );
+                return;
             }
+        }
+        if (this.queue.length > 0) {
+            this.flushTimer ??= setTimeout(() => void this.flush(), 250);
         }
     }
 
     private updateStatusBar(): void {
-        this.statusBar.backgroundColor = undefined;
+        let text: string;
+        let tooltip: string;
+        let warn = false;
         if (!this.enabled) {
-            this.statusBar.text = '$(circle-slash) Hermione: off';
-            this.statusBar.tooltip = 'Hermione reporting is stopped';
-            this.statusBar.show();
-            return;
+            text = '$(circle-slash) Hermione: off';
+            tooltip = 'Hermione reporting is stopped';
+        } else {
+            const target = this.activeTarget();
+            const exercise = target && this.locate(target.uri).exercise;
+            const suffix = exercise ? ` · ${exercise}` : '';
+            if (this.watched) {
+                // Being watched is never silent. A teacher reading your buffer
+                // is a different thing from time-on-task being counted, and the
+                // student can see which one is happening.
+                text = `$(book) Hermione: ${this.student}${suffix} · teacher viewing`;
+                tooltip =
+                    'A teacher is looking at the file you have open. ' +
+                    'Turn this off with the hermione.shareFileContents setting.';
+                warn = true;
+            } else {
+                text = `$(eye) Hermione: ${this.student}${suffix}`;
+                tooltip = `Reporting file activity as "${this.student}" to ${this.serverUrl}`;
+            }
         }
-        const target = this.activeTarget();
-        const exercise = target && this.locate(target.uri).exercise;
-        const suffix = exercise ? ` · ${exercise}` : '';
-
-        // Being watched is never silent. A teacher reading your buffer is a
-        // different thing from time-on-task being counted, and the student can
-        // see which one is happening.
-        if (this.watched) {
-            this.statusBar.text = `$(book) Hermione: ${this.student}${suffix} · teacher viewing`;
-            this.statusBar.tooltip =
-                'A teacher is looking at the file you have open. ' +
-                'Turn this off with the hermione.shareFileContents setting.';
-            this.statusBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            this.statusBar.show();
-            return;
-        }
-
-        this.statusBar.text = `$(eye) Hermione: ${this.student}${suffix}`;
-        this.statusBar.tooltip = `Reporting file activity as "${this.student}" to ${this.serverUrl}`;
+        this.statusBar.text = text;
+        this.statusBar.tooltip = tooltip;
+        this.statusBar.backgroundColor = warn
+            ? new vscode.ThemeColor('statusBarItem.warningBackground')
+            : undefined;
         this.statusBar.show();
     }
 }
@@ -965,7 +1033,7 @@ export function activate(context: vscode.ExtensionContext): void {
     registerAssistant(context, reporter);
 
     if (vscode.workspace.getConfiguration('hermione').get<boolean>('enabled', true)) {
-        reporter.start();
+        reporter.start().catch((e) => console.error('Hermione failed to start', e));
     }
 }
 

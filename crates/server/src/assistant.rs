@@ -9,7 +9,7 @@
 //! The whole feature is gated on `HERMIONE_ANTHROPIC_API_KEY`. When it's unset,
 //! [`Assistant::enabled`] is false and every assistant route reports "disabled".
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,8 +49,6 @@ const ENVIRONMENT_NAME: &str = "hermione-assistant";
 
 /// How long a single chat turn may run before we give up polling.
 const TURN_TIMEOUT_SECS: u64 = 150;
-/// How often we poll the session's event list while a turn is in flight.
-const POLL_INTERVAL_MS: u64 = 1200;
 /// Max history turns returned to the chat panel.
 const HISTORY_LIMIT: u64 = 100;
 
@@ -98,10 +96,6 @@ pub enum AssistantError {
     },
     #[error("unexpected answer from anthropic: {0}")]
     Malformed(String),
-    #[error("session terminated")]
-    Terminated,
-    #[error("assistant timed out")]
-    TimedOut,
 }
 
 impl AssistantError {
@@ -131,7 +125,6 @@ impl From<AssistantError> for ApiError {
             AssistantError::NotConfigured => {
                 ApiError::unavailable("the assistant is not configured on this server")
             }
-            AssistantError::TimedOut => ApiError::bad_gateway("the assistant took too long"),
             _ => ApiError::bad_gateway("the assistant is unavailable right now"),
         }
     }
@@ -332,95 +325,6 @@ impl Assistant {
             .and_then(|i| i.as_str())
             .map(String::from)
             .ok_or_else(|| AssistantError::Malformed("session create returned no id".into()))
-    }
-
-    /// Runs one chat turn: sends the student's message and polls the session's
-    /// events until it goes idle, accumulating the agent's reply text.
-    async fn run_turn(&self, session_id: &str, text: &str) -> Result<String, AssistantError> {
-        // Seed the seen-set with pre-existing events so we read only this turn's.
-        let mut seen = self.list_event_ids(session_id).await?;
-
-        self.post(
-            &format!("/v1/sessions/{session_id}/events"),
-            json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
-        )
-        .await?;
-
-        let mut reply = String::new();
-        let poll = async {
-            loop {
-                tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
-                let events = self
-                    .get(&format!("/v1/sessions/{session_id}/events?limit=1000"))
-                    .await?;
-                let data = events.get("data").and_then(|d| d.as_array());
-                for ev in data.into_iter().flatten() {
-                    let id = ev.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if id.is_empty() || !seen.insert(id.to_string()) {
-                        continue;
-                    }
-                    match ev.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-                        "agent.message" => {
-                            for block in ev
-                                .get("content")
-                                .and_then(|c| c.as_array())
-                                .into_iter()
-                                .flatten()
-                            {
-                                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                    if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                                        reply.push_str(t);
-                                    }
-                                }
-                            }
-                        }
-                        // Idle marks turn completion unless the agent is blocked
-                        // waiting on the client (which can't happen here — all
-                        // tools are server-side and auto-approved).
-                        "session.status_idle" => {
-                            let kind = ev
-                                .get("stop_reason")
-                                .and_then(|s| s.get("type"))
-                                .and_then(|t| t.as_str())
-                                .unwrap_or("end_turn");
-                            if kind != "requires_action" {
-                                return Ok::<(), AssistantError>(());
-                            }
-                        }
-                        "session.status_terminated" => {
-                            return Err(AssistantError::Terminated);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        };
-
-        match tokio::time::timeout(Duration::from_secs(TURN_TIMEOUT_SECS), poll).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) if reply.is_empty() => return Err(AssistantError::TimedOut),
-            Err(_) => {}
-        }
-        let reply = reply.trim().to_string();
-        if reply.is_empty() {
-            Ok("(the assistant finished without a textual reply)".to_string())
-        } else {
-            Ok(reply)
-        }
-    }
-
-    async fn list_event_ids(&self, session_id: &str) -> Result<HashSet<String>, AssistantError> {
-        let events = self
-            .get(&format!("/v1/sessions/{session_id}/events?limit=1000"))
-            .await?;
-        Ok(events
-            .get("data")
-            .and_then(|d| d.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.get("id").and_then(|i| i.as_str()).map(String::from))
-            .collect())
     }
 
     /// Opens the session's SSE event stream. Returns once response headers
@@ -960,12 +864,6 @@ pub struct ChatRequest {
     pub language: Option<String>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ChatReply {
-    reply: String,
-}
-
 /// A validated, ready-to-run turn: the conversation, the synced agent, and the
 /// context-grounded prompt. The student's message is already persisted.
 struct PreparedTurn {
@@ -1025,27 +923,6 @@ async fn prepare_turn(
         agent_id,
         prompt,
     })
-}
-
-/// POST /api/assistant/chat — one turn with the course assistant (non-streaming).
-pub async fn chat(
-    State(state): State<AppState>,
-    Extension(CourseCtx(course_id)): Extension<CourseCtx>,
-    Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
-    Json(body): Json<ChatRequest>,
-) -> ApiResult {
-    let prepared = prepare_turn(&state, course_id, verified, body).await?;
-
-    let reply = run_with_session(
-        &state,
-        &prepared.conversation,
-        &prepared.agent_id,
-        &prepared.prompt,
-    )
-    .await?;
-    insert_message(&state, prepared.conversation.id, "assistant", &reply).await?;
-
-    Ok(Json(ChatReply { reply }).into_response())
 }
 
 /// POST /api/assistant/chat/stream — one turn, relayed to the client as SSE.
@@ -1129,33 +1006,6 @@ pub async fn chat_stream(
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())
-}
-
-/// Runs a turn, transparently opening a session (or re-opening a stale one).
-async fn run_with_session(
-    state: &AppState,
-    conversation: &assistant_conversations::Model,
-    agent_id: &str,
-    prompt: &str,
-) -> ApiResult<String> {
-    let open = || async {
-        let session = state.assistant.open_session(agent_id).await?;
-        set_session(state, conversation.id, &session).await?;
-        Ok::<_, ApiError>(session)
-    };
-    let session_id = match &conversation.session_id {
-        Some(s) => s.clone(),
-        None => open().await?,
-    };
-
-    match state.assistant.run_turn(&session_id, prompt).await {
-        Ok(reply) => Ok(reply),
-        // The session may have terminated/expired — open a fresh one and retry.
-        Err(_) => {
-            let fresh = open().await?;
-            Ok(state.assistant.run_turn(&fresh, prompt).await?)
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -1325,9 +1175,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn not_configured_and_slow_are_told_apart() {
+    async fn not_configured_is_told_apart_from_a_failure() {
         assert_eq!(shown_to_caller(AssistantError::NotConfigured).await.0, 503);
-        assert_eq!(shown_to_caller(AssistantError::TimedOut).await.0, 502);
+        let malformed = AssistantError::Malformed("no id".into());
+        assert_eq!(shown_to_caller(malformed).await.0, 502);
     }
 
     #[test]

@@ -1,8 +1,8 @@
-import * as vscode from 'vscode';
+import type { CourseFile } from './course';
 
 /**
- * Maps files to exercises using an optional `.hermione.json` at each workspace
- * root:
+ * Maps files to exercises using the `exercises` list of the optional
+ * `.hermione.json` at each workspace root:
  *
  * {
  *   "exercises": [
@@ -23,23 +23,16 @@ interface ExerciseRule {
 export class ExerciseMap {
     private rules: ExerciseRule[] = [];
 
-    async load(): Promise<void> {
+    /** Replaces the rules with those declared by the given course files. */
+    load(files: CourseFile[]): void {
         this.rules = [];
-        const folders = vscode.workspace.workspaceFolders ?? [];
-        for (const folder of folders) {
-            const uri = vscode.Uri.joinPath(folder.uri, '.hermione.json');
-            try {
-                const bytes = await vscode.workspace.fs.readFile(uri);
-                const config = JSON.parse(Buffer.from(bytes).toString('utf8'));
-                for (const ex of config.exercises ?? []) {
-                    const raw = Array.isArray(ex.match) ? ex.match : [ex.match];
-                    this.rules.push({
-                        name: ex.name,
-                        patterns: raw.filter(Boolean).map(globToRegExp),
-                    });
-                }
-            } catch {
-                // No config (or invalid) for this folder — that's fine.
+        for (const file of files) {
+            for (const ex of file.exercises ?? []) {
+                const raw = Array.isArray(ex.match) ? ex.match : [ex.match];
+                this.rules.push({
+                    name: ex.name,
+                    patterns: raw.filter((m): m is string => !!m).map(globToRegExp),
+                });
             }
         }
     }

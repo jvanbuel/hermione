@@ -150,7 +150,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/file-snapshots", post(crate::snapshots::ingest))
         .route("/api/inbox", get(crate::messages::inbox))
         .route("/api/assistant/status", get(crate::assistant::status))
-        .route("/api/assistant/chat", post(crate::assistant::chat))
         .route(
             "/api/assistant/chat/stream",
             post(crate::assistant::chat_stream),
