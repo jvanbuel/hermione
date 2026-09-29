@@ -75,12 +75,18 @@ pub trait Fetch: Send + Sync + 'static {
 pub struct GitHub {
     access: GitHubAccess,
     client: reqwest::Client,
+    /// `https://api.github.com/`; a test points it at a local server.
+    base: reqwest::Url,
 }
 
 const API: &str = "https://api.github.com/";
 
 impl GitHub {
     pub fn new(access: GitHubAccess) -> Self {
+        Self::with_base(access, reqwest::Url::parse(API).expect("a constant URL"))
+    }
+
+    fn with_base(access: GitHubAccess, base: reqwest::Url) -> Self {
         // No redirects: GitHub redirects renamed and transferred repos, and
         // reqwest keeps the Authorization header on a same-host redirect, so
         // following one could send the token for one owner to another's repo.
@@ -89,14 +95,23 @@ impl GitHub {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("a plain HTTPS client always builds");
-        Self { access, client }
+        Self {
+            access,
+            client,
+            base,
+        }
     }
 
     /// `GET /repos/{owner}/{repo}/contents/{path}?ref={ref}`. Every piece goes in
     /// as a path segment or a query value, so the encoder — not a format string —
     /// decides what `?`, `#` and `%` in a file name mean.
-    fn contents_url(repo: &GitHubRepo, git_ref: Option<&GitRef>, path: &RepoPath) -> reqwest::Url {
-        let mut url = reqwest::Url::parse(API).expect("a constant URL");
+    fn contents_url(
+        &self,
+        repo: &GitHubRepo,
+        git_ref: Option<&GitRef>,
+        path: &RepoPath,
+    ) -> reqwest::Url {
+        let mut url = self.base.clone();
         url.path_segments_mut()
             .expect("an https URL has path segments")
             .extend(["repos", repo.owner(), repo.name(), "contents"])
@@ -109,8 +124,8 @@ impl GitHub {
 
     /// `GET /repos/{owner}/{repo}/commits/{ref}` — does the ref (or, with none,
     /// the default branch) exist and can we read it?
-    fn commit_url(repo: &GitHubRepo, git_ref: Option<&GitRef>) -> reqwest::Url {
-        let mut url = reqwest::Url::parse(API).expect("a constant URL");
+    fn commit_url(&self, repo: &GitHubRepo, git_ref: Option<&GitRef>) -> reqwest::Url {
+        let mut url = self.base.clone();
         let mut segments = url
             .path_segments_mut()
             .expect("an https URL has path segments");
@@ -162,7 +177,7 @@ impl Fetch for GitHub {
         let credential = self.access.credential_for(repo.owner(), repo.name()).await;
         let token = credential.token();
 
-        let url = Self::contents_url(repo, git_ref, path);
+        let url = self.contents_url(repo, git_ref, path);
         let mut response = self
             .get(url, token, "application/vnd.github.raw+json")
             .send()
@@ -176,7 +191,7 @@ impl Fetch for GitHub {
             // and the caller caches the answer.
             let probe = self
                 .get(
-                    Self::commit_url(repo, git_ref),
+                    self.commit_url(repo, git_ref),
                     token,
                     "application/vnd.github.sha",
                 )
@@ -240,6 +255,10 @@ mod tests {
         RepoPath::parse(s).unwrap()
     }
 
+    fn gh() -> GitHub {
+        GitHub::new(GitHubAccess::default())
+    }
+
     #[test]
     fn only_github_urls_are_repos() {
         assert_eq!(repo().to_string(), "acme/cs101");
@@ -251,12 +270,12 @@ mod tests {
     #[test]
     fn a_files_url_names_the_repo_the_path_and_the_ref() {
         let r = GitRef::parse("solutions").unwrap();
-        let url = GitHub::contents_url(&repo(), Some(&r), &path("ex02-strings/strings.c"));
+        let url = gh().contents_url(&repo(), Some(&r), &path("ex02-strings/strings.c"));
         assert_eq!(
             url.as_str(),
             "https://api.github.com/repos/acme/cs101/contents/ex02-strings/strings.c?ref=solutions"
         );
-        let default = GitHub::contents_url(&repo(), None, &path("a.c"));
+        let default = gh().contents_url(&repo(), None, &path("a.c"));
         assert_eq!(
             default.query(),
             None,
@@ -269,7 +288,7 @@ mod tests {
         // A student's editor chose this path. Whatever it contains, the request
         // must still be for a file under this repo, with no query but our own.
         let nasty = path("a b/100%/x?y=z#frag/é.c");
-        let url = GitHub::contents_url(&repo(), None, &nasty);
+        let url = gh().contents_url(&repo(), None, &nasty);
         assert_eq!(url.host_str(), Some("api.github.com"));
         assert_eq!(url.query(), None, "a ? in a name is not a query");
         assert_eq!(url.fragment(), None, "a # in a name is not a fragment");
@@ -293,7 +312,7 @@ mod tests {
     #[test]
     fn a_ref_with_slashes_or_odd_characters_stays_in_the_query() {
         let r = GitRef::parse("release/2026").unwrap();
-        let url = GitHub::contents_url(&repo(), Some(&r), &path("a.c"));
+        let url = gh().contents_url(&repo(), Some(&r), &path("a.c"));
         assert_eq!(url.query(), Some("ref=release%2F2026"));
         assert_eq!(url.path(), "/repos/acme/cs101/contents/a.c");
     }
@@ -302,11 +321,11 @@ mod tests {
     fn the_probe_asks_about_the_ref_or_the_default_branch() {
         let r = GitRef::parse("release/2026").unwrap();
         assert_eq!(
-            GitHub::commit_url(&repo(), Some(&r)).path(),
+            gh().commit_url(&repo(), Some(&r)).path(),
             "/repos/acme/cs101/commits/release/2026"
         );
         assert_eq!(
-            GitHub::commit_url(&repo(), None).path(),
+            gh().commit_url(&repo(), None).path(),
             "/repos/acme/cs101/commits/HEAD"
         );
     }
@@ -329,5 +348,276 @@ mod tests {
             FetchError::RateLimited,
             "a 403 with no requests left"
         );
+    }
+
+    // ---- the real fetcher, against a local stand-in for api.github.com ----
+
+    use std::sync::{Arc, Mutex};
+
+    use axum::{
+        body::Body,
+        extract::{Path, RawQuery, State},
+        http::{header, HeaderMap, StatusCode},
+        response::{IntoResponse, Response},
+        routing::get,
+        Router,
+    };
+
+    /// What one request to the stand-in looked like.
+    #[derive(Clone, Debug)]
+    struct Seen {
+        path: String,
+        query: Option<String>,
+        authorization: Option<String>,
+        accept: Option<String>,
+        user_agent: Option<String>,
+    }
+
+    type Log = Arc<Mutex<Vec<Seen>>>;
+
+    fn record(log: &Log, path: String, query: Option<String>, h: &HeaderMap) {
+        let get = |name: &str| {
+            h.get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        log.lock().unwrap().push(Seen {
+            path,
+            query,
+            authorization: get("authorization"),
+            accept: get("accept"),
+            user_agent: get("user-agent"),
+        });
+    }
+
+    async fn contents(
+        State(log): State<Log>,
+        Path(path): Path<String>,
+        RawQuery(query): RawQuery,
+        headers: HeaderMap,
+    ) -> Response {
+        record(&log, format!("contents/{path}"), query, &headers);
+        match path.as_str() {
+            "ok.c" | "sub/nested.c" => (
+                [(header::CONTENT_TYPE, "application/vnd.github.raw")],
+                "int main() {}\n",
+            )
+                .into_response(),
+            "dir" => (
+                [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                "[]",
+            )
+                .into_response(),
+            "big.c" => "x".repeat(MAX_BYTES + 1).into_response(),
+            // No Content-Length: only reading it out with a cap can stop this.
+            "stream.c" => {
+                let chunk = || {
+                    Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![
+                        b'x';
+                        64 * 1024
+                    ]))
+                };
+                Body::from_stream(futures::stream::iter((0..8).map(move |_| chunk())))
+                    .into_response()
+            }
+            "bin.dat" => vec![0xffu8, 0xfe, 0xfd].into_response(),
+            "denied.c" => StatusCode::FORBIDDEN.into_response(),
+            "limited.c" => {
+                (StatusCode::FORBIDDEN, [("x-ratelimit-remaining", "0")]).into_response()
+            }
+            "boom.c" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            "moved.c" => (
+                StatusCode::MOVED_PERMANENTLY,
+                [(header::LOCATION, "/elsewhere")],
+            )
+                .into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    async fn commits(
+        State(log): State<Log>,
+        Path(r#ref): Path<String>,
+        RawQuery(query): RawQuery,
+        headers: HeaderMap,
+    ) -> Response {
+        record(&log, format!("commits/{}", r#ref), query, &headers);
+        match r#ref.as_str() {
+            "solutions" | "release/2026" | "HEAD" => "0123abc".into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    async fn elsewhere(State(log): State<Log>, headers: HeaderMap) -> Response {
+        record(&log, "elsewhere".into(), None, &headers);
+        "you should not be here".into_response()
+    }
+
+    /// A local server that answers like the parts of GitHub's API we use.
+    async fn stand_in(access: GitHubAccess) -> (GitHub, Log) {
+        let log: Log = Log::default();
+        let app = Router::new()
+            .route("/repos/acme/cs101/contents/{*path}", get(contents))
+            .route("/repos/acme/cs101/commits/{*ref}", get(commits))
+            .route("/elsewhere", get(elsewhere))
+            .with_state(log.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base =
+            reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (GitHub::with_base(access, base), log)
+    }
+
+    fn solutions_ref() -> GitRef {
+        GitRef::parse("solutions").unwrap()
+    }
+
+    async fn read(
+        gh: &GitHub,
+        git_ref: Option<&GitRef>,
+        file: &str,
+    ) -> Result<Option<String>, FetchError> {
+        gh.fetch(&repo(), git_ref, &path(file)).await
+    }
+
+    fn paths(log: &Log) -> Vec<String> {
+        log.lock().unwrap().iter().map(|s| s.path.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_file_is_read_with_the_headers_github_expects() {
+        let (gh, log) = stand_in(GitHubAccess::default()).await;
+        assert_eq!(
+            read(&gh, Some(&solutions_ref()), "sub/nested.c").await,
+            Ok(Some("int main() {}\n".into()))
+        );
+        let seen = log.lock().unwrap()[0].clone();
+        assert_eq!(seen.path, "contents/sub/nested.c");
+        assert_eq!(seen.query.as_deref(), Some("ref=solutions"));
+        assert_eq!(
+            seen.accept.as_deref(),
+            Some("application/vnd.github.raw+json"),
+            "the raw file, not JSON around it"
+        );
+        assert_eq!(
+            seen.user_agent.as_deref(),
+            Some("hermione"),
+            "GitHub refuses requests without one"
+        );
+        assert_eq!(seen.authorization, None, "no credential, none sent");
+    }
+
+    #[tokio::test]
+    async fn the_shared_token_goes_only_to_an_allow_listed_owner() {
+        let allowed = GitHubAccess::new(Some("pat".into()), vec!["acme".into()], None);
+        let (gh, log) = stand_in(allowed).await;
+        read(&gh, None, "ok.c").await.unwrap();
+        assert_eq!(
+            log.lock().unwrap()[0].authorization.as_deref(),
+            Some("Bearer pat")
+        );
+
+        let not_listed = GitHubAccess::new(Some("pat".into()), vec!["someone-else".into()], None);
+        let (gh, log) = stand_in(not_listed).await;
+        read(&gh, None, "ok.c").await.unwrap();
+        assert_eq!(
+            log.lock().unwrap()[0].authorization,
+            None,
+            "the token is never sent to an owner nobody allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_file_and_a_missing_branch_are_told_apart() {
+        let (gh, log) = stand_in(GitHubAccess::default()).await;
+        // The branch exists, the file doesn't: there is simply no solution for it.
+        assert_eq!(read(&gh, Some(&solutions_ref()), "gone.c").await, Ok(None));
+        assert_eq!(
+            paths(&log),
+            ["contents/gone.c", "commits/solutions"],
+            "one probe, to find out why"
+        );
+        // The branch doesn't exist: that is a mistake in the settings.
+        let typo = GitRef::parse("solutoins").unwrap();
+        assert_eq!(
+            read(&gh, Some(&typo), "gone.c").await,
+            Err(FetchError::RepoOrRefNotFound)
+        );
+        // With no ref set, the probe asks about the default branch.
+        log.lock().unwrap().clear();
+        assert_eq!(read(&gh, None, "gone.c").await, Ok(None));
+        assert_eq!(paths(&log)[1], "commits/HEAD");
+        // A branch name with a slash reaches GitHub as path segments.
+        let nested = GitRef::parse("release/2026").unwrap();
+        assert_eq!(read(&gh, Some(&nested), "gone.c").await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn a_folder_is_not_a_file() {
+        let (gh, _) = stand_in(GitHubAccess::default()).await;
+        assert_eq!(
+            read(&gh, None, "dir").await,
+            Ok(None),
+            "GitHub answers a folder with a JSON listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_cap_is_refused_whether_or_not_it_says_how_big_it_is() {
+        let (gh, _) = stand_in(GitHubAccess::default()).await;
+        assert_eq!(
+            read(&gh, None, "big.c").await,
+            Err(FetchError::TooLarge),
+            "announced by Content-Length"
+        );
+        assert_eq!(
+            read(&gh, None, "stream.c").await,
+            Err(FetchError::TooLarge),
+            "found out while reading"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_that_is_not_text_is_refused() {
+        let (gh, _) = stand_in(GitHubAccess::default()).await;
+        assert_eq!(read(&gh, None, "bin.dat").await, Err(FetchError::NotText));
+    }
+
+    #[tokio::test]
+    async fn refusals_read_as_what_they_are() {
+        let (gh, _) = stand_in(GitHubAccess::default()).await;
+        assert_eq!(read(&gh, None, "denied.c").await, Err(FetchError::Denied));
+        assert_eq!(
+            read(&gh, None, "limited.c").await,
+            Err(FetchError::RateLimited)
+        );
+        assert_eq!(
+            read(&gh, None, "boom.c").await,
+            Err(FetchError::Unavailable)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_not_followed_so_a_token_cannot_go_with_it() {
+        let allowed = GitHubAccess::new(Some("pat".into()), vec!["acme".into()], None);
+        let (gh, log) = stand_in(allowed).await;
+        assert_eq!(
+            read(&gh, None, "moved.c").await,
+            Err(FetchError::Unavailable)
+        );
+        assert!(
+            !paths(&log).contains(&"elsewhere".to_string()),
+            "nothing was requested at the redirect target: {:?}",
+            paths(&log)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_is_not_there_is_unavailable_not_a_panic() {
+        let gh = GitHub::with_base(
+            GitHubAccess::default(),
+            reqwest::Url::parse("http://127.0.0.1:1/").unwrap(),
+        );
+        assert_eq!(read(&gh, None, "ok.c").await, Err(FetchError::Unavailable));
     }
 }

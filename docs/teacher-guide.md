@@ -42,7 +42,7 @@ and "is anyone touching `ex04` yet?" at a glance.
 
 ## A student's pane
 
-Each pane has a **Terminal / File** switch, and **Diff** when a file is showing.
+Each pane has a **Terminal / File** switch, and **Diff** (and **Solution**, where the course has reference solutions) when a file is showing.
 
 ### Terminal
 
@@ -75,6 +75,39 @@ It says when there is nothing to compare with:
 - *No changes since their last commit.*
 - *The diff is too large to show.* Very large changes are cut rather than sent
   whole.
+
+### Solution
+
+![The file against the reference solution](images/teacher-file-solution.png)
+
+When the course has reference solutions, **Solution** appears beside **Diff**. It
+compares the student's file with the solution at the same path and answers the
+question a teacher usually has: *how far is this from right?* A file that matches
+says so with a tick; one that doesn't is drawn as the same rows as **Diff**, but
+read the other way round:
+
+- a red **−** row is a line **only the solution has** — something the student's
+  file is missing or wrote differently;
+- a green **+** row is a line **only the student's file has**.
+
+As in **Diff**, the words that changed inside a line are underlined. Line endings
+and a missing final newline aren't counted as differences.
+
+To set it up, open **Course settings** and fill in *Reference solutions*: a branch,
+tag or commit, a folder, or both, in the course's linked GitHub repository. A
+student's `ex01/list.c` is looked up as `<folder>/ex01/list.c` on that branch.
+Leave both empty to switch it off.
+
+**Keep the solutions hidden from students.** The repository is what they clone, so
+a solutions branch or folder there must not be readable by them — use a branch
+protected from students, a private fork, or a repository they can't see. Hermione
+reads it with its own credentials and shows it to teachers only; a student's editor
+never receives it.
+
+When there is nothing to compare with, the pane says why: the course has no
+solutions set up, no repository is linked (or it isn't on GitHub), the solutions
+have no file for this one, GitHub refused or couldn't be reached (a mistyped branch
+reads as *not found*), or the student's file is too large to compare.
 
 ### When there is no file to show
 

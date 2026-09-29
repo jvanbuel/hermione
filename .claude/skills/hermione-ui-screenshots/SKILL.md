@@ -52,6 +52,7 @@ the server. You'll get these PNGs in `$OUT_DIR` (× `dark` and `light`):
 <LABEL>-terminal-<theme>.png     # board with a student's xterm pane open
 <LABEL>-file-<theme>.png         # the same pane on the file they have open (cursor + syntax)
 <LABEL>-file-diff-<theme>.png    # … with the git diff toggled on
+<LABEL>-file-solution-<theme>.png # … compared with the course's reference solution
 <LABEL>-file-states-<theme>.png  # six tiles, one per state the file view can be in
 <LABEL>-analytics-<theme>.png    # per-student time-on-task
 <LABEL>-transcripts-<theme>.png  # student ↔ assistant conversation

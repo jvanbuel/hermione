@@ -18,6 +18,8 @@ const scenes = {
   'menu open': async (p) => { await p.locator('#more').click(); await p.waitForTimeout(200); },
   'file pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.waitForTimeout(900); },
   'diff pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.locator('.pane').last().locator('.diff').click(); await p.waitForTimeout(900); },
+  'solution pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.locator('.pane').last().locator('.solution').click(); await p.waitForTimeout(900); },
+  'course settings': async (p) => { await p.locator('#course-settings').click(); await p.waitForTimeout(400); },
   'broadcast modal': async (p) => { await p.locator('#broadcast').click(); await p.waitForTimeout(300); },
   'analytics': null, 'transcripts': null, 'login': null,
 };

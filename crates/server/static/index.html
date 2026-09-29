@@ -91,6 +91,7 @@
     .members li button { background: none; border: none; color: var(--fg-subtle); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-base); }
     .members li button:hover { color: var(--red-text); background: var(--surface-2); }
     .modal .profile-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .modal .profile-grid.two { grid-template-columns: 1fr 1fr; }
     .modal .profile-grid > div > label { display: block; font-size: var(--fs-sm); font-weight: 600; margin-bottom: 4px; }
     .add-member { display: flex; gap: 8px; margin-top: 8px; }
     .add-member input { flex: 1 1 auto; }
@@ -353,7 +354,7 @@
      * control keeps its size: a pane whose close button had been pushed out of
      * sight could not be closed. */
     .pane-head .who { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .pane-head > .avatar, .pane-head .modes, .pane-head .diff, .pane-head .close { flex: 0 0 auto; }
+    .pane-head > .avatar, .pane-head .modes, .pane-head .diff, .pane-head .solution, .pane-head .close { flex: 0 0 auto; }
     .pane-head .close {
       margin-left: auto; cursor: pointer; color: var(--fg-muted); border: none; background: none;
       font-size: var(--fs-lg); line-height: 1; padding: 2px 6px; border-radius: 5px;
@@ -368,16 +369,16 @@
       display: flex; gap: 2px; background: var(--bg);
       border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px;
     }
-    .pane-head .modes button, .pane-head .diff {
+    .pane-head .modes button, .pane-head .diff, .pane-head .solution {
       cursor: pointer; border: none; background: none; color: var(--fg-muted);
       font: inherit; font-size: var(--fs-xs); padding: 2px 10px; border-radius: 4px;
       min-height: 24px;
     }
-    .pane-head .modes button:hover, .pane-head .diff:hover { color: var(--fg); }
+    .pane-head .modes button:hover, .pane-head .diff:hover, .pane-head .solution:hover { color: var(--fg); }
     .pane-head .modes button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); }
-    .pane-head .diff { border: 1px solid var(--border-subtle); display: none; }
-    .pane.mode-file .pane-head .diff { display: block; }
-    .pane-head .diff[aria-pressed="true"] {
+    .pane-head .diff, .pane-head .solution { border: 1px solid var(--border-subtle); display: none; }
+    .pane.mode-file .pane-head .diff, .pane.mode-file .pane-head .solution { display: block; }
+    .pane-head .diff[aria-pressed="true"], .pane-head .solution[aria-pressed="true"] {
       background: var(--accent-wash); color: var(--accent-text);
       border-color: color-mix(in srgb, var(--accent) 45%, transparent);
     }
@@ -464,6 +465,11 @@
     .filev .dl .wd { border-radius: 1px; }
     .filev .dl.add .wd { box-shadow: inset 0 -2px 0 var(--green-text); }
     .filev .dl.del .wd { box-shadow: inset 0 -2px 0 var(--red-text); }
+    /* The Solution view reads a diff the other way round, so it says so once, in
+     * the header, where the other facts about the buffer are. */
+    .filev .fv-head .legend { color: var(--fg-subtle); }
+    .filev .fv-head .ok, .filev .note .ok { color: var(--green-text); font-weight: 600; }
+    .filev .note .path { font-family: ui-monospace, monospace; font-size: var(--fs-sm); color: var(--fg-subtle); }
     /* The +/- itself is the one bit of the row that is about the diff. */
     .filev .dl > .t > .sg { color: var(--fg-subtle); }
     .filev .dl.add > .n:last-of-type, .filev .dl.add > .t > .sg { color: var(--green-text); }
@@ -474,7 +480,19 @@
       display: grid; place-items: center; z-index: 2000; }
     .modal { width: 440px; max-width: calc(100vw - 32px); background: var(--surface);
       border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px;
-      box-shadow: var(--shadow-3); }
+      box-shadow: var(--shadow-3);
+      /* A dialog taller than the window scrolls inside itself. Without this the
+       * course settings (about a thousand pixels tall) put Save and Close below
+       * the bottom edge of any laptop screen, out of reach. */
+      max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px);
+      overflow-y: auto; overscroll-behavior: contain; }
+    /* …and its buttons stay in view while the rest scrolls, sitting on the
+     * dialog's own background so nothing shows through them. */
+    .modal > .row:last-child {
+      position: sticky; bottom: -20px; z-index: 1;
+      margin-bottom: -20px; padding: 12px 0 20px; background: var(--surface);
+      box-shadow: 0 -10px 10px -10px rgba(0, 0, 0, .35);
+    }
     .modal h2 { margin: 0 0 4px; font-size: var(--fs-lg); }
     .modal .sub { margin: 0 0 14px; color: var(--fg-muted); font-size: var(--fs-sm); }
     .modal textarea { width: 100%; min-height: 96px; resize: vertical; background: var(--bg);
@@ -494,6 +512,8 @@
     .modal .field { margin-top: 12px; }
     .modal .field > label { display: block; font-size: var(--fs-sm); font-weight: 600; margin-bottom: 4px; }
     .modal .field .desc { font-weight: 400; color: var(--fg-subtle); font-size: var(--fs-xs); }
+    .modal .field .help { margin: 6px 0 0; color: var(--fg-muted); font-size: var(--fs-xs); line-height: 1.45; }
+    .modal .field .help code { font-family: ui-monospace, monospace; }
     .modal input[type="text"] {
       width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
       border-radius: 8px; padding: 8px 10px; font: inherit; font-size: var(--fs-base);
@@ -1246,6 +1266,7 @@
             <button type="button" data-mode="file" aria-pressed="false">File</button>
           </div>
           <button class="diff" type="button" aria-pressed="false" title="Show the diff against their last commit">Diff</button>
+          ${hasSolutions() ? '<button class="solution" type="button" aria-pressed="false" title="Compare with the reference solution">Solution</button>' : ''}
           <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s pane">${ICONS.close}</button>
         </div>
         <div class="term"></div>
@@ -1260,7 +1281,8 @@
       for (const b of pane.querySelectorAll('.modes button')) {
         b.addEventListener('click', () => setPaneMode(student, b.dataset.mode));
       }
-      pane.querySelector('.diff').addEventListener('click', () => toggleDiff(student));
+      pane.querySelector('.diff').addEventListener('click', () => setPaneView(student, 'changes'));
+      pane.querySelector('.solution')?.addEventListener('click', () => setPaneView(student, 'solution'));
 
       const body = pane.querySelector('.term');
       let term = null, fit = null;
@@ -1280,7 +1302,7 @@
         el: pane, sessionId, term, fit,
         es: null,                 // the terminal stream, open only while the terminal is showing
         mode: 'term',             // 'term' | 'file'
-        diff: false,              // in file mode: the buffer, or its diff
+        view: 'code',             // in file mode: 'code' | 'changes' | 'solution'
         last: null,               // the latest reply for the file view
         lastKey: null, lastHead: null, lastLine: null,   // what was last drawn, so a poll that changed nothing redraws nothing
         pollFailed: false,        // the file view's last poll did not arrive
@@ -1392,14 +1414,24 @@
       }
     }
 
-    function toggleDiff(student) {
+    /**
+     * What the file pane shows: the buffer (`code`), what changed since their last
+     * commit (`changes`), or how it compares with the reference solution
+     * (`solution`). One value rather than two flags, so "both at once" can't
+     * happen. Choosing the view already showing goes back to the code.
+     */
+    function setPaneView(student, view) {
       const p = openPanes.get(student);
       if (!p) return;
-      p.diff = !p.diff;
-      p.el.querySelector('.diff').setAttribute('aria-pressed', String(p.diff));
-      // The snapshot already carries the diff, so this is a re-render, not a
-      // round trip to the student's editor.
+      p.view = p.view === view ? 'code' : view;
+      p.el.querySelector('.diff').setAttribute('aria-pressed', String(p.view === 'changes'));
+      p.el.querySelector('.solution')?.setAttribute('aria-pressed', String(p.view === 'solution'));
+      p.lastKey = null;
+      // Code and changes are both in the snapshot already, so that's a redraw.
+      // The solution is asked for, so entering it fetches — and until it arrives
+      // the pane says it is comparing rather than showing a stale view.
       if (p.last) renderSnapshot(student, p, p.last);
+      if (p.view === 'solution') pollSnapshot(student, p);
     }
 
     function syncSnapshotPolling() {
@@ -1418,7 +1450,8 @@
       let data;
       try {
         const url = `/api/students/file?course=${encodeURIComponent(currentCourse)}`
-          + `&student=${encodeURIComponent(student)}`;
+          + `&student=${encodeURIComponent(student)}`
+          + (pane.view === 'solution' ? '&compare=solution' : '');
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         data = await res.json();
@@ -1480,8 +1513,11 @@
       // selection and restart the caret blink every poll. Snapshots are
       // replaced wholesale rather than edited, and the backend numbers each one,
       // so its `rev` identifies it exactly — no need to compare the buffer.
-      const key = `${p.diff}:${latest.rev}`;
-      const headHtml = snapshotHead(s, latest.ageMs, p.pollFailed);
+      const solution = p.view === 'solution' ? data.solution : undefined;
+      // The solution can change without the snapshot doing so (the cache
+      // refreshes when the teacher has pushed a fix), so it is part of the key.
+      const key = `${p.view}:${latest.rev}:${solutionKey(solution)}`;
+      const headHtml = snapshotHead(s, latest.ageMs, p.pollFailed, p.view, solution);
       if (headHtml !== p.lastHead) {
         head.innerHTML = headHtml; // freshness still ticks
         p.lastHead = headHtml;
@@ -1489,24 +1525,25 @@
       if (p.lastKey === key) return;
       p.lastKey = key;
 
-      const html = p.diff ? diffHtml(s) : codeHtml(s);
+      const html = p.view === 'solution' ? solutionHtml(solution)
+        : p.view === 'changes' ? diffHtml(s) : codeHtml(s);
       const prevTop = body.scrollTop;
       body.classList.toggle('empty', html === null);
       body.innerHTML = html === null
-        ? `<div class="note" role="status">${diffNote(s, esc(student))}</div>`
+        ? `<div class="note" role="status">${p.view === 'solution' ? solutionNote(solution, esc(student)) : diffNote(s, esc(student))}</div>`
         : `<div class="rows">${html}</div>`;
       if (html === null) return;
 
       // Follow the cursor when it moves; otherwise leave the teacher where they
       // scrolled to.
       const line = s.cursor?.line;
-      const cursorMoved = !p.diff && line && line !== p.lastLine;
+      const cursorMoved = p.view === 'code' && line && line !== p.lastLine;
       p.lastLine = line;
       const cur = cursorMoved ? body.querySelector('.cl.cur') : null;
       body.scrollTop = cur ? Math.max(0, cur.offsetTop - body.clientHeight / 2) : prevTop;
     }
 
-    function snapshotHead(s, ageMs, connectionLost) {
+    function snapshotHead(s, ageMs, connectionLost, view, solution) {
       const chip = (text, cls = '') => `<span class="chip${cls && ' ' + cls}">${text}</span>`;
       const bits = [`<span class="fp" title="${esc(s.path)}">${esc(s.relativePath)}</span>`];
       if (s.dirty) bits.push(chip('unsaved'));
@@ -1516,8 +1553,65 @@
       } else if (ageMs > SNAPSHOT_STALE_MS) {
         bits.push(chip(timeAgo(Date.now() - ageMs), 'stale'));
       }
-      bits.push(`<span class="sum">${diffSummary(s.baseline)}</span>`);
+      bits.push(`<span class="sum">${view === 'solution' ? solutionSummary(solution) : diffSummary(s.baseline)}</span>`);
       return bits.join('');
+    }
+
+    // ---- the reference solution view ----
+
+    /** Whether the current course has reference solutions to compare with. */
+    function hasSolutions() {
+      return !!(courseList.find(c => c.slug === currentCourse)?.hasSolutions);
+    }
+
+    /** A cheap identity for a solution reply, for deciding whether to redraw. */
+    function solutionKey(sol) {
+      if (!sol) return 'none';
+      return [sol.state, sol.code, sol.file?.path, sol.added, sol.removed, sol.hunks?.length].join('/');
+    }
+
+    /**
+     * What the header says about the comparison. The diff reads the other way
+     * round from the commit diff — the solution is the old side — so each count
+     * says what it counts rather than leaving the signs to be guessed.
+     */
+    function solutionSummary(sol) {
+      if (!sol) return 'comparing with the solution…';
+      switch (sol.state) {
+        case 'identical': return '<span class="ok">✓ matches the solution</span>';
+        case 'differs':
+          return `<span class="minus">−${sol.removed}</span> <span class="legend">only in the solution</span> · `
+            + `<span class="plus">+${sol.added}</span> <span class="legend">only in their file</span>`;
+        case 'unconfigured': return 'no solutions set up';
+        case 'noReference': return 'no solution for this file';
+        case 'uncomparable': return 'too large to compare';
+        default: return 'solution unavailable';
+      }
+    }
+
+    /** The comparison as diff rows, or `null` when there is nothing to draw. */
+    function solutionHtml(sol) {
+      return sol && sol.state === 'differs' ? hunksHtml(sol) : null;
+    }
+
+    /** Why the Solution view has nothing to draw. */
+    function solutionNote(sol, student) {
+      if (!sol) return 'Comparing with the solution…';
+      const where = sol.file ? `<div class="path">${esc(sol.file.path)}${sol.file.ref ? ` @ ${esc(sol.file.ref)}` : ''}</div>` : '';
+      switch (sol.state) {
+        case 'identical':
+          return `<span class="ok">✓ ${student}'s file matches the solution.</span>${where}`;
+        case 'unconfigured':
+          return 'Reference solutions aren\'t set up for this course.<br>Choose a branch or folder under Course settings.';
+        case 'noReference':
+          return `The solutions have no file for this one.${where}`;
+        case 'uncomparable':
+          return `This file is too large to compare with the solution.`;
+        case 'unavailable':
+          return `${esc(sol.message)}${where}`;
+        default:
+          return 'The comparison came back in a form this page doesn\'t know.';
+      }
     }
 
     function diffSummary(baseline) {
@@ -1598,7 +1692,11 @@
      */
     function diffHtml(s) {
       const d = s.baseline;
-      if (d.kind !== 'head' || !d.hunks.length) return null;
+      return d.kind === 'head' && d.hunks.length ? hunksHtml(d) : null;
+    }
+
+    /** Diff rows for any `{hunks}` — the commit diff and the solution diff share them. */
+    function hunksHtml(d) {
       const out = [];
       for (const h of d.hunks) {
         out.push(`<div class="dh">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`);
@@ -1791,22 +1889,24 @@
       host.querySelectorAll('button[data-slug]').forEach(btn => {
         btn.addEventListener('click', async () => {
           btn.disabled = true; btn.textContent = 'Restoring…';
-          const ok = await patchCourse(btn.dataset.slug, { archived: false });
+          const { ok } = await patchCourse(btn.dataset.slug, { archived: false });
           if (ok) { btn.closest('li').remove(); await reloadCourses(btn.dataset.slug); toast('Course restored'); }
           else { btn.disabled = false; btn.textContent = 'Restore'; toast('Failed to restore'); }
         });
       });
     }
 
-    // Shared PATCH /api/courses/{slug}. Returns true on success.
+    // Shared PATCH /api/courses/{slug}. `message` is the server's reason when it
+    // refused a value (a bad branch name, say), so the form can show it.
     async function patchCourse(slug, body) {
       try {
         const res = await fetch(`/api/courses/${encodeURIComponent(slug)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        return res.ok;
-      } catch (_) { return false; }
+        const message = res.status === 400 ? (await res.text()).trim() : '';
+        return { ok: res.ok, message };
+      } catch (_) { return { ok: false, message: '' }; }
     }
 
     // A course is only useful once students can enroll into it, so surface the
@@ -1858,6 +1958,20 @@
           <div class="field">
             <label for="cs-repo">Repository <span class="desc">— empty to unlink</span></label>
             <input type="text" id="cs-repo" value="${esc(c.repoUrl || '')}" placeholder="https://github.com/org/repo" />
+          </div>
+          <div class="field" role="group" aria-labelledby="cs-sol-title">
+            <label id="cs-sol-title">Reference solutions <span class="desc">— where the answers live in the repository above</span></label>
+            <div class="profile-grid two">
+              <div>
+                <label for="cs-sol-ref">Branch, tag or commit</label>
+                <input type="text" id="cs-sol-ref" value="${esc(c.solutionsRef || '')}" placeholder="solutions" />
+              </div>
+              <div>
+                <label for="cs-sol-dir">Folder</label>
+                <input type="text" id="cs-sol-dir" value="${esc(c.solutionsDir || '')}" placeholder="answers" />
+              </div>
+            </div>
+            <p class="help">Either or both. A student's <code>ex01/list.c</code> is compared with the same path there, and teachers get a <b>Solution</b> view beside <b>Diff</b>. Leave both empty to switch it off. Keep this branch or folder hidden from students: the repository is what they clone.</p>
           </div>
           <div class="field">
             <label for="cs-description">Description</label>
@@ -1965,7 +2079,7 @@
 
       backdrop.querySelector('#cs-archive').addEventListener('click', async () => {
         if (!confirm(`Archive “${c.name}”? It keeps all its data but drops out of the switcher. You can restore it from New course.`)) return;
-        const ok = await patchCourse(slug, { archived: true });
+        const { ok } = await patchCourse(slug, { archived: true });
         if (ok) { close(); await reloadCourses(null); toast('Course archived'); }
         else { toast('Failed to archive'); }
       });
@@ -1973,16 +2087,18 @@
       const save = backdrop.querySelector('#cs-save');
       save.addEventListener('click', async () => {
         save.disabled = true; save.textContent = 'Saving…';
-        const ok = await patchCourse(slug, {
+        const { ok, message } = await patchCourse(slug, {
           name: backdrop.querySelector('#cs-name').value.trim(),
           repoUrl: backdrop.querySelector('#cs-repo').value.trim(),
+          solutionsRef: backdrop.querySelector('#cs-sol-ref').value.trim(),
+          solutionsDir: backdrop.querySelector('#cs-sol-dir').value.trim(),
           description: backdrop.querySelector('#cs-description').value.trim(),
           term: backdrop.querySelector('#cs-term').value.trim(),
           institution: backdrop.querySelector('#cs-institution').value.trim(),
           level: backdrop.querySelector('#cs-level').value.trim(),
         });
         if (ok) { close(); await reloadCourses(slug); toast('Course settings saved'); }
-        else { save.disabled = false; save.textContent = 'Save'; backdrop.querySelector('#cs-msg').textContent = 'Failed to save'; }
+        else { save.disabled = false; save.textContent = 'Save'; backdrop.querySelector('#cs-msg').textContent = message || 'Failed to save'; }
       });
     }
 

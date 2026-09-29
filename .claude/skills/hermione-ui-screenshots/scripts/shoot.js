@@ -100,6 +100,16 @@ async function shoot(page, url, file, opts = {}) {
       wait: 900,
     });
 
+    // …and against the course's reference solution (a `-` row is a line the
+    // solution has that the student's file lacks).
+    await shoot(page, `${BASE}/`, `${LABEL}-file-solution-${theme}.png`, {
+      action: async (pg) => {
+        await openFilePane(pg);
+        await pg.locator('.pane .solution').click();
+      },
+      wait: 900,
+    });
+
     // Every state the file view can be in, one pane each: offline, waiting,
     // declined, nothing open, stale + untracked + very long line, and a clean diff.
     await shoot(page, `${BASE}/`, `${LABEL}-file-states-${theme}.png`, {

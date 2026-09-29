@@ -84,7 +84,13 @@ const server = http.createServer((req, res) => {
   // for a fresh snapshot in production.
   if (p === '/api/students/file') {
     const who = url.searchParams.get('student');
-    return sendJson(res, { student: who, ...(F.studentFileStates[who] || F.studentFile) });
+    const reply = { student: who, ...(F.studentFileStates[who] || F.studentFile) };
+    // ?compare=solution adds the comparison, as the real endpoint does — but only
+    // for a student who has a file to compare.
+    if (url.searchParams.get('compare') === 'solution' && reply.latest && reply.latest.snapshot.state === 'file') {
+      reply.solution = F.solution;
+    }
+    return sendJson(res, reply);
   }
   if (p === '/api/assistant/conversations') return sendJson(res, F.conversations);
   if (p.startsWith('/api/assistant/conversations/')) {

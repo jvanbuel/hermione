@@ -218,6 +218,44 @@ unaffected. The student's status bar says "teacher viewing" whenever this is
 happening, and either side can switch it off — `"shareFileContents": false` in
 the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
 
+### Reference solutions
+
+A course can name where its answers live in the linked GitHub repo — a branch,
+tag or commit (`solutionsRef`), a folder (`solutionsDir`), or both — in *Course
+settings*. Teachers then get a **Solution** view beside **Diff**: the student's
+file against the solution **at the same path** (`ex01/list.c` is looked up as
+`<solutionsDir>/ex01/list.c` at `<solutionsRef>`). It is drawn with the same rows
+as the commit diff, with the solution as the old side: a `-` row is a line the
+solution has that the student's file lacks, a `+` row one that is only theirs.
+Line endings and a final newline don't count as differences.
+
+The design follows from one requirement: **a solution must never reach a
+student's machine.** So the comparison is made on the server, from the two texts
+(the editor has no solution to diff against), and only answered to a course's
+teachers; a student's editor gets nothing back from posting a snapshot. It also
+means the repository must keep the branch or folder hidden from students — the
+repository is what they clone — which Hermione can't enforce for you.
+
+- **Every empty case is a state of its own** — not configured, no repository
+  linked, not a GitHub repo, no solution for this file, GitHub refusing, a buffer
+  too long to compare — so the pane says which, instead of showing nothing.
+- **Nothing is read unless a teacher asks**, and what is read is cached: 5 minutes
+  when found, 1 minute when missing, 20 seconds when GitHub failed, and one
+  request in flight per file however many polls arrive. A GitHub App token costs
+  two extra requests to mint, so without the cache a pane would spend the rate
+  limit in minutes.
+- **The path is untrusted.** The branch and folder are parsed into types that
+  cannot hold a `..`, a space or a query character, and the student's file path —
+  which comes from an editor — is checked the same way; the request URL is built
+  from percent-encoded segments, never a format string, so a `?`, `#` or `%` in a
+  file name stays inside its segment. Redirects are refused, so a token can't be
+  followed to another owner's repository. Credentials follow the same ladder as
+  seeding: a repo-scoped App token, else the shared token for allow-listed owners,
+  else none (public repos).
+- A GitHub 404 is ambiguous (missing file, missing branch, or a repo GitHub won't
+  show us), so one is probed to tell them apart: a mistyped branch reads as *not
+  found*, not as *no solution for this file*.
+
 ---
 
 ## API reference
@@ -253,7 +291,9 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
   changes with every snapshot received. A snapshot whose text is unchanged from
   the last (a cursor move, which is most of them) reuses that one's highlight
   rather than parsing the buffer again — about 13 µs against 300 ms for a
-  2,000-line file.
+  2,000-line file. `&compare=solution` adds a `solution` beside the file — how it
+  stands against the course's reference solution (see **Reference solutions**
+  below); nothing is read from GitHub unless it is asked for.
 - `POST /api/file-snapshots` — one such snapshot, posted by the extension in
   answer to that request. A report that describes an impossible state — a blank
   student, a cursor on line 0, a diff line with no sign — is refused with a 4xx
@@ -266,8 +306,10 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
   lists archived courses. See below.
 - `GET /api/courses/{slug}` — course detail (repo, enrollment token, teachers,
   and the profile). `PATCH /api/courses/{slug}` — rename, relink the repo
-  (`repoUrl: null` unlinks), edit the **profile** (`description`, `term`,
-  `institution`, `level`; `null` clears a field), or `archived: true/false`.
+  (`repoUrl: null` unlinks), set where **reference solutions** live
+  (`solutionsRef`, `solutionsDir`; validated, `null` or empty clears), edit the
+  **profile** (`description`, `term`, `institution`, `level`; `null` clears a
+  field), or `archived: true/false`.
   `POST /api/courses/{slug}/rotate-token` — issue a
   fresh enrollment token. `POST /api/courses/{slug}/members` adds a co-teacher
   (body `{"username":"…"}`); `DELETE /api/courses/{slug}/members/{username}`
