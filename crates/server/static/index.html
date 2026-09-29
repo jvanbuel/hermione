@@ -671,6 +671,15 @@
 
     // ---- theme: the switch itself is in common.js; the terminals follow it ----
     function termTheme() { return TERM_THEMES[effectiveTheme()]; }
+    // The terminals' type follows projector mode too; it is set from script.
+    const termFontSize = () => (display.large ? 18 : 13);
+    document.addEventListener('hermione:display', () => {
+      for (const p of openPanes.values()) {
+        if (!p.term) continue;
+        p.term.options.fontSize = termFontSize();
+        try { p.fit && p.fit.fit(); } catch (_) {}
+      }
+    });
     document.addEventListener('hermione:theme', () => {
       openPanes.forEach(p => { if (p.term) p.term.options.theme = termTheme(); });
     });
@@ -823,7 +832,7 @@
       return `
         ${avatarHtml(s.student, s.status)}
         <div class="who">
-          <div class="name"><span class="nm">${esc(s.student)}</span>${pill}</div>
+          <div class="name"><span class="nm sn">${esc(s.student)}</span>${pill}</div>
           <div class="file">${esc(s.file || '—')}</div>
           ${prov}
           ${reason}
@@ -1114,7 +1123,7 @@
       }, (b, s) => {
         b.className = 'tperson' + (s.struggle === 'help' ? ' help' : s.struggle === 'watch' ? ' watch' : '');
         b.title = `${s.student} — open their file`;
-        b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname">${esc(s.student)}</span>`
+        b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname sn">${esc(s.student)}</span>`
           + (s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
             : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '');
         // Clicking someone in the file tree means "show me that file", not
@@ -1366,7 +1375,7 @@
       pane.innerHTML = `
         <div class="pane-head">
           ${avatarHtml(student, 'active')}
-          <span class="who"><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
+          <span class="who"><b class="sn">${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
           <div class="modes" role="group" aria-label="What to watch for ${esc(student)}">
             <button type="button" data-mode="term" aria-pressed="true">Terminal</button>
             <button type="button" data-mode="file" aria-pressed="false">File</button>
@@ -1396,9 +1405,9 @@
       let term = null, fit = null;
 
       if (!sessionId) {
-        body.innerHTML = `<div class="note">No terminal session recorded for <b>${esc(student)}</b> yet.</div>`;
+        body.innerHTML = `<div class="note">No terminal session recorded for <b class="sn">${esc(student)}</b> yet.</div>`;
       } else {
-        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 13,
+        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: termFontSize(),
           scrollback: 10000, theme: termTheme(), convertEol: false });
         fit = new FitAddon.FitAddon();
         term.loadAddon(fit);
@@ -1598,11 +1607,11 @@
     }
 
     const PANE_NOTES = {
-      asking:   n => `Asking <b>${n}</b>'s editor…`,
-      offline:  n => `<b>${n}</b>'s editor isn't connected.<br>The VSCode extension reports the file they have open.`,
+      asking:   n => `Asking <b class="sn">${n}</b>'s editor…`,
+      offline:  n => `<b class="sn">${n}</b>'s editor isn't connected.<br>The VSCode extension reports the file they have open.`,
       lost:     ()  => `Lost the connection to the server — retrying…`,
-      declined: n => `<b>${n}</b> has file sharing turned off.`,
-      empty:    n => `<b>${n}</b> has no file open.`,
+      declined: n => `<b class="sn">${n}</b> has file sharing turned off.`,
+      empty:    n => `<b class="sn">${n}</b> has no file open.`,
     };
 
     function renderSnapshot(student, p, data) {
@@ -1727,7 +1736,7 @@
       switch (r && r.state) {
         case 'same': return `No changes to this file since you last looked, ${timeAgo(r.at)}.`;
         case 'uncomparable': return 'This file is too large to compare with the last look.';
-        default: return `You haven't had this file of <b>${student}</b>'s open before — there is nothing to compare it with yet.`;
+        default: return `You haven't had this file of <b class="sn">${student}</b>'s open before — there is nothing to compare it with yet.`;
       }
     }
 
@@ -1802,10 +1811,10 @@
     /** Why the Diff view has nothing to draw. Only asked when it doesn't. */
     function diffNote(s, student) {
       const b = s.baseline;
-      if (b.kind === 'untracked') return `<b>${student}</b> hasn't committed this file yet, so there is nothing to compare it with.`;
+      if (b.kind === 'untracked') return `<b class="sn">${student}</b> hasn't committed this file yet, so there is nothing to compare it with.`;
       if (b.kind === 'none') return 'No git baseline for this file (a notebook cell, or not a git repository).';
       if (b.added || b.removed) return 'The diff is too large to show.';
-      return `No changes since <b>${student}</b>'s last commit.`;
+      return `No changes since <b class="sn">${student}</b>'s last commit.`;
     }
 
     /** The buffer, with the student's caret drawn where it actually is. */
@@ -1966,7 +1975,7 @@
           </div>
           <div id="bc-pick" role="group" aria-label="Students to message" hidden>
             ${(options.find(o => o.pick)?.pick || []).map((n, i) =>
-              `<label class="pick"><input type="checkbox" value="${esc(n)}" id="bc-p${i}"> ${esc(n)}</label>`).join('')}
+              `<label class="pick"><input type="checkbox" value="${esc(n)}" id="bc-p${i}"> <span class="sn">${esc(n)}</span></label>`).join('')}
           </div>
           <textarea id="bc-text" maxlength="${max}" placeholder="Message…" aria-label="Message"></textarea>
           <div class="row">

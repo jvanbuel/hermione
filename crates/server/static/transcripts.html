@@ -131,7 +131,7 @@
       <div class="panel-head hidden" id="panel-head">
         <div class="avatar" id="head-avatar" aria-hidden="true"></div>
         <div>
-          <div class="name" id="head-name"></div>
+          <div class="name sn" id="head-name"></div>
           <div class="sub" id="head-sub"></div>
         </div>
       </div>
@@ -185,7 +185,7 @@
           ${avatarHtml(c.student)}
           <div class="meta">
             <div class="top">
-              <span class="name">${esc(c.student)}</span>
+              <span class="name sn">${esc(c.student)}</span>
               <span class="ago">${fmtAgo(c.lastActivityUnixMs)}</span>
             </div>
             <div class="preview">${preview}</div>
@@ -216,7 +216,7 @@
         const role = m.role === 'student' ? 'student' : 'assistant';
         const label = role === 'student' ? esc(detail.student) : 'Assistant';
         return `<div class="turn ${role}">
-          <div class="role">${label}</div>
+          <div class="role${role === 'student' ? ' sn' : ''}">${label}</div>
           <div class="bubble">${esc(m.body)}</div>
           <div class="when">${fmtWhen(m.createdAtUnixMs)}</div>
         </div>`;

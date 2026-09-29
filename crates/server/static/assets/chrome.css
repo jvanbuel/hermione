@@ -55,3 +55,13 @@ header button:hover, header a.nav:hover { background: var(--border); }
 #more-menu button:hover, #more-menu button:focus-visible { background: var(--surface-2); }
 #more-menu .ico { width: 15px; height: 15px; color: var(--fg-muted); }
 #more-menu hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 4px 2px; }
+
+/* Blurred student names (see common.js). Revealed while the pointer or focus is
+ * on the name or the card/row/pane it belongs to, so the teacher can still read
+ * whom they are pointing at. */
+html.hide-names .sn { filter: blur(.42em); transition: filter .12s var(--ease); }
+html.hide-names :is(.card, .tperson, .pane-head, .conv, .turn):is(:hover, :focus-within) .sn,
+html.hide-names .sn:hover { filter: none; }
+html.hide-names .avatar { color: transparent; }
+html.hide-names :is(.card, .tperson, .pane-head, .conv):is(:hover, :focus-within) .avatar { color: #fff; }
+@media (prefers-reduced-motion: reduce) { html.hide-names .sn { transition: none; } }

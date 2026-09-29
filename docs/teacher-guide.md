@@ -158,6 +158,12 @@ Transcripts and Broadcast. What you use once a term — **New course**, **Assist
 settings**, the theme and **Sign out** — is behind the **⋯** menu. On a narrow
 window the labels drop away before any control does, so nothing is ever cut off.
 
+**Projector mode** is two switches in the **⋯** menu, on every teacher page and
+remembered by the browser. **Larger text** enlarges the type (terminals included).
+**Blur student names** hides names until the pointer or keyboard focus is on that
+student's card, row or pane, so a mirrored screen doesn't show the class each
+other's names while you can still tell who is who. Initials are hidden too.
+
 The strip along the bottom says how fresh the board is (*Updated 2s ago*) and shows
 the one-time hint for new users.
 

@@ -149,7 +149,7 @@
     function renderReport(rep) {
       const el = document.getElementById('report');
       if (!rep || rep.totalSeconds === 0) {
-        el.innerHTML = `<div class="empty">No file activity recorded for <b>${esc(rep ? rep.student : '')}</b> yet.<br>
+        el.innerHTML = `<div class="empty">No file activity recorded for <b class="sn">${esc(rep ? rep.student : '')}</b> yet.<br>
           Time-on-task is collected by the VSCode extension.</div>`;
         return;
       }
@@ -175,7 +175,7 @@
         <div class="summary-card">
           <div class="avatar" aria-hidden="true" style="background:hsl(${hue},26%,38%)">${esc(initials(rep.student))}</div>
           <div class="who">
-            <div class="name">${esc(rep.student)}</div>
+            <div class="name sn">${esc(rep.student)}</div>
             <div class="sub">${rep.perFile.length} file${rep.perFile.length === 1 ? '' : 's'} · ${rep.perExercise.length} exercise${rep.perExercise.length === 1 ? '' : 's'}</div>
           </div>
           <div class="total">

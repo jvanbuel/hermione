@@ -39,6 +39,49 @@ document.getElementById('theme-toggle')?.addEventListener('click', () =>
   setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));
 applyTheme(); // paint the right label for the resolved theme
 
+// ---- projector mode: larger type, and student names blurred ----
+// A teacher's screen is often a room's screen. "Larger text" scales the type
+// tokens; "Blur names" hides student names until the pointer or keyboard focus is
+// on them, so the teacher can still tell who is who but the class isn't shown
+// each other's names. Both are remembered, and shared by every teacher page.
+const DISPLAY_KEY = 'hermione.display';
+const display = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(DISPLAY_KEY) || '{}') || {}; } catch (_) {}
+  return { large: !!saved.large, hideNames: !!saved.hideNames };
+})();
+function applyDisplay() {
+  document.documentElement.classList.toggle('projector', display.large);
+  document.documentElement.classList.toggle('hide-names', display.hideNames);
+  for (const [id, on, label] of [
+    ['large-toggle', display.large, 'Larger text'],
+    ['names-toggle', display.hideNames, 'Blur student names'],
+  ]) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    b.textContent = label + (on ? ': on' : '');
+    b.setAttribute('aria-checked', String(on));
+  }
+  document.dispatchEvent(new Event('hermione:display'));
+}
+function setDisplay(patch) {
+  Object.assign(display, patch);
+  try { localStorage.setItem(DISPLAY_KEY, JSON.stringify(display)); } catch (_) {}
+  applyDisplay();
+}
+(function () {
+  const theme = document.getElementById('theme-toggle');
+  if (!theme) return;
+  for (const [id, key] of [['large-toggle', 'large'], ['names-toggle', 'hideNames']]) {
+    const b = document.createElement('button');
+    b.id = id; b.type = 'button';
+    b.setAttribute('role', 'menuitemcheckbox');
+    b.addEventListener('click', () => setDisplay({ [key]: !display[key] }));
+    theme.before(b);
+  }
+  applyDisplay();
+})();
+
 // ---- helpers ----
 // Escape untrusted strings (student names, file paths, exercises, course
 // names) before putting them in HTML — they originate from students.

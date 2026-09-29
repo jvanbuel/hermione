@@ -248,3 +248,12 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Projector mode (see common.js): the type scale, enlarged for a room. */
+html.projector {
+  --fs-xs: 15px;
+  --fs-sm: 17px;
+  --fs-base: 20px;
+  --fs-lg: 24px;
+  --fs-xl: 30px;
+}
