@@ -77,6 +77,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(204); return res.end(); // define/replace
   }
   if (p === '/api/overview') return sendJson(res, F.overview);
+  if (p === '/api/recap') return sendJson(res, F.recap);
   if (p === '/api/analytics/time-per-file') return sendJson(res, F.analytics);
   if (p === '/api/sessions') return sendJson(res, F.sessions);
   if (p === '/api/students/activity') return sendJson(res, F.activity);
@@ -110,6 +111,7 @@ const server = http.createServer((req, res) => {
   const rel = p === '/' ? '/index.html'
     : p === '/analytics' ? '/analytics.html'
     : p === '/transcripts' ? '/transcripts.html'
+    : p === '/recap' ? '/recap.html'
     : p === '/login' ? '/login.html' : p;
   const file = path.join(STATIC_DIR, rel);
   if (!file.startsWith(STATIC_DIR)) { res.writeHead(403); return res.end(); }

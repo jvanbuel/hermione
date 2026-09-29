@@ -368,6 +368,36 @@ function buildFixtures(now) {
     mcpServers: [{ name: 'docs', url: 'https://mcp.example.com/sse' }],
   };
 
-  return { courses, courseDetail, courseTree, courseExercises, overview, analytics, conversations, messages, sessions, activity, studentFile, solution, studentFileDeclined, studentFileStates, assistant };
+  // A finished lesson, as /api/recap answers it.
+  const recapFrom = now - 95 * 60000, recapTo = now - 5 * 60000;
+  const active = [3, 8, 12, 14, 14, 13, 14, 12, 11, 13, 14, 14, 12, 9, 6, 4, 2, 1];
+  const recap = {
+    lessons: [{ fromUnixMs: recapFrom, toUnixMs: recapTo }, { fromUnixMs: recapFrom - 86400000, toUnixMs: recapTo - 86400000 }],
+    index: 0,
+    recap: {
+      fromUnixMs: recapFrom, toUnixMs: recapTo, students: 14, medianActiveSeconds: 58 * 60,
+      exercises: [
+        { exercise: 'ex01-pointers', title: 'Exercise 1 — Pointers & memory', students: 14, medianSeconds: 24 * 60, longestSeconds: 47 * 60, neededHelp: 2, toWatch: 3, movedOn: 9 },
+        { exercise: 'ex02-strings', title: 'Exercise 2 — Strings', students: 9, medianSeconds: 31 * 60, longestSeconds: 52 * 60, neededHelp: 1, toWatch: 2, movedOn: 4 },
+        { exercise: 'ex03-trees', title: 'Exercise 3 — Binary trees', students: 4, medianSeconds: 12 * 60, longestSeconds: 18 * 60, neededHelp: 0, toWatch: 0, movedOn: 0 },
+      ],
+      followUp: [
+        { student: 'Ada Lovelace', exercise: 'ex01-pointers', level: 'help', seconds: 47 * 60, reasons: ['many failing compiles', '47 min, class median 24 min'] },
+        { student: 'Dennis Ritchie', exercise: 'ex02-strings', level: 'help', seconds: 52 * 60, reasons: ['52 min, class median 31 min', '3 errors in recent runs'] },
+        { student: 'Grace Hopper', exercise: 'ex01-pointers', level: 'watch', seconds: 33 * 60, reasons: ['33 min, class median 24 min'] },
+      ],
+      quiet: [
+        { student: 'Tim Berners-Lee', why: 'barely there', activeSeconds: 3 * 60 },
+        { student: 'Radia Perlman', why: 'never typed', activeSeconds: 41 * 60 },
+      ],
+      timeline: active.map((n, i) => ({ atUnixMs: recapFrom - (recapFrom % 300000) + i * 300000, active: n })),
+      messages: [
+        { atUnixMs: recapFrom + 32 * 60000, text: 'Check the return type of list_append', to: 'Ada Lovelace' },
+        { atUnixMs: recapFrom + 55 * 60000, text: 'Five minutes left — save your work', to: null },
+      ],
+    },
+  };
+
+  return { recap, courses, courseDetail, courseTree, courseExercises, overview, analytics, conversations, messages, sessions, activity, studentFile, solution, studentFileDeclined, studentFileStates, assistant };
 }
 module.exports = { buildFixtures };

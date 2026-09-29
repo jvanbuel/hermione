@@ -23,7 +23,7 @@ use crate::state::AppState;
 
 /// Gaps longer than this (seconds) between consecutive events are treated as
 /// the student being away, and not counted as time-on-task.
-const IDLE_GAP_SECS: i64 = 120;
+pub(crate) const IDLE_GAP_SECS: i64 = 120;
 
 /// A student last seen within this many seconds is considered "active".
 const ACTIVE_WINDOW_SECS: i64 = 90;
@@ -528,7 +528,7 @@ const MIN_HELP_SECS: i64 = 10 * 60;
 
 /// Where "unusually long on this exercise" starts, for one exercise.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Fences {
+pub(crate) struct Fences {
     watch: i64,
     help: i64,
     /// Students the thresholds were derived from; 0 when they are the fixed ones.
@@ -553,7 +553,7 @@ impl Fences {
     /// `Q3 + 3·IQR` an extreme one (help). Times are right-skewed and a tight
     /// class has a tiny IQR, so each fence is also held to a multiple of the
     /// median and to a floor, or a few extra minutes would flag someone.
-    fn for_cohort(times: &[i64]) -> Fences {
+    pub(crate) fn for_cohort(times: &[i64]) -> Fences {
         if times.len() < MIN_COHORT {
             return Fences::FIXED;
         }
@@ -571,7 +571,7 @@ impl Fences {
 }
 
 /// Linear-interpolated quantile of an ascending, non-empty slice.
-fn quantile(sorted: &[i64], q: f64) -> i64 {
+pub(crate) fn quantile(sorted: &[i64], q: f64) -> i64 {
     let pos = q * (sorted.len() - 1) as f64;
     let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
     let frac = pos - lo as f64;
@@ -587,15 +587,15 @@ const EDIT_WINDOW_SECS: i64 = 5 * 60;
 
 /// Per-student error/failure tallies from recent terminal sessions.
 #[derive(Default, Clone, Copy)]
-struct Signals {
-    errors: i32,
-    failed_runs: i32,
+pub(crate) struct Signals {
+    pub(crate) errors: i32,
+    pub(crate) failed_runs: i32,
 }
 
 /// How much the student has actually been typing, as opposed to how long the
 /// file has been on screen.
 #[derive(Default, Clone, Copy)]
-struct EditActivity {
+pub(crate) struct EditActivity {
     /// Document changes reported within `EDIT_WINDOW_SECS`.
     recent: i32,
     /// Seconds since the last reported edit. `None` when the signal cannot be
@@ -612,7 +612,7 @@ fn struggle_rank(level: &str) -> u8 {
 }
 
 /// Combines signals into a struggle level and the reasons for it.
-fn assess(
+pub(crate) fn assess(
     sig: Signals,
     seconds_on_exercise: i64,
     edits: EditActivity,

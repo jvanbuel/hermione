@@ -31,7 +31,9 @@ mod sessions;
 mod ws;
 
 use admin::{create_admin_handler, create_course_handler, grant_membership_handler};
-use assets::{analytics_page, brand_asset, index, tokens_css, transcripts_page, vendor};
+use assets::{
+    analytics_page, brand_asset, index, recap_page, tokens_css, transcripts_page, vendor,
+};
 use auth::{
     auth_device_poll, auth_device_start, auth_exchange, login, login_page, logout, require_ingest,
     require_super_admin, require_teacher,
@@ -86,6 +88,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/analytics", get(analytics_page))
         .route("/transcripts", get(transcripts_page))
+        .route("/recap", get(recap_page))
         .route(
             "/api/courses",
             get(list_courses).post(create_course_for_teacher),
@@ -115,6 +118,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/students/file", get(crate::snapshots::student_file))
         .route("/api/overview", get(crate::files::overview))
+        .route("/api/recap", get(crate::recap::handler))
         .route(
             "/api/analytics/time-per-file",
             get(crate::files::time_per_file),

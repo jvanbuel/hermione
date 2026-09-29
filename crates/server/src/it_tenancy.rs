@@ -1338,6 +1338,126 @@ async fn the_conversation_list_summarises_each_student_in_one_pass() {
 }
 
 #[tokio::test]
+async fn the_recap_sums_up_the_latest_lesson_and_offers_the_one_before() {
+    use chrono::{Duration, Utc};
+    use hermione_entity::file_events;
+    use sea_orm::{ActiveValue::Set, EntityTrait};
+
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("rc{s}"), "Rc", None)
+        .await
+        .unwrap();
+    let outside = tenancy::create_course(&state.db, &format!("ro{s}"), "Ro", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("rc{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("rc{s}"), "pw").await.unwrap();
+
+    // Two lessons a day apart: ada and bo yesterday, ada alone just now.
+    let now = Utc::now();
+    let event = |student: &str, exercise: &str, ago_mins: i64, edits: i32| {
+        let at = now - Duration::minutes(ago_mins);
+        file_events::ActiveModel {
+            course_id: Set(Some(course.id)),
+            student: Set(student.to_string()),
+            path: Set(format!("/w/{exercise}/main.c")),
+            relative_path: Set(Some(format!("{exercise}/main.c"))),
+            exercise: Set(Some(exercise.to_string())),
+            kind: Set("edit".to_string()),
+            edits: Set(Some(edits)),
+            at: Set(at.into()),
+            created_at: Set(at.into()),
+            ..Default::default()
+        }
+    };
+    let mut rows = Vec::new();
+    for m in 0..20 {
+        rows.push(event("ada", "ex1", 24 * 60 - m, 3));
+        rows.push(event("bo", "ex1", 24 * 60 - m, 0));
+    }
+    for m in 0..10 {
+        rows.push(event("ada", "ex1", 10 - m, 2));
+    }
+    // Someone else's course must not leak into this one's recap.
+    let mut foreign = event("mallory", "ex1", 5, 1);
+    foreign.course_id = Set(Some(outside.id));
+    rows.push(foreign);
+    for row in rows {
+        file_events::Entity::insert(row)
+            .exec(&state.db)
+            .await
+            .unwrap();
+    }
+
+    let get = |query: &str| {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        let uri = format!("/api/recap?course=rc{s}{query}");
+        async move {
+            let resp = get_with_cookie(&app, &uri, &cookie).await;
+            let status = resp.status();
+            let body = body_string(resp).await;
+            (
+                status,
+                serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default(),
+            )
+        }
+    };
+
+    // The latest lesson is just ada's, and the day-old one is offered behind it.
+    let (status, v) = get("").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["lessons"].as_array().unwrap().len(), 2);
+    assert_eq!(v["index"], 0);
+    assert_eq!(v["recap"]["students"], 1);
+    assert_eq!(v["recap"]["exercises"][0]["exercise"], "ex1");
+
+    // Yesterday: ada and bo, and bo never typed.
+    let (_, v) = get("&lesson=1").await;
+    assert_eq!(v["index"], 1);
+    assert_eq!(v["recap"]["students"], 2);
+    let quiet: Vec<_> = v["recap"]["quiet"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|q| (q["student"].as_str().unwrap(), q["why"].as_str().unwrap()))
+        .collect();
+    assert_eq!(quiet, [("bo", "never typed")]);
+    assert!(!v["recap"]["timeline"].as_array().unwrap().is_empty());
+
+    // Past the last lesson there is nothing to sum up, and it says so.
+    let (status, v) = get("&lesson=5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(v["recap"].is_null() && v["index"].is_null());
+
+    // A teacher of another course is refused, and an outsider sees nothing.
+    let other = tenancy::create_admin(&state.db, &format!("rx{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, other.id, outside.id)
+        .await
+        .unwrap();
+    let other_cookie = login(&app, &format!("rx{s}"), "pw").await.unwrap();
+    let resp = get_with_cookie(&app, &format!("/api/recap?course=rc{s}"), &other_cookie).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/recap?course=rc{s}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn a_cursor_move_is_sent_on_top_of_the_snapshot_it_is_for() {
     let (state, app) = app().await;
     let s = rnd();

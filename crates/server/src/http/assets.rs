@@ -52,6 +52,10 @@ pub(super) async fn analytics_page() -> Response {
     serve_asset("analytics.html")
 }
 
+pub(super) async fn recap_page() -> Response {
+    serve_asset("recap.html")
+}
+
 pub(super) async fn transcripts_page() -> Response {
     serve_asset("transcripts.html")
 }
@@ -94,7 +98,12 @@ mod tests {
             );
             assert_eq!(super::content_type(path), content_type);
         }
-        for page in ["index.html", "analytics.html", "transcripts.html"] {
+        for page in [
+            "index.html",
+            "analytics.html",
+            "transcripts.html",
+            "recap.html",
+        ] {
             let html = String::from_utf8(asset(page).unwrap().to_vec()).unwrap();
             for link in ["/assets/chrome.css", "/assets/common.js"] {
                 assert!(html.contains(link), "{page} links {link}");

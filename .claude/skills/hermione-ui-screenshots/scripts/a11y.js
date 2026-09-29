@@ -22,7 +22,7 @@ const scenes = {
   'solution pane': async (p) => { await p.locator('.card', { hasText: 'Ada Lovelace' }).first().click(); await p.locator('.pane').last().locator('.modes button[data-mode="file"]').click(); await p.locator('.pane').last().locator('.solution').click(); await p.waitForTimeout(900); },
   'course settings': async (p) => { await p.locator('#course-settings').click(); await p.waitForTimeout(400); },
   'broadcast modal': async (p) => { await p.locator('#broadcast').click(); await p.waitForTimeout(300); },
-  'analytics': null, 'transcripts': null, 'login': null,
+  'analytics': null, 'transcripts': null, 'recap': null, 'login': null,
 };
 (async () => {
   const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });

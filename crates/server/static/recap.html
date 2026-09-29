@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hermione — Class recap</title>
+  <script>
+    try {
+      var t = localStorage.getItem('hermione.theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch (_) {}
+  </script>
+  <link rel="icon" type="image/svg+xml" href="/assets/hermione-mark.svg" />
+  <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
+  <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/assets/chrome.css" />
+  <style>
+    body {
+      display: flex; flex-direction: column;
+      font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+      font-size: var(--fs-base); line-height: 1.4; font-variant-numeric: tabular-nums;
+      background: var(--bg); color: var(--fg);
+    }
+    main { flex: 1 1 auto; overflow-y: auto; padding: 24px 28px; }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    .empty { color: var(--fg-muted); padding: 60px 24px; text-align: center; }
+
+    .headline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 28px; padding: 18px 20px; margin-bottom: 22px;
+      background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); box-shadow: var(--shadow-1); }
+    .headline .when { flex: 1 1 100%; font-size: var(--fs-lg); font-weight: 600; }
+    .headline .stat .num { font-size: var(--fs-xl); font-weight: 700; color: var(--accent-text); }
+    .headline .stat .lbl { color: var(--fg-subtle); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; }
+
+    section { margin-bottom: 22px; overflow: hidden; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-1); break-inside: avoid; }
+    section > h2 { font-size: var(--fs-sm); font-weight: 600; color: var(--fg-muted); text-transform: uppercase;
+      letter-spacing: .04em; margin: 0; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+    section > .lede { margin: 0; padding: 10px 16px 0; color: var(--fg-muted); font-size: var(--fs-sm); }
+    .none { padding: 14px 16px; color: var(--fg-subtle); font-size: var(--fs-sm); }
+
+    table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+    th { text-align: left; font-weight: 600; color: var(--fg-muted); padding: 8px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 8px 16px; border-top: 1px solid var(--border-subtle); vertical-align: middle; }
+    th.num, td.num { text-align: right; }
+    tbody tr:first-child td { border-top: 0; }
+    .bar { display: inline-block; vertical-align: middle; height: 8px; min-width: 2px; margin-right: 8px;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 82%, var(--surface)), var(--accent)); }
+    .pill { font-size: var(--fs-xs); padding: 1px 8px; border-radius: var(--radius-pill); font-weight: 600; color: #fff; }
+    .pill.help { background: var(--help-bg); } .pill.watch { background: var(--watch-bg); }
+    .warn { color: var(--red-text); font-weight: 600; }
+    .reasons { color: var(--fg-muted); font-size: var(--fs-xs); }
+    .ex { color: var(--fg-subtle); }
+
+    .chart { padding: 8px 16px 14px; }
+    .chart svg { width: 100%; height: 150px; display: block; }
+    .chart .axis { fill: var(--fg-subtle); font-size: 10px; }
+    .chart .grid { stroke: var(--border-subtle); stroke-width: 1; }
+    .chart .col { fill: var(--accent); }
+    .chart .msg { fill: var(--amber-text); }
+
+    ul.list { list-style: none; margin: 0; padding: 0; }
+    ul.list li { display: flex; gap: 12px; align-items: baseline; padding: 8px 16px; border-top: 1px solid var(--border-subtle); font-size: var(--fs-sm); }
+    ul.list li:first-child { border-top: 0; }
+    ul.list .t { color: var(--fg-subtle); flex: none; }
+    .note { color: var(--fg-subtle); font-size: var(--fs-sm); margin-top: 6px; }
+    #lesson, #course { max-width: 40vw; }
+
+    /* Saved as a PDF for the teacher's own notes: no chrome, ink on paper. */
+    @media print {
+      header, .note.screen { display: none; }
+      html, body { background: #fff; color: #000; height: auto; overflow: visible; }
+      main { overflow: visible; padding: 0; }
+      section, .headline { box-shadow: none; border-color: #999; background: #fff; }
+      section > h2 { background: #eee; color: #000; }
+      .pill { color: #000; border: 1px solid #000; background: #fff; }
+      .chart .col { fill: #444; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="home" href="/" title="Back to the board">
+      <img class="logo-mark" src="/assets/hermione-mark.svg" alt="" aria-hidden="true" />
+      <h1>Hermione</h1>
+    </a>
+    <span class="crumb">/ Recap</span>
+    <label class="visually-hidden" for="course">Course</label>
+    <select id="course" title="Course"></select>
+    <label class="visually-hidden" for="lesson">Lesson</label>
+    <select id="lesson" title="Lesson"></select>
+    <span class="spacer"></span>
+    <button id="print" type="button" title="Print, or save as a PDF for your notes">
+      <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6V2h7v4M4.5 11.5h-2v-5h11v5h-2M4.5 9.5h7v4h-7z"/></svg>
+      <span class="lbl">Print</span>
+    </button>
+    <a class="nav" href="/" title="Back to the live board">
+      <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9.7 3.3 5 8l4.7 4.7 1-1L7 8l3.7-3.7z"/></svg>
+      Board
+    </a>
+    <div id="more-wrap">
+      <button id="more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="more-menu" aria-label="More" title="More — theme, sign out">
+        <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3 6.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm5 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z"/></svg>
+      </button>
+      <div id="more-menu" role="menu" aria-label="More" hidden>
+        <button id="theme-toggle" type="button" role="menuitem"></button>
+        <hr role="separator">
+        <button id="logout" type="button" role="menuitem">
+          <svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2.5H3.5v11H6M10 5l3 3-3 3M13 8H6.5"/></svg>
+          Sign out
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main tabindex="0" aria-label="Class recap">
+    <div class="wrap"><div id="report"><div class="empty">Loading…</div></div></div>
+  </main>
+
+  <script src="/assets/common.js"></script>
+  <script>
+    const fmtDay = (ms) => new Date(ms).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+    const fmtClock = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const lessonLabel = (l) => `${fmtDay(l.fromUnixMs)}, ${fmtClock(l.fromUnixMs)}–${fmtClock(l.toUnixMs)}`;
+    const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+    // Active students per five minutes, with a marker where a message went out.
+    function timelineSvg(r) {
+      const t = r.timeline;
+      if (!t.length) return '';
+      const W = 900, H = 150, padL = 26, padB = 20, padT = 14;
+      const max = Math.max(...t.map(b => b.active), 1);
+      const bw = (W - padL) / t.length;
+      const y = v => padT + (H - padT - padB) * (1 - v / max);
+      const t0 = t[0].atUnixMs, span = bw * t.length;
+      const xOf = ms => padL + Math.min(span, Math.max(0, (ms - t0) / (t.length * 300000) * span));
+      const cols = t.map((b, i) => `<rect class="col" x="${(padL + i * bw + 1).toFixed(1)}" y="${y(b.active).toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${(H - padB - y(b.active)).toFixed(1)}"><title>${fmtClock(b.atUnixMs)} — ${plural(b.active, 'student')} active</title></rect>`).join('');
+      const marks = r.messages.map(m => {
+        const x = xOf(m.atUnixMs).toFixed(1);
+        return `<path class="msg" d="M${x - 5} 1 L${+x + 5} 1 L${x} 11 Z"><title>${fmtClock(m.atUnixMs)} — you sent: ${esc(m.text)}</title></path>`;
+      }).join('');
+      const ticks = [0, Math.round(max / 2), max].filter((v, i, a) => a.indexOf(v) === i)
+        .map(v => `<line class="grid" x1="${padL}" x2="${W}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="axis" x="${padL - 4}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${v}</text>`).join('');
+      const labels = [0, Math.floor(t.length / 2), t.length - 1].filter((v, i, a) => a.indexOf(v) === i)
+        .map(i => `<text class="axis" x="${(padL + i * bw).toFixed(1)}" y="${H - 4}">${fmtClock(t[i].atUnixMs)}</text>`).join('');
+      const peak = t.reduce((a, b) => (b.active > a.active ? b : a));
+      return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+        aria-label="Students active over the lesson, in five-minute steps. The most was ${peak.active} at ${fmtClock(peak.atUnixMs)}.">${ticks}${cols}${marks}${labels}</svg>`;
+    }
+
+    function render(reply) {
+      const el = document.getElementById('report');
+      const r = reply.recap;
+      if (!r) {
+        el.innerHTML = `<div class="empty">No lessons found in the last two weeks.<br>A lesson appears here once students have had the VSCode extension open.</div>`;
+        return;
+      }
+      const maxMedian = Math.max(...r.exercises.map(e => e.medianSeconds), 1);
+      const exerciseRows = r.exercises.map(e => `<tr>
+          <td><b>${esc(e.title || e.exercise)}</b></td>
+          <td class="num">${e.students}</td>
+          <td><span class="bar" style="width:${Math.max(2, Math.round(e.medianSeconds / maxMedian * 90))}px" aria-hidden="true"></span>${fmtDuration(e.medianSeconds)}</td>
+          <td class="num">${fmtDuration(e.longestSeconds)}</td>
+          <td class="num">${e.neededHelp ? `<span class="warn">${e.neededHelp}</span>` : '0'}</td>
+          <td class="num">${e.toWatch}</td>
+          <td class="num">${e.movedOn} / ${e.students}</td></tr>`).join('');
+      const followUp = r.followUp.length ? `<ul class="list">${r.followUp.map(f => `<li>
+          <span class="pill ${f.level}">${f.level === 'help' ? 'needed help' : 'watch'}</span>
+          <span><b class="sn">${esc(f.student)}</b> <span class="ex">on ${esc(f.exercise)} · ${fmtDuration(f.seconds)}</span>
+          <div class="reasons">${esc(f.reasons.join(' · '))}</div></span></li>`).join('')}</ul>`
+        : '<div class="none">Nobody stood out. The class kept pace on every exercise.</div>';
+      const quiet = r.quiet.length ? `<ul class="list">${r.quiet.map(q => `<li>
+          <span><b class="sn">${esc(q.student)}</b></span>
+          <span class="ex">${esc(q.why)} · ${fmtDuration(q.activeSeconds)} active</span></li>`).join('')}</ul>`
+        : '<div class="none">Everyone was there and typing.</div>';
+      const sent = r.messages.length ? `<ul class="list">${r.messages.map(m => `<li>
+          <span class="t">${fmtClock(m.atUnixMs)}</span>
+          <span>${esc(m.text)} <span class="ex">— ${m.to ? `only <span class="sn">${esc(m.to)}</span>` : 'everyone'}</span></span></li>`).join('')}</ul>`
+        : '<div class="none">You sent no messages during this lesson.</div>';
+
+      el.innerHTML = `
+        <div class="headline">
+          <div class="when">${esc(lessonLabel(r))}</div>
+          <div class="stat"><div class="num">${r.students}</div><div class="lbl">Students</div></div>
+          <div class="stat"><div class="num">${fmtDuration(Math.round((r.toUnixMs - r.fromUnixMs) / 1000))}</div><div class="lbl">Lesson length</div></div>
+          <div class="stat"><div class="num">${fmtDuration(r.medianActiveSeconds)}</div><div class="lbl">Median active time</div></div>
+          <div class="stat"><div class="num">${r.followUp.filter(f => f.level === 'help').length}</div><div class="lbl">Needed help</div></div>
+        </div>
+        <section><h2>Activity across the lesson</h2>
+          <p class="lede">Students active in each five minutes${r.messages.length ? '; ▼ marks a message you sent' : ''}.</p>
+          <div class="chart">${timelineSvg(r)}</div></section>
+        <section><h2>By exercise</h2>
+          <table><thead><tr><th>Exercise</th><th class="num">Students</th><th>Median time</th><th class="num">Longest</th>
+            <th class="num">Needed help</th><th class="num">To watch</th><th class="num">Moved on</th></tr></thead>
+            <tbody>${exerciseRows || '<tr><td colspan="7" class="none">No exercise activity.</td></tr>'}</tbody></table>
+          <p class="lede" style="padding-bottom:10px">Judged by the board's own rules: an exercise's thresholds come from how this class did on it. “Moved on” counts students whose last activity was on a later exercise — a guide, not proof they finished.</p></section>
+        <section><h2>Follow up with</h2>${followUp}</section>
+        <section><h2>Quiet</h2>${quiet}</section>
+        <section><h2>Messages you sent</h2>${sent}</section>
+        <p class="note screen">Time counts the gaps between file events, capped so an idle stretch isn't counted as work.</p>`;
+    }
+
+    // ---- loading ----
+    let currentCourse = null;
+    async function load(lesson) {
+      const el = document.getElementById('report');
+      if (!currentCourse) { el.innerHTML = '<div class="empty">No courses yet.</div>'; return; }
+      try {
+        const res = await fetch(`/api/recap?course=${encodeURIComponent(currentCourse)}&lesson=${lesson}`);
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) throw new Error('http ' + res.status);
+        const reply = await res.json();
+        const sel = document.getElementById('lesson');
+        sel.innerHTML = reply.lessons.map((l, i) => `<option value="${i}">${esc(lessonLabel(l))}${i === 0 ? ' (latest)' : ''}</option>`).join('')
+          || '<option value="">No lessons</option>';
+        if (reply.index !== null) sel.value = String(reply.index);
+        render(reply);
+      } catch (_) { el.innerHTML = '<div class="empty">Could not load the recap.</div>'; }
+    }
+    async function loadCourses() {
+      let courses;
+      try {
+        const res = await fetch('/api/courses');
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        courses = await res.json();
+      } catch (_) { return; }
+      const sel = document.getElementById('course');
+      sel.innerHTML = courses.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join('');
+      const wanted = new URLSearchParams(location.search).get('course');
+      currentCourse = courses.find(c => c.slug === wanted)?.slug || courses[0]?.slug || null;
+      if (currentCourse) sel.value = currentCourse;
+      sel.addEventListener('change', () => { currentCourse = sel.value; load(0); });
+      document.getElementById('lesson').addEventListener('change', (e) => load(Number(e.target.value) || 0));
+      await load(0);
+    }
+    document.getElementById('print').addEventListener('click', () => window.print());
+    document.getElementById('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login';
+    });
+    loadCourses();
+  </script>
+</body>
+</html>

@@ -13,6 +13,7 @@ mod highlight;
 mod http;
 mod identity;
 mod messages;
+mod recap;
 mod repo;
 mod snapshots;
 mod solutions;

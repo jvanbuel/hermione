@@ -205,6 +205,35 @@ back) — handy for walking round the room with a tablet or phone.
 The strip along the bottom says how fresh the board is (*Updated 2s ago*) and shows
 the one-time hint for new users.
 
+## The class recap
+
+![The class recap](images/teacher-recap.png)
+
+**Recap** in the top bar sums up a lesson once it is over, so you don't have to
+remember it: who to follow up with, and what to re-teach. It picks the latest
+lesson by itself — a run of activity with no gap of half an hour or more — and the
+lesson menu offers the ones before it (two weeks back). It shows:
+
+- the headline: students, how long the lesson ran, the median active time, and how
+  many needed help;
+- **activity across the lesson**: how many students were active in each five
+  minutes, with a ▼ where you sent a message, so you can see whether it restarted
+  people;
+- **by exercise**: students, median and longest time, how many needed help or were
+  worth watching, and how many *moved on* (their last activity was on a later
+  exercise — a guide, not proof they finished). Exercises that took longest are the
+  ones to revisit;
+- **follow up with**: everyone who needed help, then the students most worth
+  watching, with the reasons;
+- **quiet**: students who were barely there, or present but never typed;
+- **messages you sent**, and to whom.
+
+Who "needed help" is the board's own judgement: an exercise's thresholds come from
+how *this* class did on it, so the recap can't disagree with what you saw live. The
+**Print** button gives a clean page to save as a PDF for your notes. The recap is
+built from file events and terminal sessions only — code isn't kept, so it says
+where a student was stuck, not what their code looked like.
+
 ## Analytics, Transcripts and Broadcast
 
 ![Time on task for one student](images/teacher-analytics.png)

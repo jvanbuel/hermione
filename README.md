@@ -320,6 +320,9 @@ repository is what they clone — which Hermione can't enforce for you.
   (removing omitted ones), which backs the dashboard's exercises editor. The
   dashboard shows all of them, even ones nobody has started, with per-exercise
   stats.
+- `GET /api/recap?course=<slug>&lesson=<n>` — a lesson summed up (per exercise, who needed help,
+  quiet students, activity timeline, messages sent); `lesson=0` is the latest, larger numbers
+  earlier ones, and the reply lists the lessons on offer.
 - `POST /api/messages` — teacher sends a message (persisted): `{course, text}` to
   the whole course, or `{course, text, students: ["ada", …]}` to just those
   students (one to 500 names; a private message is stored once per student and
