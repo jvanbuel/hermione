@@ -36,7 +36,7 @@ pub(super) async fn login(
     Json(body): Json<LoginRequest>,
 ) -> ApiResult {
     let admin_id = tenancy::verify_login(&state.db, &body.username, &body.password)
-        .await
+        .await?
         .ok_or_else(|| ApiError::unauthorized("invalid credentials"))?;
     let token = state.auth.create_session(admin_id).await;
     let cookie =
@@ -59,24 +59,26 @@ pub(super) async fn require_teacher(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let token = session_cookie(request.headers());
-    let ctx = if let Some(admin_id) = state.auth.admin_for(token.as_deref()).await {
-        Some(AuthCtx::Admin(admin_id))
-    } else if state.open_dev.load(Ordering::Relaxed) {
-        Some(AuthCtx::OpenDev)
-    } else {
-        None
-    };
-
-    match ctx {
+    match teacher_ctx(&state, request.headers()).await {
         Some(ctx) => {
             request.extensions_mut().insert(ctx);
             next.run(request).await
         }
         None if request.uri().path().starts_with("/api/") => {
-            (StatusCode::UNAUTHORIZED, "login required").into_response()
+            ApiError::unauthorized("login required").into_response()
         }
         None => Redirect::to("/login").into_response(),
+    }
+}
+
+/// Who the teacher is: their session's admin, or open dev mode when no
+/// admin exists yet. `None` when the caller isn't logged in.
+pub(super) async fn teacher_ctx(state: &AppState, headers: &HeaderMap) -> Option<AuthCtx> {
+    let token = session_cookie(headers);
+    match state.auth.admin_for(token.as_deref()).await {
+        Some(admin_id) => Some(AuthCtx::Admin(admin_id)),
+        None if state.open_dev.load(Ordering::Relaxed) => Some(AuthCtx::OpenDev),
+        None => None,
     }
 }
 
@@ -116,7 +118,7 @@ pub(super) async fn require_ingest(
     let course_id = match bearer_token(request.headers()) {
         Some(token) => {
             tenancy::course_by_token(&state.db, token)
-                .await
+                .await?
                 .ok_or_else(|| ApiError::unauthorized("invalid enrollment token"))?
                 .id
         }
@@ -177,7 +179,7 @@ pub(super) struct ExchangeRequest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct IdentityResponse {
+struct IdentityResponse {
     identity_token: String,
     student: String,
     expires_in: i64,
@@ -187,7 +189,7 @@ pub(super) struct IdentityResponse {
 pub(super) async fn auth_exchange(
     State(state): State<AppState>,
     Json(req): Json<ExchangeRequest>,
-) -> ApiResult<Json<IdentityResponse>> {
+) -> ApiResult<impl IntoResponse> {
     let student = state
         .identity
         .verify_idp(&req.provider, &req.token)
@@ -241,10 +243,11 @@ pub(super) async fn auth_device_poll(
     }
 }
 
-fn issue_identity(state: &AppState, student: String) -> ApiResult<Json<IdentityResponse>> {
-    let identity_token = state.identity.issue(&student).ok_or_else(|| {
-        ApiError::refused(StatusCode::SERVICE_UNAVAILABLE, "identity not configured")
-    })?;
+fn issue_identity(state: &AppState, student: String) -> ApiResult<impl IntoResponse> {
+    let identity_token = state
+        .identity
+        .issue(&student)
+        .ok_or_else(|| ApiError::unavailable("identity not configured"))?;
     Ok(Json(IdentityResponse {
         identity_token,
         student,

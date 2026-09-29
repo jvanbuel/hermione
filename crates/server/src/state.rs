@@ -109,6 +109,16 @@ pub struct MessageOut {
     pub created_at_unix_ms: i64,
 }
 
+impl From<hermione_entity::messages::Model> for MessageOut {
+    fn from(m: hermione_entity::messages::Model) -> Self {
+        MessageOut {
+            id: m.id,
+            body: m.body,
+            created_at_unix_ms: m.created_at.timestamp_millis(),
+        }
+    }
+}
+
 /// A control frame pushed to one student's editor over the message socket.
 ///
 /// Ephemeral by design: control frames are never persisted and are dropped

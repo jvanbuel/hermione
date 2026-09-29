@@ -4,6 +4,7 @@
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::Utc;
@@ -35,7 +36,7 @@ pub async fn list_for_course(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExerciseDto {
+struct ExerciseDto {
     slug: String,
     title: String,
     position: i32,
@@ -46,7 +47,7 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> ApiResult<Json<Vec<ExerciseDto>>> {
+) -> ApiResult<impl IntoResponse> {
     let course_id = resolve_course(&state, ctx, q.course).await?;
     let rows = list_for_course(&state.db, course_id).await?;
     Ok(Json(
@@ -56,7 +57,7 @@ pub async fn list(
                 title: e.title,
                 position: e.position,
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     ))
 }
 

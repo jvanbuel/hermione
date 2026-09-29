@@ -12,18 +12,11 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::tenancy;
-
-/// `Some(trimmed)` unless it is missing or blank. Every optional text field a
-/// teacher submits is read this way, so an empty box means "not set".
-pub(super) fn non_blank(v: Option<&str>) -> Option<String> {
-    v.map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
+use crate::text::non_blank;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CourseDto {
+struct CourseDto {
     slug: String,
     name: String,
     repo_url: Option<String>,
@@ -61,7 +54,7 @@ pub(super) async fn list_courses(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<ListCoursesQuery>,
-) -> ApiResult<Json<Vec<CourseDto>>> {
+) -> ApiResult<impl IntoResponse> {
     let archived = matches!(q.archived.as_deref(), Some("1" | "true" | "yes"));
     let rows = match ctx {
         AuthCtx::OpenDev => tenancy::all_courses(&state.db, archived).await?,
@@ -69,7 +62,9 @@ pub(super) async fn list_courses(
             tenancy::courses_for_admin(&state.db, admin_id, archived).await?
         }
     };
-    Ok(Json(rows.into_iter().map(CourseDto::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(CourseDto::from).collect::<Vec<_>>(),
+    ))
 }
 
 /// Normalizes a course slug to a URL-safe form (`[a-z0-9-]`), collapsing runs of
@@ -219,11 +214,10 @@ pub(super) async fn create_course_for_teacher(
 ) -> ApiResult {
     let (slug, name, repo_url) = resolve_new_course(&body)?;
 
-    if tenancy::course_by_slug(&state.db, &slug).await.is_some() {
-        return Err(ApiError::refused(
-            StatusCode::CONFLICT,
-            format!("a course with slug '{slug}' already exists"),
-        ));
+    if tenancy::course_by_slug(&state.db, &slug).await?.is_some() {
+        return Err(ApiError::conflict(format!(
+            "a course with slug '{slug}' already exists"
+        )));
     }
 
     // Create the course with its profile in one INSERT — never a course without
@@ -235,8 +229,7 @@ pub(super) async fn create_course_for_teacher(
         repo_url.as_deref(),
         &create_profile(&body),
     )
-    .await
-    .map_err(ApiError::bad_request)?;
+    .await?;
 
     // The creating teacher becomes a member; open-dev callers aren't a specific
     // admin, so there's nobody to grant (they can already see every course).
@@ -268,7 +261,7 @@ pub(super) async fn create_course_for_teacher(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CourseDetailDto {
+struct CourseDetailDto {
     slug: String,
     name: String,
     repo_url: Option<String>,
@@ -322,7 +315,7 @@ pub(super) async fn get_course(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
-) -> ApiResult<Json<CourseDetailDto>> {
+) -> ApiResult<impl IntoResponse> {
     let course = authorized_course(&state, ctx, &slug).await?;
     let members = tenancy::admins_for_course(&state.db, course.id)
         .await?
@@ -454,7 +447,7 @@ pub(super) async fn add_member(
     let course = authorized_course(&state, ctx, &slug).await?;
     let username = body.username.trim();
     let admin_id = tenancy::admin_by_username(&state.db, username)
-        .await
+        .await?
         .ok_or_else(|| ApiError::not_found(format!("no admin account named '{username}'")))?;
     tenancy::grant_membership(&state.db, admin_id, course.id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -469,7 +462,7 @@ pub(super) async fn remove_member(
 ) -> ApiResult<StatusCode> {
     let course = authorized_course(&state, ctx, &slug).await?;
     let admin_id = tenancy::admin_by_username(&state.db, username.trim())
-        .await
+        .await?
         .ok_or_else(|| ApiError::not_found("no such admin"))?;
     // Atomic: locks the membership rows so concurrent removals can't both slip
     // past the last-member check and orphan the course.
@@ -478,8 +471,7 @@ pub(super) async fn remove_member(
         tenancy::RevokeOutcome::NotAMember => {
             Err(ApiError::not_found("not a member of this course"))
         }
-        tenancy::RevokeOutcome::LastMember => Err(ApiError::refused(
-            StatusCode::CONFLICT,
+        tenancy::RevokeOutcome::LastMember => Err(ApiError::conflict(
             "cannot remove the last member of a course",
         )),
     }

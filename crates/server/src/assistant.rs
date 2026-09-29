@@ -16,7 +16,6 @@ use std::time::Duration;
 
 use axum::{
     extract::{Extension, Path, Query, State},
-    http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -40,6 +39,7 @@ use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::http::{resolve_course, CourseCtx, CourseQuery, VerifiedStudent};
 use crate::state::AppState;
+use crate::text::non_blank;
 
 /// Anthropic API base. Overridable so a proxy/gateway can be slotted in.
 const API_BASE: &str = "https://api.anthropic.com";
@@ -649,12 +649,7 @@ pub async fn put_config(
                 agent_version = Some(version);
                 environment_id = state.assistant.environment_id.read().await.clone();
             }
-            Err(e) => {
-                return Err(ApiError::refused(
-                    StatusCode::BAD_GATEWAY,
-                    format!("agent sync failed: {e}"),
-                ))
-            }
+            Err(e) => return Err(ApiError::bad_gateway(format!("agent sync failed: {e}"))),
         }
     }
 
@@ -892,6 +887,13 @@ struct PreparedTurn {
     prompt: String,
 }
 
+/// Which student a request is for: a verified identity (when the deployment
+/// enforces one) wins over the name the request asserts. `None` when neither is
+/// usable.
+fn asserted_student(verified: Option<String>, claimed: Option<String>) -> Option<String> {
+    non_blank(verified.or(claimed).as_deref())
+}
+
 /// Shared validation for both chat endpoints: checks the assistant is live,
 /// resolves the student and conversation, persists the question, and builds the
 /// context-grounded prompt.
@@ -906,13 +908,8 @@ async fn prepare_turn(
         return Err(ApiError::bad_request("empty message"));
     }
     // A verified identity (when enforced) wins over the self-asserted one.
-    let student = verified
-        .or(body.student)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let Some(student) = student else {
-        return Err(ApiError::bad_request("missing student"));
-    };
+    let student = asserted_student(verified, body.student)
+        .ok_or_else(|| ApiError::bad_request("missing student"))?;
 
     let not_enabled = || ApiError::not_found("assistant not enabled for this course");
     let row = course_assistants::Entity::find_by_id(course_id)
@@ -1053,34 +1050,29 @@ async fn run_with_session(
     prompt: &str,
 ) -> ApiResult<String> {
     // What the upstream said is for the caller: it is a 502, not our failure.
-    let upstream =
-        |e: String| ApiError::refused(StatusCode::BAD_GATEWAY, format!("assistant error: {e}"));
-    let mut session_id = match &conversation.session_id {
+    let upstream = |e: String| ApiError::bad_gateway(format!("assistant error: {e}"));
+    let open = || async {
+        let session = state
+            .assistant
+            .open_session(agent_id)
+            .await
+            .map_err(upstream)?;
+        set_session(state, conversation.id, &session).await?;
+        Ok::<_, ApiError>(session)
+    };
+    let session_id = match &conversation.session_id {
         Some(s) => s.clone(),
-        None => {
-            let s = state
-                .assistant
-                .open_session(agent_id)
-                .await
-                .map_err(upstream)?;
-            set_session(state, conversation.id, &s).await?;
-            s
-        }
+        None => open().await?,
     };
 
     match state.assistant.run_turn(&session_id, prompt).await {
         Ok(reply) => Ok(reply),
         // The session may have terminated/expired — open a fresh one and retry.
         Err(_) => {
-            session_id = state
-                .assistant
-                .open_session(agent_id)
-                .await
-                .map_err(upstream)?;
-            set_session(state, conversation.id, &session_id).await?;
+            let fresh = open().await?;
             state
                 .assistant
-                .run_turn(&session_id, prompt)
+                .run_turn(&fresh, prompt)
                 .await
                 .map_err(upstream)
         }
@@ -1117,11 +1109,7 @@ pub async fn history(
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult {
-    let student = verified
-        .or(q.student)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let Some(student) = student else {
+    let Some(student) = asserted_student(verified, q.student) else {
         return Ok(Json(Vec::<HistoryMessage>::new()).into_response());
     };
 

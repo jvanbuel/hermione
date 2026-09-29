@@ -21,12 +21,20 @@ use crate::repo::owner_allowed;
 /// so following one could send the credential for one owner to another's repo.
 /// A repo that redirects simply isn't read. Kept in one place so no caller can
 /// forget it.
+///
+/// One client is built and shared: a `Client` is a handle to a connection pool,
+/// so cloning it is cheap and keeps connections to GitHub alive between reads.
 pub fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("a plain HTTPS client always builds")
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("a plain HTTPS client always builds")
+        })
+        .clone()
 }
 
 /// The GitHub credentials the server was configured with.

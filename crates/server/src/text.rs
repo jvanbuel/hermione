@@ -12,6 +12,14 @@ pub fn plain(data: &[u8]) -> String {
     String::from_utf8_lossy(&stripped).into_owned()
 }
 
+/// `Some(trimmed)` unless it is missing or blank. Every optional text field a
+/// person submits is read this way, so an empty box means "not set".
+pub fn non_blank(v: Option<&str>) -> Option<String> {
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Strong indicators that a chunk of terminal output represents an error —
 /// used to flag students who may be stuck. Deliberately conservative (e.g. not
 /// the bare word "error") to avoid false positives.

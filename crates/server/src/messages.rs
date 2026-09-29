@@ -6,17 +6,18 @@
 
 use axum::{
     extract::{Extension, Query, State},
+    response::IntoResponse,
     Json,
 };
 use chrono::Utc;
 use hermione_entity::messages;
 use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::http::{resolve_course, CourseCtx};
-use crate::state::AppState;
+use crate::state::{AppState, MessageOut};
 
 /// Max messages returned in a single inbox poll.
 const POLL_LIMIT: u64 = 50;
@@ -49,18 +50,12 @@ pub async fn broadcast(
         .exec_with_returning(&state.db)
         .await?;
     // Push to everyone currently connected for this course.
+    let id = msg.id;
     state
         .msg_hub
-        .publish(
-            &course_id,
-            crate::state::MessageOut {
-                id: msg.id,
-                body: msg.body,
-                created_at_unix_ms: msg.created_at.timestamp_millis(),
-            },
-        )
+        .publish(&course_id, MessageOut::from(msg))
         .await;
-    Ok(Json(serde_json::json!({ "id": msg.id })))
+    Ok(Json(serde_json::json!({ "id": id })))
 }
 
 #[derive(Deserialize)]
@@ -69,20 +64,12 @@ pub struct PollQuery {
     since: Option<i64>,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MessageDto {
-    id: i64,
-    body: String,
-    created_at_unix_ms: i64,
-}
-
 /// Student inbox: messages for the course identified by the enrollment token.
 pub async fn inbox(
     State(state): State<AppState>,
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Query(q): Query<PollQuery>,
-) -> ApiResult<Json<Vec<MessageDto>>> {
+) -> ApiResult<impl IntoResponse> {
     let rows = messages::Entity::find()
         .filter(messages::Column::CourseId.eq(course_id))
         .filter(messages::Column::Id.gt(q.since.unwrap_or(0)))
@@ -91,12 +78,6 @@ pub async fn inbox(
         .all(&state.db)
         .await?;
     Ok(Json(
-        rows.into_iter()
-            .map(|m| MessageDto {
-                id: m.id,
-                body: m.body,
-                created_at_unix_ms: m.created_at.timestamp_millis(),
-            })
-            .collect(),
+        rows.into_iter().map(MessageOut::from).collect::<Vec<_>>(),
     ))
 }

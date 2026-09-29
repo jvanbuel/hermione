@@ -179,6 +179,24 @@ async fn wrong_password_is_rejected() {
 }
 
 #[tokio::test]
+async fn a_duplicate_username_is_a_conflict_and_leaks_no_database_text() {
+    use axum::response::IntoResponse;
+    let (state, _app) = app().await;
+    let name = format!("dup{}", rnd());
+    tenancy::create_admin(&state.db, &name, "pw").await.unwrap();
+
+    let Err(tenancy::CreateAdminError::Db(dup)) =
+        tenancy::create_admin(&state.db, &name, "pw").await
+    else {
+        panic!("a second admin with the same username must be refused");
+    };
+    let resp = crate::error::ApiError::from(dup).into_response();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_string(resp).await;
+    assert!(!body.contains("admins"), "database text leaked: {body}");
+}
+
+#[tokio::test]
 async fn membership_scopes_dashboard_access() {
     let (state, app) = app().await;
     let s = rnd();
@@ -433,6 +451,7 @@ async fn teacher_manages_course_settings() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let updated = tenancy::course_by_slug(&state.db, &format!("mgmt{s}"))
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(updated.name, "Renamed");
     assert_eq!(
@@ -445,6 +464,7 @@ async fn teacher_manages_course_settings() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     let cleared = tenancy::course_by_slug(&state.db, &format!("mgmt{s}"))
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(cleared.repo_url, None);
 

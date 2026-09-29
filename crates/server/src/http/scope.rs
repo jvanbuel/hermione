@@ -14,10 +14,13 @@ use crate::tenancy::{self, DEFAULT_COURSE_ID};
 async fn ensure_member(state: &AppState, ctx: AuthCtx, course_id: Uuid) -> ApiResult<()> {
     match ctx {
         AuthCtx::OpenDev => Ok(()),
-        AuthCtx::Admin(admin_id) if tenancy::is_member(&state.db, admin_id, course_id).await => {
-            Ok(())
+        AuthCtx::Admin(admin_id) => {
+            if tenancy::is_member(&state.db, admin_id, course_id).await? {
+                Ok(())
+            } else {
+                Err(ApiError::forbidden("not a member of this course"))
+            }
         }
-        AuthCtx::Admin(_) => Err(ApiError::forbidden("not a member of this course")),
     }
 }
 
@@ -29,7 +32,7 @@ pub(crate) async fn authorized_course(
     slug: &str,
 ) -> ApiResult<courses::Model> {
     let course = tenancy::course_by_slug(&state.db, slug)
-        .await
+        .await?
         .ok_or_else(|| ApiError::not_found("no such course"))?;
     ensure_member(state, ctx, course.id).await?;
     Ok(course)

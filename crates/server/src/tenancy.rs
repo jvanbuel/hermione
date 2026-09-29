@@ -15,12 +15,11 @@ pub const DEFAULT_COURSE_ID: Uuid = Uuid::from_u128(1);
 
 // --- password hashing ------------------------------------------------------
 
-pub fn hash_password(password: &str) -> Result<String, String> {
+fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| e.to_string())
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
@@ -34,54 +33,71 @@ fn verify_password(password: &str, hash: &str) -> bool {
 
 // --- admins ----------------------------------------------------------------
 
+/// Why an admin account could not be created.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateAdminError {
+    #[error("could not hash the password: {0}")]
+    Hash(String),
+    #[error(transparent)]
+    Db(#[from] DbErr),
+}
+
 pub async fn create_admin(
     db: &DatabaseConnection,
     username: &str,
     password: &str,
-) -> Result<admins::Model, String> {
+) -> Result<admins::Model, CreateAdminError> {
     // Argon2 is intentionally CPU-heavy; keep it off the async worker threads.
     let owned = password.to_string();
     let hash = tokio::task::spawn_blocking(move || hash_password(&owned))
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| CreateAdminError::Hash(e.to_string()))?
+        .map_err(|e| CreateAdminError::Hash(e.to_string()))?;
     let model = admins::ActiveModel {
         id: Set(Uuid::new_v4()),
         username: Set(username.to_string()),
         password_hash: Set(hash),
         created_at: Set(Utc::now().into()),
     };
-    admins::Entity::insert(model)
+    Ok(admins::Entity::insert(model)
         .exec_with_returning(db)
-        .await
-        .map_err(|e| e.to_string())
+        .await?)
 }
 
-/// Returns the admin id if the credentials are valid.
-pub async fn verify_login(db: &DatabaseConnection, username: &str, password: &str) -> Option<Uuid> {
-    let admin = admins::Entity::find()
+/// The admin id if the credentials are valid; `Err` only when the lookup itself
+/// failed, which is not the same as the credentials being wrong.
+pub async fn verify_login(
+    db: &DatabaseConnection,
+    username: &str,
+    password: &str,
+) -> Result<Option<Uuid>, DbErr> {
+    let Some(admin) = admins::Entity::find()
         .filter(admins::Column::Username.eq(username))
         .one(db)
-        .await
-        .ok()??;
+        .await?
+    else {
+        return Ok(None);
+    };
     let (owned, stored) = (password.to_string(), admin.password_hash.clone());
     let ok = tokio::task::spawn_blocking(move || verify_password(&owned, &stored))
         .await
         .unwrap_or(false);
-    ok.then_some(admin.id)
+    Ok(ok.then_some(admin.id))
 }
 
 pub async fn count_admins(db: &DatabaseConnection) -> u64 {
     admins::Entity::find().count(db).await.unwrap_or(0)
 }
 
-pub async fn admin_by_username(db: &DatabaseConnection, username: &str) -> Option<Uuid> {
-    admins::Entity::find()
+pub async fn admin_by_username(
+    db: &DatabaseConnection,
+    username: &str,
+) -> Result<Option<Uuid>, DbErr> {
+    let admin = admins::Entity::find()
         .filter(admins::Column::Username.eq(username))
         .one(db)
-        .await
-        .ok()
-        .flatten()
-        .map(|a| a.id)
+        .await?;
+    Ok(admin.map(|a| a.id))
 }
 
 // --- courses ---------------------------------------------------------------
@@ -112,7 +128,7 @@ pub async fn create_course(
     slug: &str,
     name: &str,
     repo_url: Option<&str>,
-) -> Result<courses::Model, String> {
+) -> Result<courses::Model, DbErr> {
     create_course_with_profile(db, slug, name, repo_url, &CourseProfile::default()).await
 }
 
@@ -124,7 +140,7 @@ pub async fn create_course_with_profile(
     name: &str,
     repo_url: Option<&str>,
     profile: &CourseProfile,
-) -> Result<courses::Model, String> {
+) -> Result<courses::Model, DbErr> {
     let model = courses::ActiveModel {
         id: Set(Uuid::new_v4()),
         slug: Set(slug.to_string()),
@@ -140,10 +156,7 @@ pub async fn create_course_with_profile(
         level: Set(profile.level.clone()),
         created_at: Set(Utc::now().into()),
     };
-    courses::Entity::insert(model)
-        .exec_with_returning(db)
-        .await
-        .map_err(|e| e.to_string())
+    courses::Entity::insert(model).exec_with_returning(db).await
 }
 
 /// A partial update to a course. Each field is applied only when `Some`; an inner
@@ -241,22 +254,24 @@ pub async fn rotate_enrollment_token(
     Ok(token)
 }
 
-pub async fn course_by_slug(db: &DatabaseConnection, slug: &str) -> Option<courses::Model> {
+pub async fn course_by_slug(
+    db: &DatabaseConnection,
+    slug: &str,
+) -> Result<Option<courses::Model>, DbErr> {
     courses::Entity::find()
         .filter(courses::Column::Slug.eq(slug))
         .one(db)
         .await
-        .ok()
-        .flatten()
 }
 
-pub async fn course_by_token(db: &DatabaseConnection, token: &str) -> Option<courses::Model> {
+pub async fn course_by_token(
+    db: &DatabaseConnection,
+    token: &str,
+) -> Result<Option<courses::Model>, DbErr> {
     courses::Entity::find()
         .filter(courses::Column::EnrollmentToken.eq(token))
         .one(db)
         .await
-        .ok()
-        .flatten()
 }
 
 // --- membership ------------------------------------------------------------
@@ -281,13 +296,15 @@ pub async fn grant_membership(
     Ok(())
 }
 
-pub async fn is_member(db: &DatabaseConnection, admin_id: Uuid, course_id: Uuid) -> bool {
-    course_admins::Entity::find_by_id((admin_id, course_id))
+pub async fn is_member(
+    db: &DatabaseConnection,
+    admin_id: Uuid,
+    course_id: Uuid,
+) -> Result<bool, DbErr> {
+    let row = course_admins::Entity::find_by_id((admin_id, course_id))
         .one(db)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
+        .await?;
+    Ok(row.is_some())
 }
 
 /// The admins with access to a course, ordered by username.

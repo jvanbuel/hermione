@@ -51,8 +51,12 @@ impl Ingest for IngestService {
             .map(|s| s.to_string());
         let course_id = match token {
             Some(token) => match crate::tenancy::course_by_token(&self.state.db, &token).await {
-                Some(course) => course.id,
-                None => return Err(Status::unauthenticated("invalid enrollment token")),
+                Ok(Some(course)) => course.id,
+                Ok(None) => return Err(Status::unauthenticated("invalid enrollment token")),
+                Err(e) => {
+                    tracing::error!(error = %e, "enrollment token lookup failed");
+                    return Err(Status::internal("internal error"));
+                }
             },
             None if self
                 .state

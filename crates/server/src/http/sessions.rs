@@ -31,7 +31,7 @@ use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder}
 const HISTORY_PAGE: u64 = 500;
 
 #[derive(Serialize)]
-pub(super) struct SessionDto {
+struct SessionDto {
     id: String,
     student: String,
     command: String,
@@ -63,14 +63,16 @@ pub(super) async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> ApiResult<Json<Vec<SessionDto>>> {
+) -> ApiResult<impl IntoResponse> {
     let course_id = resolve_course(&state, ctx, q.course).await?;
     let rows = sessions::Entity::find()
         .filter(sessions::Column::CourseId.eq(course_id))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
         .await?;
-    Ok(Json(rows.into_iter().map(SessionDto::from).collect()))
+    Ok(Json(
+        rows.into_iter().map(SessionDto::from).collect::<Vec<_>>(),
+    ))
 }
 
 /// The session id in a URL, or a refusal saying it isn't one.

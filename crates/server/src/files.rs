@@ -8,6 +8,7 @@
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -146,7 +147,7 @@ pub async fn ingest(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ActivityDto {
+struct ActivityDto {
     student: String,
     workspace: Option<String>,
     path: String,
@@ -162,7 +163,7 @@ pub async fn students_activity(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> ApiResult<Json<Vec<ActivityDto>>> {
+) -> ApiResult<impl IntoResponse> {
     let course_id = resolve_course(&state, ctx, q.course).await?;
     let rows = file_events::Entity::find()
         .filter(file_events::Column::CourseId.eq(course_id))
@@ -199,7 +200,7 @@ pub struct AnalyticsQuery {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FileTime {
+struct FileTime {
     path: String,
     relative_path: Option<String>,
     exercise: Option<String>,
@@ -208,14 +209,14 @@ pub struct FileTime {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExerciseTime {
+struct ExerciseTime {
     exercise: String,
     seconds: i64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TimeReport {
+struct TimeReport {
     student: String,
     total_seconds: i64,
     per_file: Vec<FileTime>,
@@ -230,7 +231,7 @@ pub async fn time_per_file(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<AnalyticsQuery>,
-) -> ApiResult<Json<TimeReport>> {
+) -> ApiResult<impl IntoResponse> {
     let course_id = resolve_course(&state, ctx, q.course).await?;
     let rows = file_events::Entity::find()
         .filter(file_events::Column::CourseId.eq(course_id))
@@ -479,7 +480,7 @@ fn unix_ms_to_dt(ms: i64) -> sea_orm::prelude::DateTimeWithTimeZone {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OverviewStudent {
+struct OverviewStudent {
     student: String,
     file: Option<String>,
     language: Option<String>,
@@ -732,7 +733,7 @@ fn into_group(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Overview {
+struct Overview {
     exercises: Vec<ExerciseGroup>,
     /// Students whose current file maps to no exercise.
     no_exercise: Vec<OverviewStudent>,
@@ -742,30 +743,36 @@ pub async fn overview(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> ApiResult<Json<Overview>> {
+) -> ApiResult<impl IntoResponse> {
     let course_id = resolve_course(&state, ctx, q.course).await?;
-    let events = file_events::Entity::find()
-        .filter(file_events::Column::CourseId.eq(course_id))
-        .filter(file_events::Column::At.gt(recent_cutoff()))
-        .order_by_asc(file_events::Column::At)
-        .all(&state.db)
-        .await?;
+    // The three reads are independent; this endpoint is polled, so run them
+    // together rather than one after another.
+    let recent = recent_cutoff();
+    let (events, recent_sessions, defined) = tokio::join!(
+        file_events::Entity::find()
+            .filter(file_events::Column::CourseId.eq(course_id))
+            .filter(file_events::Column::At.gt(recent))
+            .order_by_asc(file_events::Column::At)
+            .all(&state.db),
+        // Only the recent window (the same one used for file events), so the
+        // scan stays bounded as session history grows — and the dashboard is a
+        // live view of the current teaching session anyway.
+        sessions::Entity::find()
+            .filter(sessions::Column::CourseId.eq(course_id))
+            .filter(sessions::Column::StartedAt.gt(recent))
+            .order_by_desc(sessions::Column::StartedAt)
+            .all(&state.db),
+        crate::exercises::list_for_course(&state.db, course_id),
+    );
+    let events = events?;
+    let recent_sessions = recent_sessions?;
+    let defined = defined.unwrap_or_default();
 
     // Latest terminal session per student (within this course), plus struggle
     // signals (errors / failed runs) from each student's recent sessions.
     let mut terminals: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut signals: std::collections::HashMap<String, Signals> = std::collections::HashMap::new();
-    // Only the recent window (the same one used for file events above), so the
-    // scan stays bounded as session history grows — and the dashboard is a live
-    // view of the current teaching session anyway.
-    let recent = recent_cutoff();
-    let recent_sessions = sessions::Entity::find()
-        .filter(sessions::Column::CourseId.eq(course_id))
-        .filter(sessions::Column::StartedAt.gt(recent))
-        .order_by_desc(sessions::Column::StartedAt)
-        .all(&state.db)
-        .await?;
     for s in recent_sessions {
         terminals
             .entry(s.student.clone())
@@ -920,10 +927,6 @@ pub async fn overview(
 
     // Emit defined exercises first, in their configured order (including ones
     // nobody has started yet), then any active-but-undefined exercises.
-    let defined = crate::exercises::list_for_course(&state.db, course_id)
-        .await
-        .unwrap_or_default();
-
     let mut output: Vec<ExerciseGroup> = Vec::new();
     for ex in defined {
         let students = groups.remove(&ex.slug).unwrap_or_default();

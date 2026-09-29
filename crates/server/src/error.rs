@@ -16,7 +16,6 @@
 //!   went wrong.
 
 use std::borrow::Cow;
-use std::fmt;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -32,16 +31,10 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    /// A deliberate answer with a message for the caller.
-    ///
-    /// # Panics
-    /// In debug builds for a plain 500: a failure of ours is not a message to
-    /// send, and belongs in [`Self::internal`].
-    pub fn refused(status: StatusCode, message: impl Into<Cow<'static, str>>) -> Self {
-        debug_assert!(
-            status != StatusCode::INTERNAL_SERVER_ERROR,
-            "an unexpected failure is Internal, not Refused"
-        );
+    /// A deliberate answer with a message for the caller. Private, so that the
+    /// statuses a refusal can carry are exactly the constructors below — a plain
+    /// 500 is a failure of ours, and belongs in [`Self::internal`].
+    fn refused(status: StatusCode, message: impl Into<Cow<'static, str>>) -> Self {
         Self::Refused(status, message.into())
     }
 
@@ -61,26 +54,36 @@ impl ApiError {
         Self::refused(StatusCode::NOT_FOUND, message)
     }
 
+    pub fn conflict(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::refused(StatusCode::CONFLICT, message)
+    }
+
+    /// An upstream service we depend on failed or answered badly.
+    pub fn bad_gateway(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::refused(StatusCode::BAD_GATEWAY, message)
+    }
+
+    /// A known state of the service, such as "not configured".
+    pub fn unavailable(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::refused(StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+
     /// Something of ours failed; `error` goes to the log.
     pub fn internal(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         Self::Internal(error.into())
     }
 }
 
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Refused(status, message) => write!(f, "{status}: {message}"),
-            Self::Internal(e) => write!(f, "internal error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ApiError {}
-
 impl From<sea_orm::DbErr> for ApiError {
     fn from(e: sea_orm::DbErr) -> Self {
-        Self::internal(e)
+        match e.sql_err() {
+            // The one database failure that is the caller's doing: what they
+            // asked to create is already there.
+            Some(sea_orm::SqlErr::UniqueConstraintViolation(_)) => {
+                Self::conflict("that already exists")
+            }
+            _ => Self::internal(e),
+        }
     }
 }
 
@@ -142,15 +145,19 @@ mod tests {
         assert!(!body.contains("secret_table"));
     }
 
-    #[test]
-    #[should_panic(expected = "an unexpected failure is Internal")]
-    fn a_refusal_cannot_be_a_plain_server_error() {
-        let _ = ApiError::refused(StatusCode::INTERNAL_SERVER_ERROR, "nope");
+    #[tokio::test]
+    async fn a_query_error_without_a_constraint_code_stays_internal() {
+        let dup = sea_orm::DbErr::Query(sea_orm::RuntimeErr::Internal(
+            "duplicate key value violates unique constraint".into(),
+        ));
+        // Only a recognised unique violation is the caller's doing (the
+        // integration tests cover a real duplicate); anything else is ours.
+        assert_eq!(read(dup.into()).await.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
     async fn a_known_state_of_the_service_can_still_be_said() {
-        let resp = ApiError::refused(StatusCode::SERVICE_UNAVAILABLE, "identity not configured");
+        let resp = ApiError::unavailable("identity not configured");
         assert_eq!(
             read(resp).await,
             (
@@ -158,11 +165,5 @@ mod tests {
                 "identity not configured".into()
             )
         );
-    }
-
-    #[test]
-    fn it_reads_as_text_for_the_log() {
-        assert_eq!(ApiError::bad_request("x").to_string(), "400 Bad Request: x");
-        assert!(ApiError::internal("boom").to_string().contains("boom"));
     }
 }

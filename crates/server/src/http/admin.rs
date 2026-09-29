@@ -7,10 +7,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::courses::non_blank;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::tenancy;
+use crate::text::non_blank;
 
 #[derive(Deserialize)]
 pub(super) struct CreateAdminRequest {
@@ -24,7 +24,10 @@ pub(super) async fn create_admin_handler(
 ) -> ApiResult<Json<serde_json::Value>> {
     let admin = tenancy::create_admin(&state.db, &body.username, &body.password)
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|e| match e {
+            tenancy::CreateAdminError::Db(e) => ApiError::from(e),
+            e @ tenancy::CreateAdminError::Hash(_) => ApiError::internal(e),
+        })?;
     // First admin created: lock down the dashboard.
     state.open_dev.store(false, Ordering::Relaxed);
     Ok(Json(
@@ -67,8 +70,7 @@ pub(super) async fn create_course_handler(
         repo_url.as_deref(),
         &profile,
     )
-    .await
-    .map_err(ApiError::bad_request)?;
+    .await?;
     Ok(Json(serde_json::json!({
         "slug": course.slug,
         "name": course.name,
@@ -89,10 +91,10 @@ pub(super) async fn grant_membership_handler(
     Json(body): Json<GrantMembershipRequest>,
 ) -> ApiResult<StatusCode> {
     let admin_id = tenancy::admin_by_username(&state.db, &body.username)
-        .await
+        .await?
         .ok_or_else(|| ApiError::not_found("no such admin"))?;
     let course = tenancy::course_by_slug(&state.db, &body.course_slug)
-        .await
+        .await?
         .ok_or_else(|| ApiError::not_found("no such course"))?;
     tenancy::grant_membership(&state.db, admin_id, course.id).await?;
     Ok(StatusCode::NO_CONTENT)

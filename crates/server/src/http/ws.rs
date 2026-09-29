@@ -2,10 +2,9 @@
 
 use super::auth::bearer_token;
 use super::auth::routing_student;
-use super::auth::session_cookie;
+use super::auth::teacher_ctx;
 use super::auth::verified_student;
 use super::scope::resolve_course;
-use crate::auth::AuthCtx;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::state::MessageOut;
@@ -22,7 +21,6 @@ use futures::{SinkExt, StreamExt};
 use hermione_entity::messages;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::Deserialize;
-use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -68,7 +66,7 @@ async fn listener(
     // one that isn't in a log.
     if let Some(token) = bearer_token(headers).or(q.token.as_deref()) {
         let course = tenancy::course_by_token(&state.db, token)
-            .await
+            .await?
             .ok_or_else(|| ApiError::unauthorized("invalid enrollment token"))?;
         // An editor's socket is routed by student, so who it says it is has to be
         // true where students are verified.
@@ -78,15 +76,9 @@ async fn listener(
         return Ok((course.id, student));
     }
 
-    let ctx = match state
-        .auth
-        .admin_for(session_cookie(headers).as_deref())
+    let ctx = teacher_ctx(state, headers)
         .await
-    {
-        Some(admin_id) => AuthCtx::Admin(admin_id),
-        None if state.open_dev.load(Ordering::Relaxed) => AuthCtx::OpenDev,
-        None => return Err(ApiError::unauthorized("login required")),
-    };
+        .ok_or_else(|| ApiError::unauthorized("login required"))?;
     // A teacher's socket takes the course's messages only, never anyone's
     // control frames, whatever `student` it passes.
     let course_id = resolve_course(state, ctx, q.course.clone()).await?;
@@ -118,11 +110,7 @@ async fn message_socket(
             .await
         {
             for m in rows {
-                let dto = MessageOut {
-                    id: m.id,
-                    body: m.body,
-                    created_at_unix_ms: m.created_at.timestamp_millis(),
-                };
+                let dto = MessageOut::from(m);
                 if sender.send(Message::Text(to_text(&dto))).await.is_err() {
                     return;
                 }
