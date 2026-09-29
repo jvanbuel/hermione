@@ -126,4 +126,23 @@ drawn on, in both themes, and exits 1 if any pairing is under 4.5:1:
 python3 .claude/skills/hermione-ui-screenshots/scripts/contrast.py
 ```
 
-Run it after touching any `--hl-*`, `--diff-*-wash` or `--cursor-line-wash` token.
+Run it after touching any colour token. Besides the file pane's grounds it checks
+the text colours on flagged (needs-help / watch) cards, the header's needs-help
+pill, white text on the primary button, and the selected-control state.
+
+## Auditing accessibility: `scripts/a11y.js`
+
+The contrast table only knows the pairings someone listed. `a11y.js` runs
+[axe-core](https://github.com/dequelabs/axe-core) against the *rendered* pages —
+every teacher page, both themes, with the tree, the header menu, a file pane, a
+diff pane and the broadcast dialog open — so it also finds a token used on a
+ground nobody listed, missing landmarks, and ARIA a widget needs (it is how a
+focusable divider without `aria-valuenow` was caught):
+
+```bash
+npm i axe-core            # once, somewhere on NODE_PATH
+PORT=8799 node .claude/skills/hermione-ui-screenshots/scripts/server.js &
+PORT=8799 node .claude/skills/hermione-ui-screenshots/scripts/a11y.js
+```
+
+It exits 1 on any violation.

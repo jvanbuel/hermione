@@ -44,7 +44,7 @@
       font-size: var(--fs-sm); color: var(--fg-subtle);
       display: inline-flex; align-items: center; gap: 5px;
     }
-    .freshness.stale { color: var(--amber); }
+    .freshness.stale { color: var(--amber-text); }
     .freshness.failed { color: var(--red-text); }
     .freshness .fdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
     /* Header controls keep their size. Without this every item shrinks at once
@@ -56,8 +56,8 @@
     .hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* Broadcast is the header's primary action — filled, so it leads the eye. */
-    #broadcast { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
-    #broadcast:hover { background: var(--green-emphasis); }
+    #broadcast { background: var(--primary-bg); border-color: transparent; color: #fff; font-weight: 600; }
+    #broadcast:hover { background: var(--primary-hover); }
     /* On a narrower window the bar gives up words before it gives up controls:
      * the actions keep their icons (and their names, for screen readers), then
      * the wordmark and repo name go. */
@@ -289,7 +289,7 @@
       font-weight: 600; flex: none; letter-spacing: .01em; box-shadow: var(--shadow-1); }
     .pill.help { background: var(--help-bg); color: #fff; }
     .pill.watch { background: var(--watch-bg); color: #fff; }
-    .who .reason { font-size: var(--fs-sm); color: var(--amber); margin-top: 2px;
+    .who .reason { font-size: var(--fs-sm); color: var(--amber-text); margin-top: 2px;
       display: flex; align-items: flex-start; gap: 4px; }
     .who .prov { font-size: var(--fs-xs); color: var(--fg-subtle); margin-top: 1px;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -409,7 +409,7 @@
     .filev .fv-head .sum { margin-left: auto; white-space: nowrap; }
     .filev .fv-head .plus { color: var(--green-text); }
     .filev .fv-head .minus { color: var(--red-text); }
-    .filev .fv-head .stale { color: var(--amber); }
+    .filev .fv-head .stale { color: var(--amber-text); }
     .filev .fv-body {
       position: relative; flex: 1 1 auto; min-height: 0; overflow: auto;
       font-family: ui-monospace, monospace; font-size: var(--fs-sm); line-height: 1.5;
@@ -485,8 +485,8 @@
     .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
       background: var(--surface-2); color: var(--fg); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
     .btn:hover { background: var(--border); }
-    .btn.primary { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
-    .btn.primary:hover { background: var(--green-emphasis); }
+    .btn.primary { background: var(--primary-bg); border-color: transparent; color: #fff; font-weight: 600; }
+    .btn.primary:hover { background: var(--primary-hover); }
     .btn:disabled { opacity: .5; cursor: not-allowed; }
 
     /* ---- Assistant settings form (modal) ---- */
@@ -504,7 +504,7 @@
     .modal .toggle input { width: 16px; height: 16px; }
     .modal .notice { margin-top: 10px; padding: 8px 10px; border-radius: 8px; font-size: var(--fs-sm);
       background: var(--surface-2); color: var(--fg-muted); }
-    .modal .notice.warn { color: var(--amber); }
+    .modal .notice.warn { color: var(--amber-text); }
   </style>
 </head>
 <body>
@@ -566,11 +566,11 @@
       </div>
     </div>
   </header>
-  <div id="content">
+  <main id="content">
     <div id="board"><div class="empty">Loading…</div></div>
-    <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize terminal panel"></div>
-    <div id="dock"></div>
-  </div>
+    <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize terminal panel" tabindex="0"></div>
+    <section id="dock" aria-label="Student panes"></section>
+  </main>
   <footer id="statusbar">
     <span id="freshness" class="freshness">Connecting…</span>
     <span class="spacer"></span>
@@ -1584,23 +1584,36 @@
       return out.join('');
     }
 
-    // ---- draggable board/dock divider ----
+    // ---- board/dock divider: drag it, or focus it and use the arrow keys ----
     (function () {
       const divider = document.getElementById('divider');
+      const content = document.getElementById('content');
+      const board = document.getElementById('board');
       let dragging = false;
+      const bounds = () => ({ min: 240, max: content.getBoundingClientRect().width - 280 });
+      function setBoardWidth(px) {
+        const { min, max } = bounds();
+        board.style.flex = `0 0 ${Math.round(Math.max(min, Math.min(max, px)))}px`;
+        document.getElementById('dock').style.flex = '1 1 0';
+        relayout();
+      }
+      // A focusable separator is a widget, so it reports where it is. Watching
+      // the board keeps that true however the width changed: a drag, the keys,
+      // or the window being resized.
+      function reportPosition() {
+        const { min, max } = bounds();
+        divider.setAttribute('aria-valuemin', String(min));
+        divider.setAttribute('aria-valuemax', String(Math.round(max)));
+        divider.setAttribute('aria-valuenow', String(Math.round(board.getBoundingClientRect().width)));
+      }
+      new ResizeObserver(reportPosition).observe(board);
+      reportPosition();
       divider.addEventListener('pointerdown', (e) => {
         dragging = true; divider.classList.add('dragging');
         divider.setPointerCapture(e.pointerId); e.preventDefault();
       });
       divider.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
-        const content = document.getElementById('content');
-        const rect = content.getBoundingClientRect();
-        const min = 240, max = rect.width - 280;
-        const bx = Math.max(min, Math.min(max, e.clientX - rect.left));
-        document.getElementById('board').style.flex = `0 0 ${bx}px`;
-        document.getElementById('dock').style.flex = '1 1 0';
-        relayout();
+        if (dragging) setBoardWidth(e.clientX - content.getBoundingClientRect().left);
       });
       const end = (e) => {
         if (!dragging) return;
@@ -1609,6 +1622,14 @@
       };
       divider.addEventListener('pointerup', end);
       divider.addEventListener('pointercancel', end);
+      divider.addEventListener('keydown', (e) => {
+        const step = e.shiftKey ? 96 : 24, now = board.getBoundingClientRect().width;
+        const to = { ArrowLeft: now - step, ArrowRight: now + step,
+                     Home: bounds().min, End: bounds().max }[e.key];
+        if (to === undefined) return;
+        e.preventDefault();
+        setBoardWidth(to);
+      });
     })();
 
     // ---- broadcast composer ----

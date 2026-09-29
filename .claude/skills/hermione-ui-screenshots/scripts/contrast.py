@@ -57,6 +57,11 @@ def wash(theme, tok, base):
 # on: syntax colours are drawn on every row kind; the cursor line's own number
 # (`--accent-text`) only on the cursor line; and so on.
 PLAIN, CURSOR, ADDED, REMOVED = 'plain row', 'cursor line', 'added row', 'removed row'
+# Elsewhere on the board: a card flagged needs-help / watch (and the header's
+# needs-help pill, which sits on the same wash), and the filled primary button.
+HELP_CARD, WATCH_CARD = 'help card', 'watch card'
+PRIMARY, PRIMARY_HOVER = 'primary btn', 'primary hover'
+SELECTED = 'selected ctl'  # e.g. the pressed Diff toggle: accent text on the accent wash
 PAIRS = [
     ('text', '--fg', [PLAIN, CURSOR, ADDED, REMOVED]),
     ('comment', '--hl-comment', [PLAIN, CURSOR, ADDED, REMOVED]),
@@ -70,7 +75,14 @@ PAIRS = [
     ('cursor line number', '--accent-text', [CURSOR]),
     ('+ marker', '--green-text', [ADDED]),
     ('- marker', '--red-text', [REMOVED]),
-    ('stale / header', '--amber', [PLAIN]),
+    ('stale / warning', '--amber-text', [PLAIN, HELP_CARD, WATCH_CARD]),
+    ('typing', '--green-text', [PLAIN, HELP_CARD, WATCH_CARD]),
+    ('muted text', '--fg-muted', [PLAIN, HELP_CARD, WATCH_CARD]),
+    ('subtle text', '--fg-subtle', [HELP_CARD, WATCH_CARD]),
+    ('help text / pill', '--red-text', [HELP_CARD]),
+    # A literal colour: white text sits on the button's background token.
+    ('white on button', '#ffffff', [PRIMARY, PRIMARY_HOVER]),
+    ('accent on wash', '--accent-text', [SELECTED]),
 ]
 
 
@@ -86,6 +98,11 @@ def main():
             CURSOR: wash(theme, '--cursor-line-wash', bg),
             ADDED: wash(theme, '--diff-add-wash', bg),
             REMOVED: wash(theme, '--diff-del-wash', bg),
+            HELP_CARD: wash(theme, '--help-wash', rgb(resolve(theme, '--surface'))),
+            WATCH_CARD: wash(theme, '--watch-wash', rgb(resolve(theme, '--surface'))),
+            SELECTED: wash(theme, '--accent-wash', rgb(resolve(theme, '--surface'))),
+            PRIMARY: rgb(resolve(theme, '--primary-bg')),
+            PRIMARY_HOVER: rgb(resolve(theme, '--primary-hover')),
         }
         print(f'\n{name}  (board {resolve(theme, "--bg")})')
         print(f'  {"":20}' + ''.join(f'{g:>14}' for g in grounds))
@@ -95,7 +112,7 @@ def main():
                 if g not in on:
                     cells += f'{"·":>14}'
                     continue
-                r = ratio(rgb(resolve(theme, tok)), gb)
+                r = ratio(rgb(tok if tok.startswith('#') else resolve(theme, tok)), gb)
                 if r < MIN:
                     failed.append((name, label, g, round(r, 2)))
                 cells += f'{r:>13.2f}{"!" if r < MIN else " "}'

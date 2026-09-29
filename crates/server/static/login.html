@@ -55,11 +55,11 @@
       box-shadow: 0 0 0 3px var(--accent-wash); }
     button {
       width: 100%; padding: 11px; border: none; border-radius: var(--radius-sm); cursor: pointer;
-      background: var(--green); color: #fff; font: inherit; font-size: var(--fs-base); font-weight: 600;
+      background: var(--primary-bg); color: #fff; font: inherit; font-size: var(--fs-base); font-weight: 600;
       margin-top: 6px; box-shadow: var(--shadow-1);
       transition: background .12s var(--ease), transform .06s var(--ease);
     }
-    button:hover { background: var(--green-emphasis); }
+    button:hover { background: var(--primary-hover); }
     button:active { transform: translateY(1px); }
     .error { color: var(--red-text); font-size: var(--fs-sm); min-height: 1.1em; margin-top: 12px; font-weight: 500; }
     .foot { position: fixed; bottom: 18px; left: 0; right: 0; z-index: 1;
@@ -67,6 +67,7 @@
   </style>
 </head>
 <body>
+  <main>
   <form class="card" id="form">
     <div class="glyph"><img src="/assets/hermione-mark.svg" alt="Hermione" /></div>
     <h1>Hermione</h1>
@@ -82,7 +83,8 @@
     <button type="submit">Sign in</button>
     <div class="error" id="error"></div>
   </form>
-  <div class="foot">Hermione · live terminal observability for the classroom</div>
+  </main>
+  <footer class="foot">Hermione · live terminal observability for the classroom</footer>
   <script>
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();

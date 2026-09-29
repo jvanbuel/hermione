@@ -32,8 +32,8 @@
    * surface they land on, so 4.5:1 holds on every card and not only on --bg.
    * --fg-subtle was #93a08e, which was 3.21:1 there. */
   --fg: #eef1e6;
-  --fg-muted: #b4c0ad;
-  --fg-subtle: #b6bfb3;
+  --fg-muted: #bcc8b5;
+  --fg-subtle: #bec7bb;
 
   /* semantic — softened "coloured chalk", but dark enough for white-on-colour */
   --accent: #3f7cbb;
@@ -42,7 +42,12 @@
   --green-emphasis: #67c97e;
   --red: #ef8e8e;
   --amber: #e6c163;
+  --amber-text: #e6c163;
   --help-bg: #b62324;
+  /* Filled primary buttons: white text on these clears 4.5:1 (--green is a text
+   * and dot colour, too light to carry white text in the dark theme). */
+  --primary-bg: #238636;
+  --primary-hover: #1f7d33;
   --watch-bg: #9e6a03;
 
   /* The same hues again, lightened for use as TEXT on a dark surface. The
@@ -50,7 +55,7 @@
    * the board they measured 2.0-3.7:1. Two jobs, two tokens. */
   --accent-text: #a0bfdf;
   --red-text: #f3a9a9;
-  --green-text: #87cb97;
+  --green-text: #98d5a5;
 
   /* a real type scale — five steps, not thirteen.
    * Sized for a board read across a classroom rather than a code editor at
@@ -129,7 +134,7 @@
 
   --fg: #1f2328;
   --fg-muted: #59636e;
-  --fg-subtle: #636b74;
+  --fg-subtle: #5c6570;
 
   --accent: #0969da;
   --brand: #8250df;
@@ -137,12 +142,15 @@
   --green-emphasis: #1f883d;
   --red: #cf222e;
   --amber: #9a6700;
+  --amber-text: #805700;
   --help-bg: #cf222e;
+  --primary-bg: #1a7f37;
+  --primary-hover: #166f30;
   --watch-bg: #9a6700;
 
-  --accent-text: #0967d5;
-  --red-text: #ce222e;
-  --green-text: #197a35;
+  --accent-text: #085cc0;
+  --red-text: #b91f2b;
+  --green-text: #16702f;
 
   --hl-comment: var(--fg-subtle);
   --hl-string: #0a3069;
@@ -177,7 +185,7 @@
 
     --fg: #1f2328;
     --fg-muted: #59636e;
-    --fg-subtle: #636b74;
+    --fg-subtle: #5c6570;
 
     --accent: #0969da;
     --brand: #8250df;
@@ -185,12 +193,15 @@
     --green-emphasis: #1f883d;
     --red: #cf222e;
     --amber: #9a6700;
+    --amber-text: #805700;
     --help-bg: #cf222e;
+    --primary-bg: #1a7f37;
+    --primary-hover: #166f30;
     --watch-bg: #9a6700;
 
-    --accent-text: #0967d5;
-    --red-text: #ce222e;
-    --green-text: #197a35;
+    --accent-text: #085cc0;
+    --red-text: #b91f2b;
+    --green-text: #16702f;
 
     --hl-comment: var(--fg-subtle);
     --hl-string: #0a3069;
