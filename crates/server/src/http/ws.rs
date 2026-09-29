@@ -104,13 +104,17 @@ async fn message_socket(
         if let Ok(rows) = messages::Entity::find()
             .filter(messages::Column::CourseId.eq(course_id))
             .filter(messages::Column::Id.gt(since))
+            .filter(crate::messages::addressed_to(student.as_ref()))
             .order_by_asc(messages::Column::Id)
             .limit(50)
             .all(&state.db)
             .await
         {
-            for m in rows {
-                let dto = MessageOut::from(m);
+            for m in rows
+                .into_iter()
+                .filter_map(|m| MessageOut::try_from(m).ok())
+            {
+                let dto = m;
                 if sender.send(Message::Text(to_text(&dto))).await.is_err() {
                     return;
                 }
@@ -121,7 +125,7 @@ async fn message_socket(
     // Then tail live messages, plus control frames when this socket said who it
     // belongs to. A socket without a student (the dashboard) gets messages only.
     let mut rx = state.msg_hub.subscribe(&course_id).await;
-    let ctrl_key = student.map(|student| Slot {
+    let ctrl_key = student.clone().map(|student| Slot {
         course: course_id,
         student,
     });
@@ -141,7 +145,11 @@ async fn message_socket(
             msg = rx.recv() => {
                 match msg {
                     Ok(m) => {
-                        if sender.send(Message::Text(to_text(&m))).await.is_err() {
+                        // The course's channel carries every message for the
+                        // course; this socket keeps only those meant for it.
+                        if m.audience.reaches(student.as_ref())
+                            && sender.send(Message::Text(to_text(&m))).await.is_err()
+                        {
                             break;
                         }
                     }

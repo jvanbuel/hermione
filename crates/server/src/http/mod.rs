@@ -44,6 +44,7 @@ use sessions::{list_sessions, stream_session, transcript};
 use ws::ws_handler;
 
 // What the rest of the crate reaches for by `crate::http::…`.
+pub(crate) use auth::routing_student;
 pub(crate) use courses::{normalize_slug, title_from_slug};
 pub(crate) use scope::{authorized_course, resolve_course};
 

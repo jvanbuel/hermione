@@ -1771,6 +1771,265 @@ mod control_socket {
             .await;
         assert_eq!(next_frame(&mut socket).await, None);
     }
+
+    /// A teacher signed in to a fresh course, and the app served on a port.
+    struct Room {
+        state: AppState,
+        app: Router,
+        addr: std::net::SocketAddr,
+        course: hermione_entity::courses::Model,
+        cookie: String,
+    }
+
+    async fn room() -> Room {
+        let (state, app) = app().await;
+        let course = course(&state).await;
+        let admin = tenancy::create_admin(&state.db, &format!("tm{}", rnd()), "pw")
+            .await
+            .unwrap();
+        tenancy::grant_membership(&state.db, admin.id, course.id)
+            .await
+            .unwrap();
+        let cookie = login(&app, &admin.username, "pw").await.unwrap();
+        let addr = serve(app.clone()).await;
+        Room {
+            state,
+            app,
+            addr,
+            course,
+            cookie,
+        }
+    }
+
+    impl Room {
+        async fn send(&self, json: &str) -> axum::response::Response {
+            post_json_with_cookie(&self.app, "/api/messages", &self.cookie, json).await
+        }
+
+        /// A student's editor, connected and listening.
+        async fn editor(&self, name: &str, since: Option<i64>) -> Socket {
+            let bearer = format!("Bearer {}", self.course.enrollment_token);
+            let mut query = format!("student={name}");
+            if let Some(since) = since {
+                query.push_str(&format!("&since={since}"));
+            }
+            let socket = connect(self.addr, &query, &[("authorization", &bearer)])
+                .await
+                .unwrap();
+            listening(
+                &self.state,
+                &Slot {
+                    course: self.course.id,
+                    student: student(name),
+                },
+            )
+            .await;
+            socket
+        }
+
+        async fn dashboard(&self) -> Socket {
+            let query = format!("course={}", self.course.slug);
+            let socket = connect(self.addr, &query, &[("cookie", &self.cookie)])
+                .await
+                .unwrap();
+            // No control subscription to wait for on a teacher's socket.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            socket
+        }
+
+        fn to(&self, text: &str, students: &[&str]) -> String {
+            serde_json::json!({ "course": self.course.slug, "text": text, "students": students })
+                .to_string()
+        }
+
+        fn to_all(&self, text: &str) -> String {
+            serde_json::json!({ "course": self.course.slug, "text": text }).to_string()
+        }
+    }
+
+    fn body_of(frame: Option<String>) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(&frame?).ok()?;
+        v["body"].as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn a_message_to_named_students_reaches_only_their_sockets() {
+        let room = room().await;
+        let mut ada = room.editor("ada", None).await;
+        let mut bo = room.editor("bo", None).await;
+        let mut cy = room.editor("cy", None).await;
+        let mut dashboard = room.dashboard().await;
+
+        let resp = room
+            .send(&room.to("look at line 4", &["ada", "cy", "ada"]))
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let sent: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(sent["sent"], 2, "a name listed twice is sent to once");
+
+        assert_eq!(
+            body_of(next_frame(&mut ada).await).as_deref(),
+            Some("look at line 4")
+        );
+        assert_eq!(
+            body_of(next_frame(&mut cy).await).as_deref(),
+            Some("look at line 4")
+        );
+        assert_eq!(next_frame(&mut bo).await, None, "bo was not addressed");
+        assert_eq!(
+            next_frame(&mut dashboard).await,
+            None,
+            "a private word to students is not shown on the dashboard"
+        );
+
+        // A message to the whole course still reaches everyone, dashboard included.
+        room.send(&room.to_all("five minutes")).await;
+        for socket in [&mut ada, &mut bo, &mut cy, &mut dashboard] {
+            assert_eq!(
+                body_of(next_frame(socket).await).as_deref(),
+                Some("five minutes")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn catching_up_after_a_disconnect_skips_what_was_for_someone_else() {
+        let room = room().await;
+        room.send(&room.to("just for ada", &["ada"])).await;
+        room.send(&room.to_all("for everyone")).await;
+
+        let mut bo = room.editor("bo", Some(0)).await;
+        assert_eq!(
+            body_of(next_frame(&mut bo).await).as_deref(),
+            Some("for everyone")
+        );
+        assert_eq!(next_frame(&mut bo).await, None);
+
+        let mut ada = room.editor("ada", Some(0)).await;
+        assert_eq!(
+            body_of(next_frame(&mut ada).await).as_deref(),
+            Some("just for ada")
+        );
+        assert_eq!(
+            body_of(next_frame(&mut ada).await).as_deref(),
+            Some("for everyone")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_inbox_lists_the_courses_messages_and_the_askers_own() {
+        let room = room().await;
+        room.send(&room.to("just for ada", &["ada"])).await;
+        room.send(&room.to_all("for everyone")).await;
+        let bearer = format!("Bearer {}", room.course.enrollment_token);
+        let inbox = |student: &'static str| {
+            let app = room.app.clone();
+            let bearer = bearer.clone();
+            async move {
+                let uri = if student.is_empty() {
+                    "/api/inbox".to_string()
+                } else {
+                    format!("/api/inbox?student={student}")
+                };
+                let resp = app
+                    .oneshot(
+                        Request::get(uri)
+                            .header(header::AUTHORIZATION, bearer)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                let list: Vec<serde_json::Value> =
+                    serde_json::from_str(&body_string(resp).await).unwrap();
+                list.iter()
+                    .map(|m| m["body"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(inbox("ada").await, ["just for ada", "for everyone"]);
+        assert_eq!(inbox("bo").await, ["for everyone"]);
+        assert_eq!(
+            inbox("").await,
+            ["for everyone"],
+            "no name, no private mail"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_recipient_list_is_refused_and_sends_nothing() {
+        let room = room().await;
+        let mut ada = room.editor("ada", None).await;
+        for (case, json) in [
+            ("nobody", room.to("hi", &[])),
+            ("a blank name", room.to("hi", &["ada", "  "])),
+            (
+                "too many",
+                room.to(
+                    "hi",
+                    &(0..501)
+                        .map(|i| format!("s{i}"))
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        ] {
+            let status = room.send(&json).await.status();
+            assert!(status.is_client_error(), "{case}: {status}");
+        }
+        assert_eq!(
+            next_frame(&mut ada).await,
+            None,
+            "a refused message goes nowhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verified_student_cannot_read_anothers_mail_by_claiming_their_name() {
+        use crate::identity::Identity;
+        let identity = Identity::for_test("identity-secret", vec![github()]);
+        let bob_token = identity.issue("github:bob").unwrap();
+        let (state, app) = app_with_identity(identity).await;
+        let course = course(&state).await;
+        let admin = tenancy::create_admin(&state.db, &format!("tv{}", rnd()), "pw")
+            .await
+            .unwrap();
+        tenancy::grant_membership(&state.db, admin.id, course.id)
+            .await
+            .unwrap();
+        let cookie = login(&app, &admin.username, "pw").await.unwrap();
+        let body = serde_json::json!({
+            "course": course.slug, "text": "for ada only", "students": ["github:ada"],
+        })
+        .to_string();
+        assert_eq!(
+            post_json_with_cookie(&app, "/api/messages", &cookie, &body)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        // Bob presents his own identity but asks for Ada's mail.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/api/inbox?student=github:ada")
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", course.enrollment_token),
+                    )
+                    .header("x-hermione-identity", &bob_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_string(resp).await, "[]");
+    }
 }
 
 /// A teacher, a course, a student's editor and a fake GitHub, wired through the

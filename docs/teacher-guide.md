@@ -157,8 +157,11 @@ the one-time hint for new users.
   work.
 - **Transcripts** — the conversations students have had with the teaching
   assistant, by student, so you can see where the assistant is (or isn't) helping.
-- **Broadcast** — a message to every student in the course, delivered into their
-  editor.
+- **Broadcast** — a message delivered into students' editors. Choose who it is
+  for: everyone in the course, only the students who need help, everyone on one
+  exercise, or a handful you pick by name. A message to some students is private
+  to them: other students' editors, and the dashboard, never see it. An editor
+  that was closed when you sent it gets it when it reconnects.
 
 ## What students share
 

@@ -521,6 +521,13 @@
       width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
       border-radius: 8px; padding: 8px 10px; font: inherit; font-size: var(--fs-base);
     }
+    .modal select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 8px 10px; font: inherit; font-size: var(--fs-base); }
+    .modal #bc-pick { margin: 8px 0 0; max-height: 132px; overflow-y: auto; padding: 6px 10px;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+    .modal #bc-pick[hidden] { display: none; }
+    .modal .pick { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: var(--fs-base); cursor: pointer; }
+    .modal #bc-text { margin-top: 12px; }
     .modal textarea.mono { font-family: ui-monospace, monospace; min-height: 64px; }
     .modal input.mono { font-family: ui-monospace, monospace; }
     .modal .toggle { display: flex; align-items: center; gap: 8px; font-size: var(--fs-base); cursor: pointer; }
@@ -563,7 +570,7 @@
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm2 3v1.3h8V5H4zm0 2.7V9h5V7.7H4z"/></svg>
       <span class="lbl">Transcripts</span>
     </a>
-    <button id="broadcast" type="button" title="Send a message to all students in this course" aria-label="Broadcast">
+    <button id="broadcast" type="button" title="Send a message to the class, an exercise, or chosen students" aria-label="Broadcast">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.5 2.2 4.6 5.5H2.3A1.3 1.3 0 0 0 1 6.8v2.4a1.3 1.3 0 0 0 1.3 1.3h.6l1 3.2h2l-.9-3.2 6.5 3V2.2zM13.8 6a2 2 0 0 1 0 4V6z"/></svg>
       <span class="lbl">Broadcast</span>
     </button>
@@ -1856,16 +1863,43 @@
     })();
 
     // ---- broadcast composer ----
+    // Who a message can be sent to, worked out from the board as it is now:
+    // everyone, the students who need help, a whole exercise's column, or a
+    // hand-picked few. `students` is null for "everyone" — the server then
+    // addresses the course itself, including students who haven't shown up yet.
+    function audiences() {
+      const groups = lastOverview ? lastOverview.exercises : [];
+      const all = groups.flatMap(g => g.students).concat(lastOverview ? lastOverview.noExercise : []);
+      const names = list => list.map(s => s.student);
+      const out = [{ key: 'all', label: `Everyone in the course (${all.length})`, students: null, count: all.length }];
+      const helping = all.filter(s => s.struggle === 'help');
+      if (helping.length) out.push({ key: 'help', label: `Students who need help (${helping.length})`, students: names(helping), count: helping.length });
+      for (const g of groups) {
+        if (g.students.length) out.push({ key: 'ex:' + g.exercise, label: `${g.title || g.exercise} (${g.students.length})`, students: names(g.students), count: g.students.length });
+      }
+      if (all.length) out.push({ key: 'pick', label: 'Choose students…', students: [], count: 0, pick: names(all).sort((a, b) => a.localeCompare(b)) });
+      return out;
+    }
+
     function openBroadcast() {
       if (!currentCourse) return;
       const courseName = document.querySelector('#course option:checked')?.textContent || currentCourse;
       const max = 280;
+      const options = audiences();
 
       const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="bc-title">
-          <h2 id="bc-title">Broadcast message</h2>
-          <p class="sub">To ${lastAudience} student${lastAudience === 1 ? '' : 's'} in ${esc(courseName)}</p>
-          <textarea id="bc-text" maxlength="${max}" placeholder="Message to the class…" aria-label="Message to the class"></textarea>
+          <h2 id="bc-title">Message students</h2>
+          <p class="sub">in ${esc(courseName)}</p>
+          <div class="field">
+            <label for="bc-to">To</label>
+            <select id="bc-to">${options.map(o => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('')}</select>
+          </div>
+          <div id="bc-pick" role="group" aria-label="Students to message" hidden>
+            ${(options.find(o => o.pick)?.pick || []).map((n, i) =>
+              `<label class="pick"><input type="checkbox" value="${esc(n)}" id="bc-p${i}"> ${esc(n)}</label>`).join('')}
+          </div>
+          <textarea id="bc-text" maxlength="${max}" placeholder="Message…" aria-label="Message"></textarea>
           <div class="row">
             <span class="ct" id="bc-ct">0 / ${max}</span>
             <button class="btn" id="bc-cancel" type="button">Cancel</button>
@@ -1876,25 +1910,40 @@
       const ta = backdrop.querySelector('#bc-text');
       const ct = backdrop.querySelector('#bc-ct');
       const send = backdrop.querySelector('#bc-send');
+      const to = backdrop.querySelector('#bc-to');
+      const pick = backdrop.querySelector('#bc-pick');
+      const chosen = () => [...pick.querySelectorAll('input:checked')].map(i => i.value);
+      const selected = () => options.find(o => o.key === to.value);
+      // Send needs words, and — when picking — at least one person.
+      const ready = () => {
+        send.disabled = ta.value.trim().length === 0 || (selected().pick && chosen().length === 0);
+      };
 
       ta.focus();
-      ta.addEventListener('input', () => {
-        ct.textContent = `${ta.value.length} / ${max}`;
-        send.disabled = ta.value.trim().length === 0;
-      });
+      ta.addEventListener('input', () => { ct.textContent = `${ta.value.length} / ${max}`; ready(); });
+      to.addEventListener('change', () => { pick.hidden = !selected().pick; ready(); });
+      pick.addEventListener('change', ready);
       backdrop.querySelector('#bc-cancel').addEventListener('click', close);
       send.addEventListener('click', async () => {
         const text = ta.value.trim();
         if (!text) return;
+        const target = selected();
+        const body = { course: currentCourse, text };
+        if (target.pick) body.students = chosen();
+        else if (target.students) body.students = target.students;
+        const reset = () => { send.disabled = false; send.textContent = 'Send'; };
         send.disabled = true; send.textContent = 'Sending…';
         try {
           const res = await fetch('/api/messages', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ course: currentCourse, text }),
+            body: JSON.stringify(body),
           });
-          if (res.ok) { close(); toast('Broadcast sent to the class'); }
-          else { send.disabled = false; send.textContent = 'Send'; toast('Failed to send broadcast'); }
-        } catch (_) { send.disabled = false; send.textContent = 'Send'; toast('Failed to send broadcast'); }
+          if (res.ok) {
+            const sent = (await res.json()).sent;
+            close();
+            toast(body.students ? `Message sent to ${sent} student${sent === 1 ? '' : 's'}` : 'Message sent to the class');
+          } else { reset(); toast((await res.text().catch(() => '')) || 'Failed to send message'); }
+        } catch (_) { reset(); toast('Failed to send message'); }
       });
     }
 

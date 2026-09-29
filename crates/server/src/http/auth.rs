@@ -159,7 +159,7 @@ pub(super) fn verified_student(state: &AppState, headers: &HeaderMap) -> ApiResu
 /// A verified identity wins. The name a socket claims is used only where nothing
 /// verifies students: elsewhere it would be a way to listen in on someone
 /// else's frames, and those frames say when a teacher is looking at their file.
-pub(super) fn routing_student(
+pub(crate) fn routing_student(
     verified: Option<String>,
     claimed: Option<Student>,
 ) -> Result<Option<Student>, BlankName> {

@@ -10,6 +10,8 @@ pub struct Model {
     pub id: i64,
     pub course_id: Uuid,
     pub body: String,
+    /// The one student this is for; `None` is the whole course.
+    pub student: Option<String>,
     pub created_at: DateTimeWithTimeZone,
 }
 

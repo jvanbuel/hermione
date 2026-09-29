@@ -39,9 +39,39 @@ impl TryFrom<String> for Student {
     }
 }
 
+impl Student {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl fmt::Display for Student {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// Who a message is for.
+///
+/// A sum type rather than `Option<Student>`: "no student" reads as "nobody",
+/// and the difference between nobody and everybody is exactly the kind of thing
+/// that is got backwards once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Audience {
+    /// Every student in the course, and the teachers' dashboard.
+    Everyone,
+    /// One student's editor, and nobody else's — not even a teacher's.
+    Student(Student),
+}
+
+impl Audience {
+    /// Whether a socket belonging to `listener` should be sent the message.
+    /// `None` is a listener with no student: the dashboard.
+    pub fn reaches(&self, listener: Option<&Student>) -> bool {
+        match self {
+            Self::Everyone => true,
+            Self::Student(only) => listener == Some(only),
+        }
     }
 }
 
@@ -57,6 +87,22 @@ pub struct Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn student(name: &str) -> Student {
+        Student::try_from(name.to_string()).unwrap()
+    }
+
+    #[test]
+    fn everyone_reaches_everyone_and_a_student_only_that_student() {
+        let ada = student("ada");
+        assert!(Audience::Everyone.reaches(None));
+        assert!(Audience::Everyone.reaches(Some(&ada)));
+        let only_ada = Audience::Student(ada.clone());
+        assert!(only_ada.reaches(Some(&ada)));
+        assert!(!only_ada.reaches(Some(&student("bo"))));
+        // Not the dashboard either: a private word to one student stays private.
+        assert!(!only_ada.reaches(None));
+    }
 
     #[test]
     fn blank_names_are_refused() {

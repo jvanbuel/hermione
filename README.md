@@ -320,14 +320,20 @@ repository is what they clone — which Hermione can't enforce for you.
   (removing omitted ones), which backs the dashboard's exercises editor. The
   dashboard shows all of them, even ones nobody has started, with per-exercise
   stats.
-- `POST /api/messages` — teacher broadcasts a message to a course (persisted).
+- `POST /api/messages` — teacher sends a message (persisted): `{course, text}` to
+  the whole course, or `{course, text, students: ["ada", …]}` to just those
+  students (one to 500 names; a private message is stored once per student and
+  reaches no other editor and not the dashboard).
 - `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
   token (`Authorization: Bearer …`; `?token=` is still read for older editors, but
   a URL ends up in proxy logs, so don't use it in new clients) or the session
   cookie (`?course=`); pass `?since=<id>` to
   replay missed messages, omit it for live-only. Used by the extension (real-time
   broadcasts) and the dashboard.
-- `GET /api/inbox?since=<id>` — HTTP fallback for the message inbox.
+- `GET /api/inbox?since=<id>&student=<name>` — HTTP fallback for the message inbox:
+  the course's messages and those addressed to the asking student (a verified
+  identity, where enforced, decides who that is; `student` is only believed where
+  nothing verifies students).
 
 The teacher routes require a session cookie (obtained via `POST /api/login`);
 agent routes require a course enrollment token. See below.

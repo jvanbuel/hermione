@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::auth::Auth;
-use crate::student::Slot;
+use crate::student::{Audience, BlankName, Slot, Student};
 
 /// A set of broadcast channels keyed by whatever the fan-out is per.
 ///
@@ -107,15 +107,27 @@ pub struct MessageOut {
     pub id: i64,
     pub body: String,
     pub created_at_unix_ms: i64,
+    /// Who it is for. Decides who is sent it; it is not part of what is sent.
+    #[serde(skip)]
+    pub audience: Audience,
 }
 
-impl From<hermione_entity::messages::Model> for MessageOut {
-    fn from(m: hermione_entity::messages::Model) -> Self {
-        MessageOut {
+impl TryFrom<hermione_entity::messages::Model> for MessageOut {
+    /// A stored recipient that is blank. Nothing writes one; if a row somehow
+    /// has it, it is dropped rather than shown to everyone.
+    type Error = BlankName;
+
+    fn try_from(m: hermione_entity::messages::Model) -> Result<Self, BlankName> {
+        let audience = match m.student {
+            None => Audience::Everyone,
+            Some(name) => Audience::Student(Student::try_from(name)?),
+        };
+        Ok(MessageOut {
             id: m.id,
             body: m.body,
             created_at_unix_ms: m.created_at.timestamp_millis(),
-        }
+            audience,
+        })
     }
 }
 
