@@ -139,6 +139,19 @@ export interface SnapshotTarget {
 }
 
 /**
+ * What a whole-file report was built from, in one string. While it is unchanged
+ * the server's copy is still right and only the caret can differ, so the editor
+ * may send just the caret. The buffer's version (VSCode bumps it on every edit,
+ * including undo), whether it is dirty, its language and the commit its diff is
+ * against are exactly what a whole report is made of besides the caret.
+ */
+export async function snapshotKey(target: SnapshotTarget & { doc: vscode.TextDocument }): Promise<string> {
+    const commit = (await git())?.getRepository(target.uri)?.state.HEAD?.commit ?? '';
+    const { doc } = target;
+    return [target.uri.fsPath, doc.version, doc.isDirty, doc.languageId, commit].join('|');
+}
+
+/**
  * Builds the report for a file the student has open. `content` is the buffer as
  * the student sees it this instant, including unsaved edits.
  */

@@ -91,6 +91,11 @@ Notes on how it behaves:
   what HEAD holds — and the diff is reused while the buffer is the same. "No such
   file" is only believed for ten seconds, so a transient git failure can't leave
   a tracked file looking untracked until the next commit.
+- **A moving caret costs almost nothing.** When only the cursor has moved since
+  the last whole file the server took (same buffer version, same commit), the
+  extension sends just the new position, naming the snapshot it is a change to;
+  the server keeps the text, highlighting and diff it already has. If the server's
+  copy is gone (expired, restarted) it says so and the whole file is sent.
 - **The student can see it.** While a teacher is looking, the status bar reads
   *"teacher viewing"* and is highlighted; it clears on its own when they stop.
 - **Either side can switch it off.** `"shareFileContents": false` in the

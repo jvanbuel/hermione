@@ -48,7 +48,7 @@ pub struct Cursor {
 }
 
 /// The file a student has open.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct File {
     path: String,
@@ -72,7 +72,7 @@ pub struct File {
 }
 
 /// What the buffer is compared against.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Baseline {
     Head(Diff),
@@ -82,7 +82,7 @@ pub enum Baseline {
 }
 
 /// The buffer's text, never over the size cap.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Text {
     content: String,
     /// The text was cut short, here or by the editor.
@@ -115,6 +115,14 @@ impl Text {
 }
 
 impl Snapshot {
+    /// Where the caret is, when this is a file with one on screen.
+    pub fn cursor(&self) -> Option<Cursor> {
+        match self {
+            Self::File(f) => f.cursor,
+            _ => None,
+        }
+    }
+
     /// Turns a report into something to show.
     ///
     /// Parsing a buffer is tens to hundreds of milliseconds of solid CPU, so call
@@ -125,6 +133,14 @@ impl Snapshot {
         match state {
             report::State::Declined => Self::Declined,
             report::State::Empty => Self::Empty,
+            // Same buffer, caret elsewhere: nothing to parse or diff again. Only
+            // meaningful on top of a file snapshot; without one there is nothing
+            // it could be the same buffer as. (`ingest` has already checked the
+            // editor meant this very snapshot.)
+            report::State::Cursor { cursor, .. } => match previous {
+                Some(Self::File(f)) => Self::File(Box::new(f.with_cursor(cursor))),
+                _ => Self::Empty,
+            },
             report::State::File(file) => {
                 let previous = match previous {
                     Some(Self::File(f)) => Some(&**f),
@@ -176,6 +192,15 @@ impl File {
 }
 
 impl File {
+    /// This file with the caret somewhere else. Copies the text and diff rather
+    /// than sharing them, which is a memcpy next to the parse it saves.
+    fn with_cursor(&self, cursor: Cursor) -> Self {
+        Self {
+            cursor: Some(cursor),
+            ..self.clone()
+        }
+    }
+
     /// The path of this file relative to the student's workspace.
     pub fn relative_path(&self) -> &str {
         &self.relative_path
@@ -272,6 +297,42 @@ mod tests {
         // ...and it is still what a fresh parse would have produced.
         let fresh = build(file("x = 1\n", untracked()), None);
         assert_eq!(**b, **highlight_of(&fresh).unwrap());
+    }
+
+    #[test]
+    fn a_cursor_report_moves_the_caret_and_nothing_else() {
+        let first = build(file("x = 1\n", untracked()), None);
+        let report: report::Report = serde_json::from_value(json!({
+            "student": "alice", "state": "cursor", "basis": 7,
+            "cursor": {"line": 2, "column": 1},
+        }))
+        .unwrap();
+        let moved = Snapshot::from_report(report.state, Some(&first));
+        assert!(Arc::ptr_eq(
+            highlight_of(&first).unwrap(),
+            highlight_of(&moved).unwrap()
+        ));
+        let (a, b) = (
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&moved).unwrap(),
+        );
+        assert_eq!(b["cursor"], json!({"line": 2, "column": 1}));
+        for field in ["content", "path", "dirty", "baseline", "highlight"] {
+            assert_eq!(a[field], b[field], "{field}");
+        }
+    }
+
+    #[test]
+    fn a_cursor_report_with_nothing_to_sit_on_is_an_empty_editor() {
+        let report: report::Report = serde_json::from_value(json!({
+            "student": "alice", "state": "cursor", "basis": 1,
+            "cursor": {"line": 1, "column": 1},
+        }))
+        .unwrap();
+        assert!(matches!(
+            Snapshot::from_report(report.state, None),
+            Snapshot::Empty
+        ));
     }
 
     #[test]

@@ -34,7 +34,6 @@ mod store;
 
 use axum::{
     extract::{Extension, Query, State},
-    http::StatusCode,
     response::IntoResponse,
     Json,
 };
@@ -62,7 +61,7 @@ pub async fn ingest(
     Extension(CourseCtx(course)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(report): Json<Report>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<Ingested>> {
     // A verified identity overrides the self-asserted name. It must not fall
     // back to it when the identity is unusable: that would let an editor pick
     // its own name on exactly the deployments that verify them.
@@ -77,14 +76,42 @@ pub async fn ingest(
     // every few hundred ms. On a Tokio worker that stalls every other request
     // sharing the thread, so it goes where argon2 goes (see tenancy.rs).
     let slot = Slot { course, student };
-    let previous = state.snapshots.latest(&slot).map(|latest| latest.snapshot);
+    let latest = state.snapshots.latest(&slot);
+
+    // "Only the caret moved" is honoured only on top of the very snapshot the
+    // editor meant. Anything else — expired, replaced by another editor, the
+    // server restarted — and the editor has to send the whole file.
+    if let report::State::Cursor { basis, cursor } = &report.state {
+        let on_basis = latest
+            .as_ref()
+            .filter(|l| l.rev == *basis && matches!(*l.snapshot, Snapshot::File(_)));
+        let Some(on_basis) = on_basis else {
+            return Err(ApiError::conflict(
+                "that snapshot is no longer the latest; send the whole file",
+            ));
+        };
+        if on_basis.snapshot.cursor() == Some(*cursor) {
+            // Not even the caret moved: confirm, and change nothing a viewer sees.
+            state.snapshots.touch(&slot, *basis);
+            return Ok(Json(Ingested { rev: *basis }));
+        }
+    }
+
+    let previous = latest.map(|latest| latest.snapshot);
     let state_of = report.state;
     let snapshot =
         tokio::task::spawn_blocking(move || Snapshot::from_report(state_of, previous.as_deref()))
             .await?;
 
-    state.snapshots.insert(slot, snapshot);
-    Ok(StatusCode::OK)
+    let rev = state.snapshots.insert(slot, snapshot);
+    Ok(Json(Ingested { rev }))
+}
+
+/// What the editor is told when its snapshot is accepted: the number the server
+/// gave it, which it can name in a later cursor-only report.
+#[derive(Serialize)]
+pub struct Ingested {
+    rev: u64,
 }
 
 #[derive(Deserialize)]

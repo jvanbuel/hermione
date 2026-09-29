@@ -30,6 +30,15 @@ pub enum State {
     Declined,
     /// Sharing is on, but no file is open.
     Empty,
+    /// The buffer is exactly as it was in the snapshot the server numbered
+    /// `basis`, and only the caret has moved. A cheap thing to send while a
+    /// teacher watches someone think: the server keeps everything else, and
+    /// refuses (409) if `basis` is no longer its latest, so the editor knows to
+    /// send the whole file instead.
+    Cursor {
+        basis: u64,
+        cursor: Cursor,
+    },
     File(File),
 }
 

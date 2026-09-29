@@ -1338,6 +1338,112 @@ async fn the_conversation_list_summarises_each_student_in_one_pass() {
 }
 
 #[tokio::test]
+async fn a_cursor_move_is_sent_on_top_of_the_snapshot_it_is_for() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("cu{s}"), "Cu", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("cu{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("cu{s}"), "pw").await.unwrap();
+    let student = format!("sn{s}");
+
+    let post = |body: String| {
+        let app = app.clone();
+        let bearer = format!("Bearer {}", course.enrollment_token);
+        async move {
+            let resp = app
+                .oneshot(
+                    Request::post("/api/file-snapshots")
+                        .header(header::AUTHORIZATION, bearer)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, body_string(resp).await)
+        }
+    };
+    let full = |content: &str, line: u32| {
+        serde_json::json!({
+            "student": student, "state": "file", "path": "/w/a.py", "relativePath": "a.py",
+            "language": "python", "cursor": {"line": line, "column": 1}, "dirty": true,
+            "content": content, "baseline": {"kind": "untracked"},
+        })
+        .to_string()
+    };
+    let cursor = |basis: u64, line: u32| {
+        serde_json::json!({
+            "student": student, "state": "cursor", "basis": basis,
+            "cursor": {"line": line, "column": 5},
+        })
+        .to_string()
+    };
+    let rev_of = |body: &str| -> u64 {
+        serde_json::from_str::<serde_json::Value>(body).unwrap()["rev"]
+            .as_u64()
+            .unwrap()
+    };
+    let uri = format!("/api/students/file?course=cu{s}&student={student}");
+    let watch = || {
+        let app = app.clone();
+        let (uri, cookie) = (uri.clone(), cookie.clone());
+        async move {
+            let resp = get_with_cookie(&app, &uri, &cookie).await;
+            serde_json::from_str::<serde_json::Value>(&body_string(resp).await).unwrap()
+        }
+    };
+
+    // A whole file, and the number the server gave it.
+    let (status, body) = post(full("a = 1\nb = 2\n", 1)).await;
+    assert_eq!(status, StatusCode::OK);
+    let first = rev_of(&body);
+
+    // Only the caret moved: the buffer stays, the caret is where it says, and
+    // it is a new snapshot for a viewer to redraw.
+    let (status, body) = post(cursor(first, 2)).await;
+    assert_eq!(status, StatusCode::OK);
+    let second = rev_of(&body);
+    assert_ne!(second, first);
+    let v = watch().await;
+    assert_eq!(v["latest"]["rev"], second);
+    assert_eq!(v["latest"]["snapshot"]["content"], "a = 1\nb = 2\n");
+    assert_eq!(
+        v["latest"]["snapshot"]["cursor"],
+        serde_json::json!({"line": 2, "column": 5})
+    );
+    assert!(v["latest"]["snapshot"]["highlight"].is_array());
+
+    // The caret did not even move: confirmed, and nothing a viewer sees changes.
+    let (status, body) = post(cursor(second, 2)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rev_of(&body), second, "same snapshot, so no redraw");
+
+    // A cursor report naming a snapshot that is no longer the latest is refused,
+    // which is how the editor learns to send the whole file.
+    assert_eq!(post(cursor(first, 3)).await.0, StatusCode::CONFLICT);
+    let (_, body) = post(full("a = 1\nb = 3\n", 1)).await;
+    let third = rev_of(&body);
+    assert_eq!(post(cursor(second, 3)).await.0, StatusCode::CONFLICT);
+    assert_eq!(post(cursor(third, 3)).await.0, StatusCode::OK);
+
+    // And with nothing to sit on at all.
+    let stranger = serde_json::json!({
+        "student": format!("nobody{s}"), "state": "cursor", "basis": 1,
+        "cursor": {"line": 1, "column": 1},
+    })
+    .to_string();
+    assert_eq!(post(stranger).await.0, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn file_snapshots_are_scoped_to_the_course() {
     let (state, app) = app().await;
     let s = rnd();

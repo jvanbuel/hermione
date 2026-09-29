@@ -32,7 +32,7 @@ pub struct Colour<'a> {
 /// The counts are worked out here from the lines, never taken from the editor,
 /// so they can't disagree with them. They cover the whole change even when
 /// `truncated` says only the start of it is sent.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Diff {
     added: u32,
     removed: u32,
@@ -75,7 +75,7 @@ impl Diff {
 }
 
 /// A run of changes with the context around it.
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hunk {
     old_start: u32,
@@ -86,7 +86,7 @@ pub struct Hunk {
 }
 
 /// One line of a hunk.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "sign")]
 pub enum Row {
     #[serde(rename = " ")]

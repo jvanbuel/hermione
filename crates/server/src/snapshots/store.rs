@@ -55,8 +55,9 @@ struct Stored {
 }
 
 impl SnapshotStore {
-    /// Keeps a snapshot as its student's latest, replacing the last one.
-    pub fn insert(&self, slot: Slot, snapshot: Snapshot) {
+    /// Keeps a snapshot as its student's latest, replacing the last one, and
+    /// returns its number.
+    pub fn insert(&self, slot: Slot, snapshot: Snapshot) -> u64 {
         let mut inner = self.lock();
         if inner.latest.len() > PRUNE_THRESHOLD {
             inner.latest.retain(|_, s| s.received.elapsed() < TTL);
@@ -71,6 +72,16 @@ impl SnapshotStore {
                 rev,
             },
         );
+        rev
+    }
+
+    /// The editor confirms the latest snapshot, number `rev`, is still exactly
+    /// what is on screen. It stays the latest — same number, so a reader that
+    /// redraws on a new number does not redraw — but is fresh again.
+    pub fn touch(&self, slot: &Slot, rev: u64) {
+        if let Some(stored) = self.lock().latest.get_mut(slot).filter(|s| s.rev == rev) {
+            stored.received = Instant::now();
+        }
     }
 
     /// The student's latest snapshot, if one arrived recently enough to trust.
@@ -145,6 +156,35 @@ mod tests {
         );
         store.insert(slot("alice"), Snapshot::Empty);
         assert_ne!(store.latest(&slot("alice")).unwrap().rev, first);
+    }
+
+    #[test]
+    fn touching_keeps_the_number_and_freshens_the_age() {
+        let store = SnapshotStore::default();
+        let rev = store.insert(slot("alice"), Snapshot::Empty);
+        let old = Instant::now() - Duration::from_secs(100);
+        store
+            .lock()
+            .latest
+            .get_mut(&slot("alice"))
+            .unwrap()
+            .received = old;
+        store.touch(&slot("alice"), rev);
+        let latest = store.latest(&slot("alice")).unwrap();
+        assert_eq!(latest.rev, rev);
+        assert!(latest.age < Duration::from_secs(5));
+
+        // A confirmation of a snapshot that has since been replaced does nothing.
+        let newer = store.insert(slot("alice"), Snapshot::Empty);
+        store
+            .lock()
+            .latest
+            .get_mut(&slot("alice"))
+            .unwrap()
+            .received = old;
+        store.touch(&slot("alice"), rev);
+        assert!(store.latest(&slot("alice")).unwrap().age > Duration::from_secs(90));
+        assert_ne!(newer, rev);
     }
 
     #[test]

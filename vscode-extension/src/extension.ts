@@ -13,7 +13,7 @@ import {
     resolveConnection,
     resolveStudent,
 } from './settings';
-import { buildOpenFile, Report, SnapshotTarget } from './snapshot';
+import { buildOpenFile, Report, SnapshotTarget, snapshotKey } from './snapshot';
 import { sseEvents } from './sse';
 
 interface FileEvent {
@@ -164,6 +164,12 @@ class Reporter {
     private watchTimer?: NodeJS.Timeout;
     private snapshotTimer?: NodeJS.Timeout;
     private snapshotSending = false;
+    /**
+     * The last whole file the server accepted: what it was built from (see
+     * `snapshotKey`) and the number the server gave it. While the key still
+     * matches, only the caret can have changed, and the caret alone is sent.
+     */
+    private lastFile?: { key: string; rev: number };
 
     private identityPending?: Promise<string | undefined>;
     private lastSignInPrompt = 0;
@@ -256,6 +262,7 @@ class Reporter {
         // must not keep the backend busy after the student turned it off.
         this.flushTimer = cancel(this.flushTimer);
         this.queue = [];
+        this.lastFile = undefined;
         this.flushFailures = 0;
         this.pendingEdits.clear();
         // start() reports the current file immediately; leaving this set would
@@ -280,6 +287,7 @@ class Reporter {
             this.warnOnce(problem);
         }
         this.exercises.load(course.files);
+        this.lastFile = undefined; // what a report says (exercise, sharing) may have changed
         await this.loadConfig(course.files[0] ?? {});
         if (!this.enabled) {
             return;
@@ -471,7 +479,7 @@ class Reporter {
      * payload — a snapshot that silently 401s forever would leave the teacher
      * staring at "Asking…" with no way to find out why.
      */
-    private async post(path: string, body: string): Promise<void> {
+    private async post(path: string, body: string): Promise<Response> {
         const res = await this.api(path, { body });
         if (res.status === 401) {
             // Backend requires a verified identity — renew it, then let the
@@ -481,6 +489,7 @@ class Reporter {
         if (!res.ok) {
             throw new HttpError(res.status);
         }
+        return res;
     }
 
     // ---- identity ----
@@ -849,17 +858,20 @@ class Reporter {
         }, SNAPSHOT_DEBOUNCE_MS);
     }
 
-    /** What to answer a snapshot request with, given what is on screen. */
-    private async buildReport(): Promise<Report> {
+    /**
+     * What to answer a snapshot request with, given what is on screen — and, for
+     * a whole file, the key it was built from.
+     */
+    private async buildReport(): Promise<{ report: Report; key?: string }> {
         const { student } = this;
         if (!this.shareFileContents) {
             // Answer anyway. Silence is indistinguishable from a disconnected
             // editor, and the teacher deserves to be told which one it is.
-            return { student, state: 'declined' };
+            return { report: { student, state: 'declined' } };
         }
         const target = this.activeTarget();
         if (!target?.doc) {
-            return { student, state: 'empty' };
+            return { report: { student, state: 'empty' } };
         }
         const where = this.locate(target.uri);
         // The buffer is only read for a file that belongs to the course: one
@@ -867,9 +879,52 @@ class Reporter {
         // exactly as if the student had opted out.
         const inside = vscode.workspace.getWorkspaceFolder(target.uri) !== undefined;
         if (!mayShareContents(where.relativePath, inside)) {
-            return { student, state: 'declined' };
+            return { report: { student, state: 'declined' } };
         }
-        return { student, ...(await buildOpenFile({ ...target, doc: target.doc }, where)) };
+        const withDoc = { ...target, doc: target.doc };
+        // Taken before the buffer is read: an edit in between makes the report
+        // newer than its key, which only costs one redundant whole-file send.
+        const key = await snapshotKey(withDoc);
+        return { report: { student, ...(await buildOpenFile(withDoc, where)) }, key };
+    }
+
+    /**
+     * When nothing but the caret has moved since the last whole file the server
+     * took, say just that: a few dozen bytes instead of the whole buffer and its
+     * diff, which is most of what a teacher watching someone think receives.
+     * Returns whether it did; `false` means send the whole file.
+     */
+    private async sendCursorOnly(): Promise<boolean> {
+        const last = this.lastFile;
+        const target = this.activeTarget();
+        const at = target?.editor?.selection.active;
+        if (!last || !this.shareFileContents || !target?.doc || !at) {
+            return false;
+        }
+        try {
+            if ((await snapshotKey({ ...target, doc: target.doc })) !== last.key) {
+                return false;
+            }
+            const res = await this.post(
+                '/api/file-snapshots',
+                JSON.stringify({
+                    student: this.student,
+                    state: 'cursor',
+                    basis: last.rev,
+                    cursor: { line: at.line + 1, column: at.character + 1 },
+                }),
+            );
+            last.rev = ((await res.json()) as { rev: number }).rev;
+            return true;
+        } catch (e) {
+            // A 409 is the server saying its copy is not the one we mean (it
+            // expired, or restarted): the whole file it is, next.
+            this.lastFile = undefined;
+            if (!(e instanceof HttpError && e.status === 409)) {
+                this.log(`cursor-only snapshot not sent: ${String(e)}`);
+            }
+            return false;
+        }
     }
 
     /**
@@ -886,16 +941,26 @@ class Reporter {
         }
         this.snapshotSending = true;
         try {
-            let report: Report;
+            if (await this.sendCursorOnly()) {
+                return;
+            }
+            let built: { report: Report; key?: string };
             try {
-                report = await this.buildReport();
+                built = await this.buildReport();
             } catch (e) {
                 // Whatever went wrong reading the buffer or git, the teacher's
                 // pane must not be left asking forever: say nothing is open.
                 this.log(`could not build a snapshot: ${String(e)}`);
-                report = { student: this.student, state: 'empty' };
+                built = { report: { student: this.student, state: 'empty' } };
             }
-            await this.post('/api/file-snapshots', JSON.stringify(report));
+            this.lastFile = undefined;
+            const res = await this.post('/api/file-snapshots', JSON.stringify(built.report));
+            if (built.key !== undefined) {
+                // An older backend answers with no body: no number, so no
+                // cursor-only reports, exactly as before.
+                const { rev } = (await res.json().catch(() => ({}))) as { rev?: number };
+                this.lastFile = typeof rev === 'number' ? { key: built.key, rev } : undefined;
+            }
         } catch (e) {
             // The teacher's next poll re-asks; nothing to recover here.
             this.log(`snapshot not sent: ${String(e)}`);
