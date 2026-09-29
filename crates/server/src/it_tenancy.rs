@@ -1187,6 +1187,114 @@ async fn a_late_edit_does_not_follow_the_student_to_the_next_exercise() {
 /// by a teacher of that course — and by nobody else. Snapshots carry the text a
 /// student has on screen, so the scoping matters more here than anywhere.
 #[tokio::test]
+async fn the_conversation_list_summarises_each_student_in_one_pass() {
+    use chrono::{Duration, Utc};
+    use hermione_entity::{assistant_conversations, assistant_messages};
+    use sea_orm::{ActiveValue::Set, EntityTrait};
+
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("cv{s}"), "Cv", None)
+        .await
+        .unwrap();
+    let elsewhere = tenancy::create_course(&state.db, &format!("ce{s}"), "Ce", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("cv{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("cv{s}"), "pw").await.unwrap();
+    let uri = format!("/api/assistant/conversations?course=cv{s}");
+
+    // No conversations yet: an empty list, not an error.
+    let resp = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_string(resp).await, "[]");
+
+    let now = Utc::now();
+    let conversation = |course_id, student: &str, age_mins: i64| {
+        let id = Uuid::new_v4();
+        let at = now - Duration::minutes(age_mins);
+        (
+            id,
+            assistant_conversations::ActiveModel {
+                id: Set(id),
+                course_id: Set(course_id),
+                student: Set(student.to_string()),
+                session_id: Set(None),
+                created_at: Set(at.into()),
+                updated_at: Set(at.into()),
+            },
+        )
+    };
+    let (talkative, m1) = conversation(course.id, "talkative", 10);
+    let (brief, m2) = conversation(course.id, "brief", 5);
+    let (silent, m3) = conversation(course.id, "silent", 20);
+    let (_, m4) = conversation(elsewhere.id, "stranger", 1);
+    for m in [m1, m2, m3, m4] {
+        assistant_conversations::Entity::insert(m)
+            .exec(&state.db)
+            .await
+            .unwrap();
+    }
+    let say =
+        |conversation_id, role: &str, body: &str, age_mins: i64| assistant_messages::ActiveModel {
+            conversation_id: Set(conversation_id),
+            role: Set(role.to_string()),
+            body: Set(body.to_string()),
+            created_at: Set((now - Duration::minutes(age_mins)).into()),
+            ..Default::default()
+        };
+    for m in [
+        say(talkative, "student", "first question", 9),
+        say(talkative, "assistant", "first answer", 8),
+        say(talkative, "assistant", "the   last\n  word", 7),
+        say(brief, "student", "just one", 4),
+    ] {
+        assistant_messages::Entity::insert(m)
+            .exec(&state.db)
+            .await
+            .unwrap();
+    }
+
+    let resp = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+    let list = list.as_array().unwrap();
+    // Newest conversation first, and nobody from another course.
+    let students: Vec<_> = list
+        .iter()
+        .map(|c| c["student"].as_str().unwrap())
+        .collect();
+    assert_eq!(students, ["brief", "talkative", "silent"]);
+
+    assert_eq!(list[0]["messageCount"], 1);
+    assert_eq!(list[0]["lastRole"], "student");
+    assert_eq!(list[0]["preview"], "just one");
+
+    // Three messages: the count and the *last* one, whitespace collapsed.
+    assert_eq!(list[1]["messageCount"], 3);
+    assert_eq!(list[1]["lastRole"], "assistant");
+    assert_eq!(list[1]["preview"], "the last word");
+    assert_eq!(
+        list[1]["lastActivityUnixMs"],
+        (now - Duration::minutes(7)).timestamp_millis()
+    );
+
+    // A conversation with no messages falls back to when it was last touched.
+    assert_eq!(list[2]["messageCount"], 0);
+    assert!(list[2]["lastRole"].is_null() && list[2]["preview"].is_null());
+    assert_eq!(
+        list[2]["lastActivityUnixMs"],
+        (now - Duration::minutes(20)).timestamp_millis()
+    );
+    let _ = silent;
+}
+
+#[tokio::test]
 async fn file_snapshots_are_scoped_to_the_course() {
     let (state, app) = app().await;
     let s = rnd();

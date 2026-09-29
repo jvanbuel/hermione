@@ -9,7 +9,7 @@
 //! The whole feature is gated on `HERMIONE_ANTHROPIC_API_KEY`. When it's unset,
 //! [`Assistant::enabled`] is false and every assistant route reports "disabled".
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +26,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use hermione_entity::{assistant_conversations, assistant_messages, course_assistants, courses};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect,
+    ActiveValue::Set, ColumnTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -816,36 +815,56 @@ pub async fn list_conversations(
         .all(&state.db)
         .await?;
 
-    // Class-sized lists, so a count + last-message lookup per conversation is
-    // fine. The last message also fixes up `last_activity` for older rows whose
+    // Two queries for the whole list, however many students there are: the
+    // message count per conversation, and each conversation's last message. The
+    // last message also fixes up `last_activity` for older rows whose
     // `updated_at` only tracked the session, not the transcript.
-    let mut out = Vec::with_capacity(conversations.len());
-    for c in conversations {
-        let count = assistant_messages::Entity::find()
-            .filter(assistant_messages::Column::ConversationId.eq(c.id))
-            .count(&state.db)
-            .await
-            .unwrap_or(0);
-        let last = assistant_messages::Entity::find()
-            .filter(assistant_messages::Column::ConversationId.eq(c.id))
+    let ids: Vec<Uuid> = conversations.iter().map(|c| c.id).collect();
+    let (counts, mut lasts) = if ids.is_empty() {
+        Default::default()
+    } else {
+        let counts: HashMap<Uuid, u64> = assistant_messages::Entity::find()
+            .select_only()
+            .column(assistant_messages::Column::ConversationId)
+            .column_as(assistant_messages::Column::Id.count(), "n")
+            .filter(assistant_messages::Column::ConversationId.is_in(ids.clone()))
+            .group_by(assistant_messages::Column::ConversationId)
+            .into_tuple::<(Uuid, i64)>()
+            .all(&state.db)
+            .await?
+            .into_iter()
+            .map(|(id, n)| (id, n as u64))
+            .collect();
+        let lasts: HashMap<Uuid, assistant_messages::Model> = assistant_messages::Entity::find()
+            .filter(assistant_messages::Column::ConversationId.is_in(ids))
+            .distinct_on([assistant_messages::Column::ConversationId])
+            .order_by_asc(assistant_messages::Column::ConversationId)
             .order_by_desc(assistant_messages::Column::Id)
-            .one(&state.db)
-            .await
-            .ok()
-            .flatten();
-        let last_activity = last
-            .as_ref()
-            .map(|m| m.created_at.timestamp_millis())
-            .unwrap_or_else(|| c.updated_at.timestamp_millis());
-        out.push(ConversationSummary {
-            id: c.id.to_string(),
-            student: c.student,
-            message_count: count,
-            last_activity_unix_ms: last_activity,
-            last_role: last.as_ref().map(|m| m.role.clone()),
-            preview: last.map(|m| preview(&m.body)),
-        });
-    }
+            .all(&state.db)
+            .await?
+            .into_iter()
+            .map(|m| (m.conversation_id, m))
+            .collect();
+        (counts, lasts)
+    };
+
+    let out: Vec<ConversationSummary> = conversations
+        .into_iter()
+        .map(|c| {
+            let last = lasts.remove(&c.id);
+            ConversationSummary {
+                id: c.id.to_string(),
+                student: c.student,
+                message_count: counts.get(&c.id).copied().unwrap_or(0),
+                last_activity_unix_ms: last
+                    .as_ref()
+                    .map_or_else(|| c.updated_at, |m| m.created_at)
+                    .timestamp_millis(),
+                last_role: last.as_ref().map(|m| m.role.clone()),
+                preview: last.map(|m| preview(&m.body)),
+            }
+        })
+        .collect();
     Ok(Json(out).into_response())
 }
 
