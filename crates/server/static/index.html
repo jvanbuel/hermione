@@ -112,7 +112,7 @@
     #more-menu hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 4px 2px; }
     /* On a narrower window the bar gives up words before it gives up controls:
      * the actions keep their icons (and their names, for screen readers), then
-     * the wordmark and repo name go, then the freshness text. */
+     * the wordmark and repo name go. */
     @media (max-width: 1240px) {
       header .lbl {
         position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
@@ -123,10 +123,6 @@
     }
     @media (max-width: 960px) {
       header h1, .course-repo span { display: none; }
-    }
-    @media (max-width: 800px) {
-      #freshness { font-size: 0; gap: 0; }
-      #freshness .fdot { width: 9px; height: 9px; }
     }
     /* Only the course-settings gear stays beside the switcher. */
     #course-settings { padding: 5px; }
@@ -170,6 +166,13 @@
     }
 
     #content { flex: 1 1 auto; display: flex; min-height: 0; }
+    /* Quiet facts about the page itself — how fresh it is, what to click —
+     * live under the work, not among the controls above it. */
+    #statusbar {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 16px; min-height: 28px;
+      padding: 3px 18px; border-top: 1px solid var(--border-subtle); background: var(--surface);
+    }
+    #statusbar .spacer { margin-left: auto; }
 
     /* ---- Overview board (main pane) ---- */
     #board {
@@ -573,8 +576,6 @@
     </div>
     <span id="alert" aria-live="assertive"></span>
     <span class="spacer"></span>
-    <span id="freshness" class="freshness">Connecting…</span>
-    <span id="hint" class="hint">Click a student to open their terminal</span>
     <a class="nav" href="/analytics" title="Time-on-task analytics" aria-label="Analytics">
       <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 13.5h12v1.3H1V2h1.3v11.5zM5 11V7h1.6v4H5zm3-6h1.6v6H8V5zm3 2.5h1.6V11H11V7.5z"/></svg>
       <span class="lbl">Analytics</span>
@@ -614,6 +615,11 @@
     <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize terminal panel"></div>
     <div id="dock"></div>
   </div>
+  <footer id="statusbar">
+    <span id="freshness" class="freshness">Connecting…</span>
+    <span class="spacer"></span>
+    <span id="hint" class="hint">Click a student to open their terminal</span>
+  </footer>
   <div id="toasts" role="status" aria-live="polite"></div>
 
   <script>
@@ -1261,14 +1267,12 @@
       if (lastError) {
         el.className = 'freshness failed';
         el.innerHTML = '<span class="fdot"></span>Update failed — retrying';
-        el.title = el.textContent; // the words go when the bar is narrow; the tooltip keeps them
         return;
       }
       if (!lastUpdated) { el.className = 'freshness'; el.textContent = 'Connecting…'; return; }
       const s = Math.round((Date.now() - lastUpdated) / 1000);
       el.className = 'freshness' + (s > 15 ? ' stale' : '');
       el.innerHTML = `<span class="fdot"></span>Updated ${s}s ago`;
-      el.title = el.textContent;
     }
     setInterval(setFreshness, 1000);
 
