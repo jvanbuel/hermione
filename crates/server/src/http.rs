@@ -29,6 +29,7 @@ use uuid::Uuid;
 
 use crate::auth::{constant_time_eq, AuthCtx};
 use crate::state::{AppState, MessageOut};
+use crate::student::{Slot, Student};
 use crate::tenancy::{self, DEFAULT_COURSE_ID};
 
 /// Static frontend assets, embedded at build time from `static/` (see build.rs).
@@ -449,7 +450,7 @@ struct WsQuery {
     /// Which student this editor belongs to, so control frames meant for them
     /// (a snapshot request) reach only their socket. Extension clients only;
     /// a socket without it simply receives no control frames.
-    student: Option<String>,
+    student: Option<Student>,
 }
 
 /// Live message channel. Authenticates the same way the rest of the API does —
@@ -494,7 +495,7 @@ async fn message_socket(
     state: AppState,
     course_id: Uuid,
     since: Option<i64>,
-    student: Option<String>,
+    student: Option<Student>,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -525,7 +526,10 @@ async fn message_socket(
     // Then tail live messages, plus control frames when this socket said who it
     // belongs to. A socket without a student (the dashboard) gets messages only.
     let mut rx = state.msg_hub.subscribe(&course_id).await;
-    let ctrl_key = student.filter(|s| !s.is_empty()).map(|s| (course_id, s));
+    let ctrl_key = student.map(|student| Slot {
+        course: course_id,
+        student,
+    });
     let mut ctrl_rx = match &ctrl_key {
         Some(key) => Some(state.ctrl_hub.subscribe(key).await),
         None => None,

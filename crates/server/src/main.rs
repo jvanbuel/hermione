@@ -14,6 +14,7 @@ mod messages;
 mod repo;
 mod snapshots;
 mod state;
+mod student;
 mod tenancy;
 mod text;
 

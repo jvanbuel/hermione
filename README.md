@@ -186,8 +186,9 @@ syntax. (GitHub's own `diffBlob.additionLine.fgColor` is plain
 `fgColor.default` — spending the foreground on the diff signal as well is what
 would make the two compete.)
 
-The extension sends each hunk as unified-diff `lines`; the backend answers with
-`rows`. Context and added lines are lines of the buffer, so their spans are read
+The extension sends each hunk as unified-diff `lines` and nothing derived from
+them — no added/removed counts, no per-hunk line counts; the backend works those
+out from the lines, so they cannot disagree with them. It answers with `rows`. Context and added lines are lines of the buffer, so their spans are read
 out of the highlighted buffer by line number. Removed lines exist only in the
 last commit, which the backend never sees, so the hunk's old side is parsed as a
 fragment and only the removed rows are kept. A row's spans are used only if
@@ -227,13 +228,19 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
   VSCode extension).
 - `GET /api/students/activity` — the latest file activity per student (what each
   student has open right now).
-- `GET /api/students/file?student=alice` — the buffer that student has on
-  screen: its text, their cursor, the diff against their last commit, and
-  `highlight` (one list of `[class, text]` spans per line, added server-side).
-  Each call also asks their editor for a fresh one, so nothing is captured
-  unless a teacher is looking (see **Watching a file** below).
+- `GET /api/students/file?student=alice` — what that student has on screen:
+  `{connected, latest}`, where `latest` is `null` until their editor answers and
+  otherwise `{ageMs, rev, snapshot}`. The snapshot is one of `declined`,
+  `empty` or `file`; a file carries its text, the caret (`cursor`), one list of
+  `[class, text]` spans per line (`highlight`), and a `baseline` — `head` with
+  the diff as rows, `untracked`, or `none`. Each call also asks their editor for
+  a fresh one, so nothing is captured unless a teacher is looking (see
+  **Watching a file** below). `ageMs` is by the server's clock, and `rev`
+  changes with every snapshot received.
 - `POST /api/file-snapshots` — one such snapshot, posted by the extension in
-  answer to that request.
+  answer to that request. A report that describes an impossible state — a blank
+  student, a cursor on line 0, a diff line with no sign — is refused with a 4xx
+  rather than stored.
 - `GET /api/analytics/time-per-file?student=alice` — estimated time-on-task per
   file and per exercise for one student.
 - `GET /api/courses` / `POST /api/courses` — list the courses the signed-in

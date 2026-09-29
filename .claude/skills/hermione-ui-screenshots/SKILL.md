@@ -49,6 +49,9 @@ the server. You'll get these PNGs in `$OUT_DIR` (× `dark` and `light`):
 ```
 <LABEL>-board-<theme>.png        # live class overview (the hero screen)
 <LABEL>-terminal-<theme>.png     # board with a student's xterm pane open
+<LABEL>-file-<theme>.png         # the same pane on the file they have open (cursor + syntax)
+<LABEL>-file-diff-<theme>.png    # … with the git diff toggled on
+<LABEL>-file-states-<theme>.png  # six tiles, one per state the file view can be in
 <LABEL>-analytics-<theme>.png    # per-student time-on-task
 <LABEL>-transcripts-<theme>.png  # student ↔ assistant conversation
 <LABEL>-login-<theme>.png        # sign-in
@@ -106,3 +109,20 @@ that clicks into it.
   replay for open panes). Defaults `STATIC_DIR` to `crates/server/static`.
 - `shoot.js` — Playwright driver; one `shoot()` call per page, both themes.
 - `fixtures.js` — all the fake data, in one editable function.
+
+## Checking colours: `scripts/contrast.py`
+
+Screenshots show a colour; they can't tell you whether it is readable. The file
+pane draws syntax colours on four different grounds (the board, the cursor line,
+an added row, a removed row), and a colour that passes on one can fail on
+another — that is how keyword and function text ended up at 4.1–4.3:1 on an
+added row without anyone seeing a problem. `contrast.py` reads the real values
+from `tokens.css` (resolving `var()` aliases and compositing the row washes the
+way the browser does), measures each colour against the grounds it is actually
+drawn on, in both themes, and exits 1 if any pairing is under 4.5:1:
+
+```bash
+python3 .claude/skills/hermione-ui-screenshots/scripts/contrast.py
+```
+
+Run it after touching any `--hl-*`, `--diff-*-wash` or `--cursor-line-wash` token.

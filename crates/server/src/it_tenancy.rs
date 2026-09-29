@@ -1077,10 +1077,10 @@ async fn file_snapshots_are_scoped_to_the_course() {
 
     let student = format!("sn{s}");
     let payload = format!(
-        r#"{{"student":"{student}","relativePath":"ex1/main.py","language":"python",
-             "line":4,"column":9,
-             "content":"print('hi')\n","base":"head","atUnixMs":{}}}"#,
-        chrono::Utc::now().timestamp_millis(),
+        r#"{{"student":"{student}","state":"file","path":"/w/ex1/main.py",
+             "relativePath":"ex1/main.py","language":"python",
+             "cursor":{{"line":4,"column":9}},
+             "content":"print('hi')\n","baseline":{{"kind":"untracked"}}}}"#
     );
 
     // Unauthenticated ingest is refused, exactly like file events.
@@ -1117,12 +1117,21 @@ async fn file_snapshots_are_scoped_to_the_course() {
     let resp = get_with_cookie(&app, &uri, &cookie).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
-    assert_eq!(v["snapshot"]["content"], "print('hi')\n");
-    assert_eq!(v["snapshot"]["line"], 4);
-    assert_eq!(v["snapshot"]["column"], 9);
+    let snapshot = &v["latest"]["snapshot"];
+    assert_eq!(snapshot["state"], "file");
+    assert_eq!(snapshot["content"], "print('hi')\n");
+    assert_eq!(
+        snapshot["cursor"],
+        serde_json::json!({"line": 4, "column": 9})
+    );
+    assert_eq!(snapshot["baseline"]["kind"], "untracked");
+    assert!(
+        v["latest"]["ageMs"].as_u64().is_some(),
+        "age is the server's"
+    );
 
-    // Highlighting is added by the server, one token list per screen line.
-    let hl = v["snapshot"]["highlight"].as_array().expect("highlighted");
+    // Highlighting is added by the server, one span list per screen line.
+    let hl = snapshot["highlight"].as_array().expect("highlighted");
     assert_eq!(hl.len(), 2, "one list per line, trailing newline included");
     let rebuilt: String = hl[0]
         .as_array()
@@ -1141,7 +1150,7 @@ async fn file_snapshots_are_scoped_to_the_course() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
     assert!(
-        v["snapshot"].is_null(),
+        v["latest"].is_null(),
         "a snapshot must not leak into another course: {v}"
     );
 
@@ -1152,4 +1161,66 @@ async fn file_snapshots_are_scoped_to_the_course() {
         .await
         .unwrap();
     assert_ne!(resp.status(), StatusCode::OK);
+}
+
+/// The wire format is a sum type, so reports that describe an impossible state
+/// are refused rather than stored: a blank student, a cursor on line zero, a
+/// diff line with no sign.
+#[tokio::test]
+async fn impossible_snapshots_are_refused_at_the_door() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("im{s}"), "Im", None)
+        .await
+        .unwrap();
+
+    let post = |body: serde_json::Value| {
+        let app = app.clone();
+        let token = course.enrollment_token.clone();
+        async move {
+            app.oneshot(
+                Request::post("/api/file-snapshots")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+    let file = |patch: serde_json::Value| {
+        let mut v = serde_json::json!({
+            "student": "alice", "state": "file",
+            "path": "/w/a.py", "relativePath": "a.py", "language": "python",
+            "content": "x\n", "baseline": {"kind": "untracked"},
+        });
+        v.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        v
+    };
+
+    assert_eq!(post(file(serde_json::json!({}))).await, StatusCode::OK);
+    assert_eq!(
+        post(serde_json::json!({"student": "alice", "state": "declined"})).await,
+        StatusCode::OK
+    );
+    for (why, bad) in [
+        ("blank student", file(serde_json::json!({"student": " "}))),
+        (
+            "cursor on line 0",
+            file(serde_json::json!({"cursor": {"line": 0, "column": 1}})),
+        ),
+        ("unknown state", file(serde_json::json!({"state": "maybe"}))),
+        (
+            "unsigned diff line",
+            file(serde_json::json!({"baseline": {"kind": "head", "hunks": [
+                {"oldStart": 1, "newStart": 1, "lines": ["oops"]}
+            ]}})),
+        ),
+    ] {
+        assert!(post(bad).await.is_client_error(), "{why} should be refused");
+    }
 }

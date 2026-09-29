@@ -11,6 +11,7 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::auth::Auth;
+use crate::student::Slot;
 
 /// A set of broadcast channels keyed by whatever the fan-out is per.
 ///
@@ -68,13 +69,13 @@ impl<K: Eq + std::hash::Hash + Clone, T: Clone, const CAP: usize> Hub<K, T, CAP>
         }
     }
 
-    /// How many listeners `key` has right now. Zero also covers "never seen".
-    pub async fn listeners(&self, key: &K) -> usize {
+    /// Whether anything is listening on `key` right now.
+    pub async fn is_listening(&self, key: &K) -> bool {
         self.channels
             .read()
             .await
             .get(key)
-            .map_or(0, |s| s.receiver_count())
+            .is_some_and(|s| s.receiver_count() > 0)
     }
 
     /// Drops a channel outright, for a key that can never be used again.
@@ -97,7 +98,7 @@ pub type MsgHub = Hub<Uuid, MessageOut, 256>;
 /// should learn. The key comes from the socket's self-asserted `student`
 /// parameter, which is only ever used for routing: the snapshot that comes
 /// back is attributed by the ingest gate's verified identity, not by this.
-pub type CtrlHub = Hub<(Uuid, String), ControlOut, 16>;
+pub type CtrlHub = Hub<Slot, Control, 16>;
 
 /// A message pushed to course members over WebSocket.
 #[derive(Clone, Serialize)]
@@ -114,10 +115,11 @@ pub struct MessageOut {
 /// entirely when that student has no editor connected. Both the extension and
 /// the dashboard key on `body` to decide a frame is a broadcast, so a frame
 /// carrying only `kind` is ignored by clients that predate this.
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ControlOut {
-    pub kind: &'static str,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Control {
+    /// A teacher has this student's file open: send a snapshot of it.
+    SnapshotRequest,
 }
 
 /// State shared across the gRPC and HTTP servers.

@@ -52,15 +52,27 @@ while a teacher has that student's file pane open. Each answer is one
 ```jsonc
 {
   "student": "alice",
+  "state": "file",              // "file" | "empty" (nothing open) | "declined"
+  "path": "/home/alice/course/ex1/main.py",
   "relativePath": "ex1/main.py",
-  "line": 42, "column": 17,     // where the caret actually is
+  "language": "python",         // VSCode's language id
+  "cursor": { "line": 42, "column": 17 },   // where the caret actually is
   "dirty": true,                // unsaved changes in the buffer
   "content": "…",               // the buffer, as they see it this instant
-  "base": "head",               // "head" | "untracked" | "none"
-  "diff": { "added": 8, "removed": 1, "hunks": [ /* unified-diff hunks */ ] },
-  "atUnixMs": 1718200000000
+  "baseline": {                 // what the buffer is compared with:
+    "kind": "head",             //   "head" | "untracked" | "none"
+    "hunks": [ { "oldStart": 5, "newStart": 5, "lines": [" ctx", "-old", "+new"] } ]
+  }
 }
 ```
+
+The report is a union on `state`, not a bag of optional fields: a `declined`
+report has no `content` to send, so it cannot carry one, and a file that is
+`untracked` has no diff against its last commit. The extension also leaves out
+anything the server can work out for itself — how many lines a diff added or
+removed, how long a hunk is — so a count that disagrees with its lines cannot be
+sent. The server refuses reports that describe an impossible state (a blank
+student, a cursor on line 0, a diff line with no `' '`, `'+'` or `'-'`).
 
 Notes on how it behaves:
 

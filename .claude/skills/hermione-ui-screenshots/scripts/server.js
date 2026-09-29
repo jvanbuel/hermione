@@ -84,9 +84,7 @@ const server = http.createServer((req, res) => {
   // for a fresh snapshot in production.
   if (p === '/api/students/file') {
     const who = url.searchParams.get('student');
-    return sendJson(res, who === F.studentFileDeclined.student
-      ? F.studentFileDeclined
-      : { ...F.studentFile, student: who || F.studentFile.student });
+    return sendJson(res, { student: who, ...(F.studentFileStates[who] || F.studentFile) });
   }
   if (p === '/api/assistant/conversations') return sendJson(res, F.conversations);
   if (p.startsWith('/api/assistant/conversations/')) {

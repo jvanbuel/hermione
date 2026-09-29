@@ -292,7 +292,8 @@
     /* ---- Terminal dock (extra panes) ---- */
     #dock {
       flex: 1.5 1 0; min-width: 0;
-      display: none; grid-auto-rows: 1fr; gap: 1px; background: var(--border-subtle);
+      display: none; grid-auto-rows: minmax(240px, 1fr); gap: 1px; background: var(--border-subtle);
+      overflow-y: auto;
     }
     #dock.active { display: grid; }
     .pane { background: var(--bg); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -302,22 +303,30 @@
       font-size: var(--fs-sm);
     }
     .pane-head .ex { color: var(--fg-muted); font-size: var(--fs-sm); }
+    /* With five or six tiles a pane is ~390px wide. The name is the one thing
+     * that can give way, so it takes whatever is left and ellipsizes, and every
+     * control keeps its size: a pane whose close button had been pushed out of
+     * sight could not be closed. */
+    .pane-head .who { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pane-head > .avatar, .pane-head .modes, .pane-head .diff, .pane-head .close { flex: 0 0 auto; }
     .pane-head .close {
       margin-left: auto; cursor: pointer; color: var(--fg-muted); border: none; background: none;
       font-size: var(--fs-lg); line-height: 1; padding: 2px 6px; border-radius: 5px;
     }
     .pane-head .close:hover { background: var(--border); color: var(--fg); }
+    .pane-head .close { min-width: 24px; min-height: 24px; }
     .pane > .term { flex: 1 1 auto; min-height: 0; padding: 6px 8px; }
     .pane .note { margin: auto; color: var(--fg-muted); font-size: var(--fs-base); padding: 24px; text-align: center; }
 
     /* ---- Pane mode switch: their terminal, or the file they're editing ---- */
     .pane-head .modes {
-      margin-left: auto; display: flex; gap: 2px; background: var(--bg);
+      display: flex; gap: 2px; background: var(--bg);
       border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px;
     }
     .pane-head .modes button, .pane-head .diff {
       cursor: pointer; border: none; background: none; color: var(--fg-muted);
-      font: inherit; font-size: var(--fs-xs); padding: 2px 8px; border-radius: 4px;
+      font: inherit; font-size: var(--fs-xs); padding: 2px 10px; border-radius: 4px;
+      min-height: 24px;
     }
     .pane-head .modes button:hover, .pane-head .diff:hover { color: var(--fg); }
     .pane-head .modes button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); }
@@ -336,16 +345,23 @@
     .pane > .filev { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
     .pane.mode-file > .filev { display: flex; }
     .pane.mode-file > .term { display: none; }
+    /* The path takes a line of its own when it needs one, and the facts about the
+     * buffer (unsaved, truncated, how old, what changed) wrap beneath it as whole
+     * items. They used to be run together with "·" characters, which left a dot
+     * dangling at the start of a wrapped line and split "42s ago" in two. */
     .filev .fv-head {
-      flex: 0 0 auto; display: flex; align-items: baseline; gap: 8px; min-width: 0;
+      flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: baseline;
+      column-gap: 12px; row-gap: 2px; min-width: 0;
       padding: 5px 10px; border-bottom: 1px solid var(--border-subtle);
       font-size: var(--fs-xs); color: var(--fg-muted);
     }
     .filev .fv-head .fp {
+      flex: 1 1 100%; min-width: 0;
       color: var(--fg); font-family: ui-monospace, monospace;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    .filev .fv-head .sum { margin-left: auto; flex: 0 0 auto; }
+    .filev .fv-head .chip { white-space: nowrap; }
+    .filev .fv-head .sum { margin-left: auto; white-space: nowrap; }
     .filev .fv-head .plus { color: var(--green-text); }
     .filev .fv-head .minus { color: var(--red-text); }
     .filev .fv-head .stale { color: var(--amber); }
@@ -354,13 +370,20 @@
       font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
     }
     .filev .fv-body.empty { display: flex; }
+    /* A state note is a sentence, not source: the code font would set it in a
+     * wide letter-spaced column that wraps to eight lines in a narrow tile. */
+    .filev .note { font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; }
+    /* Every row is as wide as the widest, so a row's wash (the cursor line, an
+     * added or removed line) runs as far as the longest line does when the code
+     * area scrolls sideways, instead of stopping where the pane ends. */
+    .filev .rows { display: grid; width: max-content; min-width: 100%; }
     .filev .cl, .filev .dl { display: flex; white-space: pre; }
     .filev .cl > .n, .filev .dl > .n {
       flex: 0 0 auto; min-width: 4ch; padding: 0 8px; text-align: right;
       color: var(--fg-subtle); user-select: none;
     }
     .filev .cl > .t, .filev .dl > .t { flex: 1 0 auto; padding-right: 12px; }
-    .filev .cl.cur { background: var(--accent-wash); }
+    .filev .cl.cur { background: var(--cursor-line-wash); }
     .filev .cl.cur > .n { color: var(--accent-text); font-weight: 700; }
     /* The cursor itself, at the column the student's caret is in. */
     .filev .caret {
@@ -1090,7 +1113,7 @@
       pane.innerHTML = `
         <div class="pane-head">
           ${avatarHtml(student, 'active')}
-          <span><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
+          <span class="who"><b>${esc(student)}</b> ${exercise ? `<span class="ex">· ${esc(exercise)}</span>` : ''}</span>
           <div class="modes" role="group" aria-label="What to watch for ${esc(student)}">
             <button type="button" data-mode="term" aria-pressed="true">Terminal</button>
             <button type="button" data-mode="file" aria-pressed="false">File</button>
@@ -1101,7 +1124,7 @@
         <div class="term"></div>
         <div class="filev">
           <div class="fv-head"></div>
-          <div class="fv-body empty"><div class="note">Asking ${esc(student)}'s editor…</div></div>
+          <div class="fv-body empty" role="region" tabindex="0" aria-label="${esc(student)}'s file"><div class="note" role="status">Asking ${esc(student)}'s editor…</div></div>
         </div>`;
       dock.appendChild(pane);
       dock.classList.add('active');
@@ -1113,7 +1136,7 @@
       pane.querySelector('.diff').addEventListener('click', () => toggleDiff(student));
 
       const body = pane.querySelector('.term');
-      let term = null, fit = null, es = null;
+      let term = null, fit = null;
 
       if (!sessionId) {
         body.innerHTML = `<div class="note">No terminal session recorded for <b>${esc(student)}</b> yet.</div>`;
@@ -1124,19 +1147,41 @@
         term.loadAddon(fit);
         term.open(body);
         setTimeout(() => { try { fit.fit(); } catch (_) {} }, 0);
-
-        es = new EventSource(`/api/sessions/${sessionId}/stream?history=true`);
-        es.onmessage = (e) => {
-          const chunk = JSON.parse(e.data);
-          if (chunk.stream === 'stdout') term.write(b64ToBytes(chunk.data));
-        };
       }
 
-      openPanes.set(student, { term, fit, es, el: pane, mode: 'term', diff: false, lastKey: null, lastLine: null });
+      const rec = {
+        el: pane, sessionId, term, fit,
+        es: null,                 // the terminal stream, open only while the terminal is showing
+        mode: 'term',             // 'term' | 'file'
+        diff: false,              // in file mode: the buffer, or its diff
+        last: null,               // the latest reply for the file view
+        lastKey: null, lastHead: null, lastLine: null,   // what was last drawn, so a poll that changed nothing redraws nothing
+        pollFailed: false,        // the file view's last poll did not arrive
+      };
+      openPanes.set(student, rec);
       // Opening from the tree means the teacher is already looking at files.
-      if (mode) setPaneMode(student, mode);
+      if (mode === 'file') setPaneMode(student, mode); else startTerminalStream(rec);
       relayout();
       markOpenCards();
+    }
+
+    /**
+     * The terminal streams only while it is on screen. Each stream holds one of
+     * the browser's connections to this server open — six over HTTP/1.1 — so a
+     * pane showing a file that kept its terminal stream would starve every other
+     * request the page makes, the file view's own polls included.
+     */
+    function startTerminalStream(p) {
+      if (!p.term || p.es) return;
+      p.term.reset();     // the stream replays the session from its start
+      p.es = new EventSource(`/api/sessions/${p.sessionId}/stream?history=true`);
+      p.es.onmessage = (e) => {
+        const chunk = JSON.parse(e.data);
+        if (chunk.stream === 'stdout') p.term.write(b64ToBytes(chunk.data));
+      };
+    }
+    function stopTerminalStream(p) {
+      if (p.es) { p.es.close(); p.es = null; }
     }
 
     function closeTerminal(student) {
@@ -1172,17 +1217,25 @@
       });
     }
 
-    // Lay terminal panes out in a near-square grid and refit.
+    // A pane's header is the smallest thing that has to fit: avatar, the
+    // Terminal/File switch, Diff and close, plus room for a name. Narrower than
+    // this its controls are pushed out of sight.
+    const MIN_PANE_WIDTH = 340;
+
+    // Lay panes out in a near-square grid — but never with more columns than fit
+    // at MIN_PANE_WIDTH — and refit.
     function relayout() {
       const dock = document.getElementById('dock');
       const n = openPanes.size;
-      const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
-      dock.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-      setTimeout(() => openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }), 30);
+      const wanted = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+      const fits = Math.max(1, Math.floor(dock.clientWidth / MIN_PANE_WIDTH));
+      dock.style.gridTemplateColumns = `repeat(${Math.min(wanted, fits)}, 1fr)`;
+      setTimeout(refitPanes, 30);
     }
 
     function refitPanes() { openPanes.forEach(p => { try { p.fit && p.fit.fit(); } catch (_) {} }); }
-    window.addEventListener('resize', refitPanes);
+    // The column count depends on the width, so a resize re-lays out, not only refits.
+    window.addEventListener('resize', relayout);
 
     // ---- the file a student has on screen ----
     // Snapshots are pulled, not pushed: each poll asks that student's editor
@@ -1202,8 +1255,10 @@
       }
       syncSnapshotPolling();
       if (p.mode === 'file') {
+        stopTerminalStream(p);
         pollSnapshot(student, p);
       } else {
+        startTerminalStream(p);
         // xterm sizes to a hidden element as 0 columns, so it needs a refit
         // once the pane is visible again.
         refitPanes();
@@ -1233,54 +1288,73 @@
     }
 
     async function pollSnapshot(student, pane) {
+      let data;
       try {
         const url = `/api/students/file?course=${encodeURIComponent(currentCourse)}`
           + `&student=${encodeURIComponent(student)}`;
         const res = await fetch(url);
-        if (!res.ok) return;
-        const data = await res.json();
-        // The pane may have closed while the request was in flight.
-        if (openPanes.get(student) !== pane) return;
-        pane.last = data;
-        renderSnapshot(student, pane, data);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
       } catch (_) {
-        // Transient; the next poll tries again.
+        // Keep what is on screen, but say it is no longer being updated: the age
+        // the backend last reported stops advancing exactly when polls stop
+        // arriving, so without this a dead connection looks like a fresh buffer.
+        if (openPanes.get(student) === pane) {
+          pane.pollFailed = true;
+          if (pane.last) renderSnapshot(student, pane, pane.last);
+        }
+        return;
       }
+      // The pane may have closed while the request was in flight.
+      if (openPanes.get(student) !== pane) return;
+      pane.pollFailed = false;
+      pane.last = data;
+      renderSnapshot(student, pane, data);
     }
+
+    /**
+     * What the pane should show, from what the backend reported. A closed set:
+     * every reply lands in exactly one of these, so there is no combination of
+     * flags to reason about.
+     */
+    function paneState(data) {
+      const latest = data.latest;
+      if (!latest) return { kind: data.connected ? 'asking' : 'offline' };
+      const snapshot = latest.snapshot;
+      return snapshot.state === 'file'
+        ? { kind: 'file', file: snapshot, latest }
+        : { kind: snapshot.state };      // 'declined' | 'empty'
+    }
+
+    const PANE_NOTES = {
+      asking:   n => `Asking <b>${n}</b>'s editor…`,
+      offline:  n => `<b>${n}</b>'s editor isn't connected.<br>The VSCode extension reports the file they have open.`,
+      lost:     ()  => `Lost the connection to the server — retrying…`,
+      declined: n => `<b>${n}</b> has file sharing turned off.`,
+      empty:    n => `<b>${n}</b> has no file open.`,
+    };
 
     function renderSnapshot(student, p, data) {
       const head = p.el.querySelector('.fv-head');
       const body = p.el.querySelector('.fv-body');
-      const s = data.snapshot;
+      const state = paneState(data);
 
-      const empty = (html) => {
+      if (state.kind !== 'file') {
         head.innerHTML = '';
         body.classList.add('empty');
-        body.innerHTML = `<div class="note">${html}</div>`;
+        const kind = p.pollFailed ? 'lost' : state.kind;
+        body.innerHTML = `<div class="note" role="status">${PANE_NOTES[kind](esc(student))}</div>`;
         p.lastKey = p.lastHead = null;
-      };
-
-      if (!s) {
-        empty(data.connected
-          ? `Asking <b>${esc(student)}</b>'s editor…`
-          : `<b>${esc(student)}</b>'s editor isn't connected.<br>The VSCode extension reports the file they have open.`);
         return;
       }
-      if (s.declined) {
-        empty(`<b>${esc(student)}</b> has file sharing turned off.`);
-        return;
-      }
-      if (!s.content) {
-        empty(`<b>${esc(student)}</b> has no file open.`);
-        return;
-      }
+      const { file: s, latest } = state;
 
       // Redrawing an unchanged buffer would throw away the teacher's text
       // selection and restart the caret blink every poll. Snapshots are
-      // replaced wholesale rather than edited, so the timestamp identifies one
-      // exactly — no need to compare the buffer against itself.
-      const key = `${p.diff}:${s.atUnixMs}`;
-      const headHtml = snapshotHead(s, data.ageMs);
+      // replaced wholesale rather than edited, and the backend numbers each one,
+      // so its `rev` identifies it exactly — no need to compare the buffer.
+      const key = `${p.diff}:${latest.rev}`;
+      const headHtml = snapshotHead(s, latest.ageMs, p.pollFailed);
       if (headHtml !== p.lastHead) {
         head.innerHTML = headHtml; // freshness still ticks
         p.lastHead = headHtml;
@@ -1292,56 +1366,66 @@
       const prevTop = body.scrollTop;
       body.classList.toggle('empty', html === null);
       body.innerHTML = html === null
-        ? `<div class="note">No changes since <b>${esc(student)}</b>'s last commit.</div>`
-        : html;
-
+        ? `<div class="note" role="status">${diffNote(s, esc(student))}</div>`
+        : `<div class="rows">${html}</div>`;
       if (html === null) return;
+
       // Follow the cursor when it moves; otherwise leave the teacher where they
       // scrolled to.
-      const cursorMoved = !p.diff && s.line && s.line !== p.lastLine;
-      p.lastLine = s.line;
+      const line = s.cursor?.line;
+      const cursorMoved = !p.diff && line && line !== p.lastLine;
+      p.lastLine = line;
       const cur = cursorMoved ? body.querySelector('.cl.cur') : null;
-      if (cur) {
-        body.scrollTop = Math.max(0, cur.offsetTop - body.clientHeight / 2);
-      } else {
-        body.scrollTop = prevTop;
+      body.scrollTop = cur ? Math.max(0, cur.offsetTop - body.clientHeight / 2) : prevTop;
+    }
+
+    function snapshotHead(s, ageMs, connectionLost) {
+      const chip = (text, cls = '') => `<span class="chip${cls && ' ' + cls}">${text}</span>`;
+      const bits = [`<span class="fp" title="${esc(s.path)}">${esc(s.relativePath)}</span>`];
+      if (s.dirty) bits.push(chip('unsaved'));
+      if (s.truncated) bits.push(chip('truncated'));
+      if (connectionLost) {
+        bits.push(chip('connection lost', 'stale'));
+      } else if (ageMs > SNAPSHOT_STALE_MS) {
+        bits.push(chip(timeAgo(Date.now() - ageMs), 'stale'));
+      }
+      bits.push(`<span class="sum">${diffSummary(s.baseline)}</span>`);
+      return bits.join('');
+    }
+
+    function diffSummary(baseline) {
+      switch (baseline.kind) {
+        case 'untracked': return '<span class="plus">new file</span> · never committed';
+        case 'none': return 'no git baseline';
+        default:
+          if (!baseline.added && !baseline.removed) return 'no changes since last commit';
+          return `<span class="plus">+${baseline.added}</span> <span class="minus">−${baseline.removed}</span>`
+            + (baseline.truncated ? ' · diff truncated' : '');
       }
     }
 
-    function snapshotHead(s, ageMs) {
-      const bits = [`<span class="fp">${esc(s.relativePath || s.path || '')}</span>`];
-      if (s.dirty) bits.push('· unsaved');
-      if (s.truncated) bits.push('· truncated');
-      if (ageMs != null && ageMs > SNAPSHOT_STALE_MS) {
-        bits.push(`· <span class="stale">${timeAgo(s.atUnixMs)}</span>`);
-      }
-      bits.push(`<span class="sum">${diffSummary(s)}</span>`);
-      return bits.join(' ');
-    }
-
-    function diffSummary(s) {
-      if (s.base === 'untracked') return '<span class="plus">new file</span> · never committed';
-      if (s.base === 'none') return 'no git baseline';
-      const d = s.diff;
-      if (!d || !d.hunks.length) return 'no changes since last commit';
-      return `<span class="plus">+${d.added}</span> <span class="minus">−${d.removed}</span>`
-        + (d.truncated ? ' · diff truncated' : '');
+    /** Why the Diff view has nothing to draw. Only asked when it doesn't. */
+    function diffNote(s, student) {
+      const b = s.baseline;
+      if (b.kind === 'untracked') return `<b>${student}</b> hasn't committed this file yet, so there is nothing to compare it with.`;
+      if (b.kind === 'none') return 'No git baseline for this file (a notebook cell, or not a git repository).';
+      if (b.added || b.removed) return 'The diff is too large to show.';
+      return `No changes since <b>${student}</b>'s last commit.`;
     }
 
     /** The buffer, with the student's caret drawn where it actually is. */
     function codeHtml(s) {
-      const lines = String(s.content).split('\n');
+      const lines = s.content.split('\n');
       // The backend highlights into one span list per line, indexed the same
-      // way this splits. A line it couldn't classify just renders plain.
-      const hl = Array.isArray(s.highlight) ? s.highlight : null;
+      // way this splits. A line it couldn't classify is just one classless span;
+      // the spans come from the same clamped string as `content`, so they cannot
+      // disagree with it.
+      const hl = s.highlight;
       const out = [];
       for (let i = 0; i < lines.length; i++) {
         const n = i + 1;
-        const cur = n === s.line;
-        // A line the backend couldn't classify is just one classless span. The
-        // spans come from the same clamped string as `content`, so they cannot
-        // disagree with it.
-        const text = spansHtml((hl && hl[i]) || [['', lines[i]]], cur ? s.column : null);
+        const cur = n === s.cursor?.line;
+        const text = spansHtml((hl && hl[i]) || [['', lines[i]]], cur ? s.cursor.column : null);
         out.push(`<div class="cl${cur ? ' cur' : ''}"><span class="n">${n}</span><span class="t">${text}</span></div>`);
       }
       return out.join('');
@@ -1383,8 +1467,8 @@
      * or count here — the backend did that once, when the snapshot arrived.
      */
     function diffHtml(s) {
-      const d = s.diff;
-      if (!d || !d.hunks.length) return null;
+      const d = s.baseline;
+      if (d.kind !== 'head' || !d.hunks.length) return null;
       const out = [];
       for (const h of d.hunks) {
         out.push(`<div class="dh">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`);
@@ -1413,7 +1497,7 @@
         const bx = Math.max(min, Math.min(max, e.clientX - rect.left));
         document.getElementById('board').style.flex = `0 0 ${bx}px`;
         document.getElementById('dock').style.flex = '1 1 0';
-        refitPanes();
+        relayout();
       });
       const end = (e) => {
         if (!dragging) return;

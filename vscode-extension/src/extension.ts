@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import WebSocket from 'ws';
 import { registerAssistant } from './assistant';
 import { ExerciseMap } from './exercises';
-import { buildSnapshot, FileSnapshot, SnapshotTarget } from './snapshot';
+import { buildOpenFile, Report, SnapshotTarget } from './snapshot';
 
 interface CourseConfig {
     backend?: string;
@@ -799,25 +799,26 @@ class Reporter {
         }
         const target = this.activeTarget();
         const doc = target?.doc;
-        let snapshot: FileSnapshot;
+        const { student } = this;
+        let report: Report;
         if (!this.shareFileContents) {
             // Answer anyway. Silence is indistinguishable from a disconnected
             // editor, and the teacher deserves to be told which one it is.
-            snapshot = { student: this.student, declined: true, atUnixMs: Date.now() };
+            report = { student, state: 'declined' };
         } else if (!target || !doc) {
-            snapshot = { student: this.student, atUnixMs: Date.now() };
+            report = { student, state: 'empty' };
         } else {
-            snapshot = await buildSnapshot(
-                { ...target, doc },
-                { student: this.student, ...this.locate(target.uri) },
-            );
+            report = {
+                student,
+                ...(await buildOpenFile({ ...target, doc }, this.locate(target.uri))),
+            };
         }
 
         this.snapshotSending = true;
         try {
             // Never queued or retried: a snapshot describes one instant, and a
             // stale one is worse than none at all.
-            await this.post('/api/file-snapshots', JSON.stringify(snapshot));
+            await this.post('/api/file-snapshots', JSON.stringify(report));
         } catch (_) {
             // The teacher's next poll re-asks; nothing to recover here.
         } finally {

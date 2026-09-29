@@ -1097,6 +1097,7 @@ dependencies = [
  "serde_json",
  "strip-ansi-escapes",
  "syntect",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tonic",

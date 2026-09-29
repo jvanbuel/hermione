@@ -94,6 +94,22 @@ async function shoot(page, url, file, opts = {}) {
       wait: 900,
     });
 
+    // Every state the file view can be in, one pane each: offline, waiting,
+    // declined, nothing open, stale + untracked + very long line, and a clean diff.
+    await shoot(page, `${BASE}/`, `${LABEL}-file-states-${theme}.png`, {
+      action: async (pg) => {
+        for (const name of ['Alan Turing', 'Katherine Johnson', 'Grace Hopper',
+                            'Linus Torvalds', 'Margaret Hamilton', 'Dennis Ritchie']) {
+          await pg.locator('.card', { hasText: name }).first().click();
+          const pane = pg.locator('.pane').last();
+          await pane.locator('.modes button[data-mode="file"]').click();
+          if (name === 'Dennis Ritchie') await pane.locator('.diff').click();
+        }
+        await pg.waitForTimeout(600);
+      },
+      wait: 900,
+    });
+
     await shoot(page, `${BASE}/analytics`, `${LABEL}-analytics-${theme}.png`, {
       action: async (pg) => { await pg.selectOption('#student', { label: 'Ada Lovelace' }).catch(() => {}); },
       wait: 600,

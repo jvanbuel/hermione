@@ -2,47 +2,59 @@ import { structuredPatch } from 'diff';
 import * as vscode from 'vscode';
 
 /**
- * A snapshot of what the student has on screen: the buffer's text, where the
- * cursor is, and how it differs from their last commit.
+ * What the student's editor answers a snapshot request with: the buffer's text,
+ * where the cursor is, and how it differs from their last commit.
  *
- * Unlike file *events*, which are reported continuously, a snapshot is only
- * ever built when the backend asks for one — which it only does while a teacher
- * has the student's file open. Nothing here is sent unprompted.
+ * Unlike file *events*, which are reported continuously, a report is only ever
+ * built when the backend asks for one — which it only does while a teacher has
+ * the student's file open. Nothing here is sent unprompted.
+ *
+ * This mirrors `crates/server/src/snapshots/report.rs`, and is a union rather
+ * than a bag of optional fields for the same reason: an editor that declines to
+ * share has no `content` to send, so a `declined` report cannot carry one, and a
+ * file cannot be both untracked and diffed against its last commit.
  */
-export interface FileSnapshot {
-    student: string;
-    path?: string;
-    relativePath?: string;
-    language?: string;
+export type Report = { student: string } & (
+    | { state: 'declined' }
+    | { state: 'empty' }
+    | OpenFile
+);
+
+export interface OpenFile {
+    state: 'file';
+    path: string;
+    relativePath: string;
+    /** VSCode's language id for the document. */
+    language: string;
     exercise?: string;
-    /** 1-based cursor line. */
-    line?: number;
-    /** 1-based cursor column. */
-    column?: number;
+    /** Both 1-based. Absent when no editor has the file focused. */
+    cursor?: { line: number; column: number };
     /** The buffer has unsaved changes. */
-    dirty?: boolean;
-    content?: string;
+    dirty: boolean;
+    /** The buffer as the student sees it this instant. */
+    content: string;
+    /** `content` was cut short before sending. */
     truncated?: boolean;
-    /** `head`, `untracked`, or `none` — what `diff` is measured against. */
-    base?: 'head' | 'untracked' | 'none';
-    diff?: SnapshotDiff;
-    /** Set when this student's configuration forbids sharing file contents. */
-    declined?: boolean;
-    atUnixMs: number;
+    baseline: Baseline;
 }
 
-export interface SnapshotDiff {
-    added: number;
-    removed: number;
-    hunks: SnapshotHunk[];
-    truncated?: boolean;
-}
+/**
+ * What the buffer is compared against. Counts a unified diff also carries
+ * (lines added, lines removed, a hunk's line counts) are left to the server:
+ * they follow from the lines, and one that disagreed with them would be a lie
+ * we had no way to notice.
+ */
+export type Baseline =
+    | { kind: 'head'; hunks: Hunk[] }
+    | { kind: 'untracked' }
+    /** Nothing to compare with: a notebook cell, or no git. */
+    | { kind: 'none' };
 
-export interface SnapshotHunk {
+export interface Hunk {
+    /** 1-based line in the committed file this hunk begins at. */
     oldStart: number;
-    oldLines: number;
+    /** 1-based line in the buffer this hunk begins at. */
     newStart: number;
-    newLines: number;
     /** Unified-diff lines: ' ' context, '-' removed, '+' added. */
     lines: string[];
 }
@@ -53,9 +65,6 @@ export interface SnapshotHunk {
  * flooding the backend.
  */
 const MAX_CONTENT_CHARS = 200_000;
-
-/** Diff lines kept per snapshot, so a wholesale rewrite stays bounded. */
-const MAX_DIFF_LINES = 2000;
 
 /** Lines of unchanged context kept around each change. */
 const DIFF_CONTEXT = 3;
@@ -133,46 +142,17 @@ async function committedText(uri: vscode.Uri): Promise<string | undefined> {
  * compares what's on disk, and the interesting moment is usually the one before
  * anyone hits save.
  */
-function diffAgainst(baseline: string, current: string, name: string): SnapshotDiff {
+function diffAgainst(baseline: string, current: string, name: string): Hunk[] {
     const patch = structuredPatch(name, name, baseline, current, '', '', {
         context: DIFF_CONTEXT,
     });
-
-    let added = 0;
-    let removed = 0;
-    let budget = MAX_DIFF_LINES;
-    let truncated = false;
-    const hunks: SnapshotHunk[] = [];
-
-    for (const h of patch.hunks) {
+    return patch.hunks.map((h) => ({
+        oldStart: h.oldStart,
+        newStart: h.newStart,
         // jsdiff marks a missing trailing newline with a `\` line, which is
         // noise in a live view of someone's editor.
-        const lines = h.lines.filter((l) => !l.startsWith('\\'));
-        for (const l of lines) {
-            if (l.startsWith('+')) {
-                added++;
-            } else if (l.startsWith('-')) {
-                removed++;
-            }
-        }
-        // Once the budget runs out, everything after it goes too: a diff with a
-        // hole in the middle reads as if it were complete. The server's own cap
-        // (MAX_DIFF_LINES in snapshots.rs) drops hunks the same way.
-        if (truncated || lines.length > budget) {
-            truncated = true;
-            continue;
-        }
-        budget -= lines.length;
-        hunks.push({
-            oldStart: h.oldStart,
-            oldLines: h.oldLines,
-            newStart: h.newStart,
-            newLines: h.newLines,
-            lines,
-        });
-    }
-
-    return truncated ? { added, removed, hunks, truncated } : { added, removed, hunks };
+        lines: h.lines.filter((l) => !l.startsWith('\\')),
+    }));
 }
 
 /** The document the student is looking at, and the editor showing it. */
@@ -187,45 +167,44 @@ export interface SnapshotTarget {
 }
 
 /**
- * Builds the snapshot for a target. `content` is the buffer as the student sees
- * it this instant, including unsaved edits.
+ * Builds the report for a file the student has open. `content` is the buffer as
+ * the student sees it this instant, including unsaved edits.
  */
-export async function buildSnapshot(
+export async function buildOpenFile(
     target: SnapshotTarget & { doc: vscode.TextDocument },
-    base: { student: string; relativePath?: string; exercise?: string },
-): Promise<FileSnapshot> {
+    where: { relativePath: string; exercise?: string },
+): Promise<OpenFile> {
     const text = target.doc.getText();
     const truncated = text.length > MAX_CONTENT_CHARS;
     const cursor = target.editor?.selection.active;
 
-    const snapshot: FileSnapshot = {
-        student: base.student,
+    return {
+        state: 'file',
         path: target.uri.fsPath,
-        relativePath: base.relativePath,
+        relativePath: where.relativePath,
         language: target.doc.languageId,
-        exercise: base.exercise,
-        line: cursor ? cursor.line + 1 : undefined,
-        column: cursor ? cursor.character + 1 : undefined,
+        exercise: where.exercise,
+        cursor: cursor && { line: cursor.line + 1, column: cursor.character + 1 },
         dirty: target.doc.isDirty,
         content: truncated ? text.slice(0, MAX_CONTENT_CHARS) : text,
         truncated: truncated || undefined,
-        atUnixMs: Date.now(),
+        baseline: await baselineFor(target, text, where.relativePath),
     };
+}
 
+async function baselineFor(
+    target: SnapshotTarget,
+    text: string,
+    relativePath: string,
+): Promise<Baseline> {
     // A notebook cell's buffer is one cell of a JSON file, so diffing it
     // against the committed `.ipynb` would compare a Python fragment with a
     // JSON document. Report the cell, and no baseline.
     if (target.cell) {
-        snapshot.base = 'none';
-        return snapshot;
+        return { kind: 'none' };
     }
-
-    const baseline = await committedText(target.uri);
-    if (baseline === undefined) {
-        snapshot.base = 'untracked';
-        return snapshot;
-    }
-    snapshot.base = 'head';
-    snapshot.diff = diffAgainst(baseline, text, base.relativePath || target.uri.fsPath);
-    return snapshot;
+    const committed = await committedText(target.uri);
+    return committed === undefined
+        ? { kind: 'untracked' }
+        : { kind: 'head', hunks: diffAgainst(committed, text, relativePath) };
 }

@@ -83,18 +83,23 @@
   /* Diff rows. The whole added/removed signal lives in these, so the text can
    * stay syntax-coloured. The chalkboard is already slate-green, which eats a
    * green wash, so the added row borrows the brighter --green-emphasis. */
+  --cursor-line-wash: color-mix(in srgb, var(--accent) 14%, transparent);
   --diff-add-wash: color-mix(in srgb, var(--green-emphasis) 16%, transparent);
   --diff-del-wash: color-mix(in srgb, var(--red) 15%, transparent);
 
   /* Syntax highlighting for the file a student has open. Coloured chalk again,
-   * not an imported editor theme: five hues that already belong to this board,
-   * each measured against --bg (#243831) at 4.5:1 or better. */
+   * not an imported editor theme. Every colour clears 4.5:1 on every ground it
+   * is drawn on — the board, the cursor line, an added row, a removed row — and
+   * scripts/contrast.py (in the hermione-ui-screenshots skill) checks it, so
+   * retune a value there rather than by eye. Keyword, function and type sit a
+   * touch lighter than they look like they need to: an added row's green wash
+   * is the lightest ground, and it is where they were 4.1-4.3:1. */
   --hl-comment: var(--fg-subtle);
   --hl-string: #9bd4a5;
   --hl-number: var(--amber);
-  --hl-keyword: #e79a9a;
-  --hl-function: #8ab4e8;
-  --hl-type: #c4a7e7;
+  --hl-keyword: #eaa8a8;
+  --hl-function: #96bcea;
+  --hl-type: #c9aee9;
   --hl-operator: var(--fg-muted);
 }
 
@@ -143,11 +148,14 @@
   --hl-string: #0a3069;
   --hl-number: #0550ae;
   --hl-keyword: var(--red);
-  --hl-function: var(--brand);
+  /* --brand, a shade darker: --brand itself is 4.3-4.4:1 on the diff rows. */
+  --hl-function: #7d48de;
   --hl-type: #953800;
   --hl-operator: var(--fg-muted);
 
-  /* On white, a plain wash of each hue is enough. */
+  /* On white a wash needs to be paler: at the 14% the dark theme uses, the
+   * cursor line pulled comments and the line's own number under 4.5:1. */
+  --cursor-line-wash: color-mix(in srgb, var(--accent) 10%, transparent);
   --diff-add-wash: color-mix(in srgb, var(--green) 10%, transparent);
   --diff-del-wash: color-mix(in srgb, var(--red) 10%, transparent);
 
@@ -188,11 +196,14 @@
     --hl-string: #0a3069;
     --hl-number: #0550ae;
     --hl-keyword: var(--red);
-    --hl-function: var(--brand);
+    /* --brand, a shade darker: --brand itself is 4.3-4.4:1 on the diff rows. */
+    --hl-function: #7d48de;
     --hl-type: #953800;
     --hl-operator: var(--fg-muted);
 
-    /* On white, a plain wash of each hue is enough. */
+    /* On white a wash needs to be paler: at the 14% the dark theme uses, the
+     * cursor line pulled comments and the line's own number under 4.5:1. */
+    --cursor-line-wash: color-mix(in srgb, var(--accent) 10%, transparent);
     --diff-add-wash: color-mix(in srgb, var(--green) 10%, transparent);
     --diff-del-wash: color-mix(in srgb, var(--red) 10%, transparent);
 
