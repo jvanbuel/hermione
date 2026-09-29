@@ -1537,16 +1537,14 @@ mod tests {
         Student::try_from(name.to_string()).unwrap()
     }
 
-    /// Every page's header links these; a missing one leaves the menu button
-    /// dead and unstyled, and only in a built binary, not in the fixtures server.
+    /// Every teacher page's header links these; a missing one leaves the menu
+    /// button dead and unstyled, and only in a built binary, not in the fixtures
+    /// server.
     #[test]
-    fn the_header_menu_ships_with_the_binary() {
+    fn the_shared_page_chrome_ships_with_the_binary() {
         for (path, content_type) in [
-            (
-                "assets/more-menu.js",
-                "application/javascript; charset=utf-8",
-            ),
-            ("assets/more-menu.css", "text/css; charset=utf-8"),
+            ("assets/common.js", "application/javascript; charset=utf-8"),
+            ("assets/chrome.css", "text/css; charset=utf-8"),
         ] {
             assert!(
                 asset(path).is_some_and(|b| !b.is_empty()),
@@ -1556,7 +1554,7 @@ mod tests {
         }
         for page in ["index.html", "analytics.html", "transcripts.html"] {
             let html = String::from_utf8(asset(page).unwrap().to_vec()).unwrap();
-            for link in ["/assets/more-menu.css", "/assets/more-menu.js"] {
+            for link in ["/assets/chrome.css", "/assets/common.js"] {
                 assert!(html.contains(link), "{page} links {link}");
             }
         }

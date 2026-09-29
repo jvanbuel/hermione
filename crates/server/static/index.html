@@ -15,7 +15,7 @@
   <link rel="icon" type="image/svg+xml" href="/assets/hermione-mark.svg" />
   <link rel="icon" type="image/png" href="/assets/favicon-32.png" />
   <link rel="stylesheet" href="/tokens.css" />
-  <link rel="stylesheet" href="/assets/more-menu.css" />
+  <link rel="stylesheet" href="/assets/chrome.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/addon-fit.js"></script>
@@ -28,19 +28,6 @@
       background: var(--bg); color: var(--fg);
     }
 
-    .ico { width: 1em; height: 1em; vertical-align: -0.125em; flex: none; }
-    .visually-hidden {
-      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
-    }
-
-    header {
-      display: flex; align-items: center; gap: 10px;
-      padding: 10px 18px; border-bottom: 1px solid var(--border-subtle); background: var(--surface);
-      flex: 0 0 auto;
-    }
-    /* The mark and wordmark are one link back to the board. Keeping the
-     * original 10px header gap between them means the layout is unchanged. */
     /* Segmented Board/Tree switch — one control, two states. */
     #view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
     #view-toggle button {
@@ -52,17 +39,6 @@
     #view-toggle button:hover { background: var(--surface-2); }
     #view-toggle button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); font-weight: 600; }
 
-    header .home { display: inline-flex; align-items: center; gap: 10px;
-      text-decoration: none; color: inherit; border-radius: var(--radius-sm); }
-    header .home:hover h1 { text-decoration: underline; }
-    header .logo-mark { width: 24px; height: 24px; flex: none; border-radius: 50%;
-      object-fit: contain; box-shadow: var(--shadow-1); }
-    header h1 { font-size: var(--fs-lg); margin: 0; font-weight: 600; }
-    header select {
-      background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-      border-radius: 6px; padding: 4px 8px; font-size: var(--fs-sm);
-    }
-    header .spacer { margin-left: auto; }
     .hint { font-size: var(--fs-sm); color: var(--fg-subtle); }
     .freshness {
       font-size: var(--fs-sm); color: var(--fg-subtle);
@@ -71,29 +47,17 @@
     .freshness.stale { color: var(--amber); }
     .freshness.failed { color: var(--red-text); }
     .freshness .fdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
-    /* Controls keep their size; only the hint gives way when the bar is full.
-     * Without this every item shrinks at once and the header grows to two or
-     * three lines of squeezed text. */
-    header button, header a.nav, #view-toggle, #alert, header select, #freshness { flex: none; }
-    #freshness { white-space: nowrap; }
+    /* Header controls keep their size. Without this every item shrinks at once
+     * and the header grows to two or three lines of squeezed text. */
+    header button, header a.nav, #view-toggle, #alert, header select { flex: none; }
     header #alert:not(:empty) { white-space: nowrap; }
+    /* In the status bar the hint is what gives way when the window is narrow. */
+    #freshness { white-space: nowrap; }
     .hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    header button, header a.nav {
-      background: var(--surface-2); color: var(--fg); border: 1px solid var(--border);
-      border-radius: var(--radius-sm); padding: 5px 10px; font-size: var(--fs-sm); cursor: pointer;
-      display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
-      box-shadow: var(--shadow-1);
-      transition: background .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease);
-    }
-    header button:hover, header a.nav:hover { background: var(--border); }
     /* Broadcast is the header's primary action — filled, so it leads the eye. */
     #broadcast { background: var(--green); border-color: transparent; color: #fff; font-weight: 600; }
     #broadcast:hover { background: var(--green-emphasis); }
-    /* What is used all class stays on the bar: the course, the two views,
-     * Analytics, Transcripts, Broadcast. What is used once a term — a new
-     * course, the assistant's settings, the theme, signing out — lives behind
-     * one button, so the bar reads as a few things rather than a dozen. */
     /* On a narrower window the bar gives up words before it gives up controls:
      * the actions keep their icons (and their names, for screen readers), then
      * the wordmark and repo name go. */
@@ -614,7 +578,7 @@
   </footer>
   <div id="toasts" role="status" aria-live="polite"></div>
 
-  <script src="/assets/more-menu.js"></script>
+  <script src="/assets/common.js"></script>
   <script>
     // xterm palettes per theme — kept in step with --bg / --fg in tokens.css so
     // the embedded terminals match the page chrome (dark = chalkboard slate).
@@ -638,8 +602,6 @@
       chevron: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>',
       folder: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 3.6c0-.6.4-1 1-1h3.1c.3 0 .6.1.8.4l.9 1.1h6.2c.6 0 1 .4 1 1v7.3c0 .6-.4 1-1 1H2.5c-.6 0-1-.4-1-1V3.6z"/></svg>',
       file: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 1.9h4.9l3 3v9.2H4.2z"/><path d="M9.1 1.9v3h3"/></svg>',
-      sun: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3 3l1.3 1.3M11.7 11.7 13 13M13 3l-1.3 1.3M4.3 11.7 3 13"/></svg>',
-      moon: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.2 2.3a5.8 5.8 0 1 0 7.5 7.5A4.7 4.7 0 0 1 6.2 2.3z"/></svg>',
     };
 
     // ---- which view of the class is on screen ----
@@ -673,60 +635,18 @@
       try { return localStorage.getItem(COURSE_KEY); } catch (_) { return null; }
     }
 
-    // ---- theme: OS default + manual override (dark "chalkboard" / light) ----
-    const THEME_KEY = 'hermione.theme';
-    const lightMQ = window.matchMedia('(prefers-color-scheme: light)');
-    // Effective theme: an explicit data-theme wins; otherwise follow the OS.
-    function effectiveTheme() {
-      const pinned = document.documentElement.dataset.theme;
-      if (pinned === 'light' || pinned === 'dark') return pinned;
-      return lightMQ.matches ? 'light' : 'dark';
-    }
+    // ---- theme: the switch itself is in common.js; the terminals follow it ----
     function termTheme() { return TERM_THEMES[effectiveTheme()]; }
-    // Reflect the live theme into the toggle icon and any open terminals.
-    function applyTheme() {
-      const t = effectiveTheme();
-      const btn = document.getElementById('theme-toggle');
-      if (btn) {
-        btn.innerHTML = (t === 'dark' ? ICONS.sun : ICONS.moon)
-          + (t === 'dark' ? 'Light theme' : 'Chalkboard theme');
-      }
+    document.addEventListener('hermione:theme', () => {
       openPanes.forEach(p => { if (p.term) p.term.options.theme = termTheme(); });
-    }
-    function setTheme(theme) {
-      document.documentElement.dataset.theme = theme;
-      try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
-      applyTheme();
-    }
-    // When the teacher hasn't pinned a theme, track OS changes live.
-    lightMQ.addEventListener('change', () => {
-      if (!document.documentElement.dataset.theme) applyTheme();
     });
 
-    // ---- helpers ----
-    function hashHue(str) {
-      let h = 0;
-      for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-      return h;
-    }
-    function initials(name) {
-      const parts = name.split(/[\s._:\-]+/).filter(Boolean);
-      if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-      return name.slice(0, 2).toUpperCase();
-    }
     function avatarHtml(name, status, extraClass = '') {
       const hue = hashHue(name);
       // Muted fill so per-student colour aids recognition without competing with
       // the semantic red/amber struggle language.
       return `<div class="avatar ${extraClass}" aria-hidden="true" style="background:hsl(${hue},26%,38%)">
         ${esc(initials(name))}<span class="dot ${status}" title="${status}"></span></div>`;
-    }
-    function fmtDuration(secs) {
-      if (secs < 60) return `${secs}s`;
-      const m = Math.floor(secs / 60), s = secs % 60;
-      if (m < 60) return s ? `${m}m ${s}s` : `${m}m`;
-      const h = Math.floor(m / 60);
-      return `${h}h ${String(m % 60).padStart(2, '0')}m`;
     }
     function timeAgo(ms) {
       const s = Math.round((Date.now() - ms) / 1000);
@@ -739,15 +659,6 @@
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return bytes;
-    }
-    // Escape untrusted strings (student names, file paths, exercises, course
-    // names) before putting them in HTML — they originate from students.
-    const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-    function esc(s) {
-      s = String(s == null ? '' : s);
-      // Most spans of source code contain nothing to escape, and this runs
-      // thousands of times per file render.
-      return /[&<>"']/.test(s) ? s.replace(/[&<>"']/g, c => ESC[c]) : s;
     }
 
     // Keyed, in-place reconciliation of a container's children, so the 3s
@@ -2240,9 +2151,6 @@
     document.getElementById('new-course').addEventListener('click', openNewCourse);
     document.getElementById('course-settings').addEventListener('click', openCourseSettings);
     document.getElementById('assistant-settings').addEventListener('click', openAssistantSettings);
-    document.getElementById('theme-toggle').addEventListener('click', () =>
-      setTheme(effectiveTheme() === 'dark' ? 'light' : 'dark'));
-    applyTheme(); // paint the correct toggle icon for the resolved theme
 
     (async () => {
       if (localStorage.getItem(HINT_KEY)) document.getElementById('hint').style.display = 'none';
