@@ -146,58 +146,112 @@
     /* ---- Tree view: the repo, pruned to what people actually have open ---- */
     /* The grid lives on the container, and each row is display:contents, so the
      * name column lines up across every row however deep the path goes. */
+    /* ---- Tree view: the repo's folders, and who is in which file ----
+     * One row per folder or file. A file's row carries the people in it, so the
+     * question the view exists to answer — who is where? — is answered by
+     * reading along a line, not by matching a name in one column to a group in
+     * another. Structure is drawn with indent guides (a repeating background,
+     * so they run unbroken down the rows) rather than typed out as box-drawing
+     * characters, which broke between rows and were most of the visual noise. */
     #board.tree {
-      display: grid;
-      /* Both columns sized to content but floored, so the block is centred and
-       * its left edge stays put as paths and names change length — a tree that
-       * slid sideways on every refresh would be worse than one hugging the
-       * edge. The old `1fr` second column ate the whole viewport, which is why
-       * the tree read as a fragment against dead space. */
-      grid-template-columns: max-content max-content;
-      justify-content: center; align-content: start;
-      column-gap: 8px; padding: 32px 24px 48px; overflow: auto;
+      /* `stretch`, not the board's usual flex-start: a row that shrank to its
+       * content would make the name column's percentage width meaningless. */
+      display: flex; flex-direction: column; align-items: stretch; align-content: start;
+      /* The board spaces its exercise columns apart; rows here must touch, or the
+       * indent guides break into a dash per row. */
+      gap: 0;
+      /* A column about as wide as the class needs, centred; on a small screen
+       * it just takes the width. */
+      padding: 24px max(24px, calc((100% - 1120px) / 2)) 48px;
+      overflow: auto;
     }
-    #board.tree .trow { display: contents; }
+    #board.tree .trow {
+      --indent: 22px;
+      position: relative; flex: 0 0 auto;
+      display: flex; align-items: flex-start; gap: 14px;
+      padding: 1px 10px; border-radius: 8px;
+    }
+    #board.tree .trow:hover { background: var(--surface); }
+    /* One faint line per ancestor, under that ancestor's chevron, running down
+     * every row inside it and stopping where the folder does. */
+    #board.tree .trow::before {
+      content: ""; position: absolute; left: 10px; top: 0; bottom: 0;
+      width: calc(var(--depth) * var(--indent)); pointer-events: none;
+      background: repeating-linear-gradient(90deg,
+        transparent 0 10.5px, var(--border) 10.5px 11.5px, transparent 11.5px var(--indent));
+    }
     #board.tree .tpath {
+      /* The same width on every row, so the people line up down the page. */
+      flex: 0 0 var(--name-w, 280px); min-width: 0; min-height: 32px;
+      display: flex; align-items: center; gap: 6px;
+      padding-left: calc(var(--depth) * var(--indent));
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: var(--fs-base); white-space: pre; padding: 2px 0;
-      color: var(--fg); align-self: start;
+      font-size: var(--fs-base); color: var(--fg);
     }
-    /* The connectors are scaffolding — keep them quiet so the names carry. */
-    #board.tree .branch { color: var(--fg-subtle); }
-    #board.tree .tpath.dir .tname { color: var(--fg-muted); font-weight: 600; }
-    #board.tree .trow.root .tpath { padding-bottom: 18px; }
-    #board.tree .trow.root .tpath .tname { color: var(--fg); }
+    #board.tree .tname { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* A dotted leader from a file's name across the gap to the people in it, so
+     * the two read as one line even when the name column is wide. */
+    #board.tree .tlead { display: none; }
+    #board.tree .trow.file .tlead {
+      display: block; flex: 1 1 12px; min-width: 12px; height: 0; align-self: center;
+      margin: 3px 4px 0; border-top: 1px dotted var(--border);
+    }
+    #board.tree .trow.file:hover .tlead { border-top-color: var(--fg-subtle); }
+    #board.tree .tchev, #board.tree .ticon { flex: 0 0 16px; width: 16px; height: 16px; display: grid; place-items: center; }
+    #board.tree .tchev { color: var(--fg-subtle); transition: transform .12s; }
+    #board.tree .tchev .ico { width: 14px; height: 14px; }
+    #board.tree .trow.open > .tpath .tchev { transform: rotate(90deg); }
+    #board.tree .ticon { color: var(--fg-subtle); }
+    #board.tree .trow.dir > .tpath .ticon { color: var(--accent-text); }
+    #board.tree .trow.dir > .tpath .tname { font-weight: 600; }
+    #board.tree .tpath.toggle { cursor: pointer; border-radius: 6px; }
+    #board.tree .tpath.toggle:hover .tname { text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+    /* A folder nobody is in stays on the map but steps back. */
+    #board.tree .trow.quiet > .tpath { color: var(--fg-subtle); }
+    #board.tree .trow.quiet > .tpath .tname { font-weight: 400; }
+    #board.tree .trow.quiet > .tpath .ticon { color: var(--fg-subtle); }
+    #board.tree .trow.root > .tpath { min-height: 40px; }
+    #board.tree .trow.root > .tpath .tname { font-size: var(--fs-lg); }
+    #board.tree .trow.root { margin-bottom: 6px; }
+
+    /* How many are in a folder, and — when someone needs help or is being
+     * watched — that too, so a collapsed folder still says what is inside it. */
+    #board.tree .tcount {
+      flex: 0 0 auto; font-family: inherit; font-size: var(--fs-xs); font-weight: 600; line-height: 18px;
+      padding: 0 7px; border-radius: var(--radius-pill);
+      background: var(--surface-2); color: var(--fg-muted);
+    }
+    #board.tree .tcount.help { background: var(--help-bg); color: #fff; }
+    #board.tree .tcount.watch { background: var(--watch-bg); color: #fff; }
+
     #board.tree .tpeople {
-      position: relative; display: flex; flex-direction: column;
-      align-items: flex-start; gap: 1px; padding-left: 22px; min-width: 0;
+      flex: 1 1 0; min-width: 0; min-height: 32px;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
     }
-    /* The vertical stops at the last name's centre, so the line ends on a
-     * person rather than running past them into empty space. */
-    #board.tree .tpeople::before {
-      content: ""; position: absolute; left: 6px; top: 0; bottom: 14px;
-      border-left: 1px solid var(--border);
-    }
-    /* No people, no line — otherwise every folder row trails a rule into space. */
-    #board.tree .tpeople:empty::before { content: none; }
-    #board.tree .tperson::before {
-      content: ""; position: absolute; left: -16px; top: 50%;
-      width: 13px; border-top: 1px solid var(--border);
-    }
+    /* The repo row shows a summary in place of people; every other row has none. */
+    #board.tree .tsum { display: none; }
+    #board.tree .trow.root .tsum { display: block; flex: 1 1 0; align-self: center; color: var(--fg-muted); font-size: var(--fs-sm); }
+    #board.tree .trow.root .tpeople, #board.tree .trow.root .tchev, #board.tree .trow.root .ticon { display: none; }
     #board.tree .tperson {
-      position: relative;
       display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
-      background: none; border: 1px solid transparent; border-radius: var(--radius-pill);
-      color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 2px 8px 2px 2px;
+      background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-pill);
+      color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 2px 10px 2px 3px;
       cursor: pointer; text-align: left;
     }
     #board.tree .tperson:hover { background: var(--surface-2); border-color: var(--border); }
-    #board.tree .tperson .avatar { width: 22px; height: 22px; font-size: 10px; }
+    #board.tree .tperson .avatar { width: 24px; height: 24px; font-size: 10px; }
     #board.tree .tperson .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #board.tree .tperson.help { color: var(--red-text); }
-    #board.tree .tperson.watch { color: var(--amber); }
-    /* A file nobody is in still needs a row height, or the grid collapses. */
-    #board.tree .tpeople:empty::after { content: ""; display: block; height: 24px; }
+    #board.tree .tperson.help { border-color: color-mix(in srgb, var(--red) 55%, transparent); background: var(--help-wash); }
+    #board.tree .tperson.watch { border-color: color-mix(in srgb, var(--amber) 55%, transparent); background: var(--watch-wash); }
+    #board.tree .tperson .pill { margin-left: 2px; }
+
+    /* Narrow: the people drop beneath the name instead of squeezing beside it. */
+    @media (max-width: 720px) {
+      #board.tree .trow { flex-wrap: wrap; gap: 0 14px; }
+      #board.tree .tpath { flex-basis: 100%; }
+      #board.tree .tpeople { padding-left: calc(var(--depth) * var(--indent) + 22px); flex-basis: 100%; min-height: 0; }
+      #board.tree .tpeople:not(:has(*)) { display: none; }
+    }
 
     .column {
       flex: 0 0 264px; background: var(--surface); border: 1px solid var(--border-subtle);
@@ -531,6 +585,9 @@
       warn: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.6 15 14H1L8 1.6zM7.3 6h1.4v3.6H7.3V6zm0 4.6h1.4V12.2H7.3v-1.6z"/></svg>',
       pencil: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><path d="M11.2 2.3 13.7 4.8 5.6 12.9 2.4 13.6l.7-3.2 8.1-8.1z"/></svg>',
       close: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+      chevron: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>',
+      folder: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 3.6c0-.6.4-1 1-1h3.1c.3 0 .6.1.8.4l.9 1.1h6.2c.6 0 1 .4 1 1v7.3c0 .6-.4 1-1 1H2.5c-.6 0-1-.4-1-1V3.6z"/></svg>',
+      file: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 1.9h4.9l3 3v9.2H4.2z"/><path d="M9.1 1.9v3h3"/></svg>',
       sun: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3 3l1.3 1.3M11.7 11.7 13 13M13 3l-1.3 1.3M4.3 11.7 3 13"/></svg>',
       moon: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6.2 2.3a5.8 5.8 0 1 0 7.5 7.5A4.7 4.7 0 0 1 6.2 2.3z"/></svg>',
     };
@@ -852,50 +909,125 @@
       return root;
     }
 
+    // ---- which folders are collapsed, remembered per course ----
+    // A folder with people in it is open by default: showing them is the point.
+    const treeClosed = new Set();
+    let treeClosedFor = null;
+    const treeClosedKey = () => `hermione.treeClosed:${currentCourse}`;
+    function loadTreeClosed() {
+      if (treeClosedFor === currentCourse) return;
+      treeClosedFor = currentCourse;
+      treeClosed.clear();
+      try { for (const k of JSON.parse(localStorage.getItem(treeClosedKey()) || '[]')) treeClosed.add(k); } catch (_) {}
+    }
+    function toggleFolder(key) {
+      loadTreeClosed();
+      if (!treeClosed.delete(key)) treeClosed.add(key);
+      try { localStorage.setItem(treeClosedKey(), JSON.stringify([...treeClosed])); } catch (_) {}
+      if (lastOverview) renderView(lastOverview);
+    }
+
+    const SEVERITY = { help: 2, watch: 1 };
+
+    /** How many students are in a folder, at any depth, and how many of them need attention. */
+    function census(node) {
+      const c = { count: 0, help: 0, watch: 0 };
+      const add = (n) => { c.count += n.count; c.help += n.help; c.watch += n.watch; };
+      for (const students of node.files.values()) {
+        add({ count: students.length,
+              help: students.filter(s => s.struggle === 'help').length,
+              watch: students.filter(s => s.struggle === 'watch').length });
+      }
+      for (const d of node.dirs.values()) add(census(d));
+      return c;
+    }
+    const worstOf = (c) => c.help ? 'help' : c.watch ? 'watch' : null;
+
     function treeRows(root) {
+      loadTreeClosed();
       const rows = [];
       const byName = (a, b) => a[0].localeCompare(b[0]);
-      // `open` tracks, per ancestor level, whether that branch still has
-      // siblings below it — that is what decides between "│" and blank.
-      (function walk(node, prefix, open) {
-        const entries = [
-          ...[...node.dirs.entries()].sort(byName).map(([name, v]) => ({ name, v, dir: true })),
-          ...[...node.files.entries()].sort(byName).map(([name, v]) => ({ name, v, dir: false })),
-        ];
-        entries.forEach((e, i) => {
-          const last = i === entries.length - 1;
-          const branch = open.map(o => (o ? '\u2502\u00a0\u00a0 ' : '\u00a0\u00a0\u00a0 ')).join('')
-            + (last ? '\u2514\u2500\u2500 ' : '\u251c\u2500\u2500 ');
-          const full = prefix + '/' + e.name;
-          rows.push({ key: full, branch, name: e.name, dir: e.dir, people: e.dir ? [] : e.v });
-          if (e.dir) walk(e.v, full, open.concat(!last));
-        });
-      })(root, '', []);
+      // Who needs help first: it is the reason to look at this view at all.
+      const bySeverity = (a, b) => (SEVERITY[b.struggle] || 0) - (SEVERITY[a.struggle] || 0)
+        || a.student.localeCompare(b.student);
+      // Folders before files at every level, as `tree` does.
+      (function walk(node, prefix, depth) {
+        for (const [name, v] of [...node.dirs.entries()].sort(byName)) {
+          const key = prefix + '/' + name;
+          const kids = v.dirs.size + v.files.size;
+          const open = kids > 0 && !treeClosed.has(key);
+          rows.push({ key, name, dir: true, depth, kids, open, ...census(v), people: [] });
+          if (open) walk(v, key, depth + 1);
+        }
+        for (const [name, students] of [...node.files.entries()].sort(byName)) {
+          rows.push({ key: prefix + '/' + name, name, dir: false, depth, people: students.slice().sort(bySeverity) });
+        }
+      })(root, '', 1);
       return rows;
     }
 
     function createTreeRow() {
       const el = document.createElement('div');
-      el.className = 'trow';
-      el.innerHTML = '<code class="tpath"><span class="branch"></span><span class="tname"></span></code><div class="tpeople"></div>';
+      el.innerHTML = `<div class="tpath"><span class="tchev">${ICONS.chevron}</span><span class="ticon"></span>`
+        + '<span class="tname"></span><span class="tcount"></span><span class="tlead"></span></div>'
+        + '<div class="tpeople"></div><div class="tsum"></div>';
       return el;
     }
 
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
     function updateTreeRow(el, row) {
+      // Only a folder that has something in it can be opened or closed.
+      const toggle = row.dir && !row.root && row.kids > 0;
+      el.className = 'trow ' + (row.dir ? 'dir' : 'file') + (row.root ? ' root' : '') + (row.open ? ' open' : '')
+        + (row.dir && !row.root && row.count === 0 ? ' quiet' : '');
+      el.style.setProperty('--depth', row.depth);
+
       const path = el.querySelector('.tpath');
-      el.classList.toggle('root', !!row.root);
-      path.classList.toggle('dir', row.dir);
-      path.querySelector('.branch').textContent = row.branch;
-      path.querySelector('.tname').textContent = (row.dir && !row.root) ? row.name + '/' : row.name;
-      const host = el.querySelector('.tpeople');
-      reconcile(host, row.people, s => s.student, () => {
+      path.classList.toggle('toggle', toggle);
+      if (toggle) {
+        path.setAttribute('role', 'button');
+        path.tabIndex = 0;
+        path.setAttribute('aria-expanded', String(row.open));
+        path.title = row.open ? 'Collapse' : 'Expand';
+        path.onclick = () => toggleFolder(row.key);
+        path.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFolder(row.key); } };
+      } else {
+        for (const a of ['role', 'tabindex', 'aria-expanded', 'title']) path.removeAttribute(a);
+        path.onclick = path.onkeydown = null;
+      }
+      el.querySelector('.tchev').style.visibility = toggle ? '' : 'hidden';
+      el.querySelector('.ticon').innerHTML = row.dir ? ICONS.folder : ICONS.file;
+      el.querySelector('.tname').textContent = row.name;
+
+      // A folder says how many are inside it and, if anyone needs it, how badly.
+      const count = el.querySelector('.tcount');
+      const showCount = row.dir && !row.root && row.count > 0;
+      count.hidden = !showCount;
+      if (showCount) {
+        const worst = worstOf(row);
+        count.textContent = row.count;
+        count.className = 'tcount' + (worst ? ' ' + worst : '');
+        count.title = plural(row.count, 'student')
+          + (row.help ? `, ${row.help} need${row.help === 1 ? 's' : ''} help` : '')
+          + (row.watch ? `, ${row.watch} to watch` : '');
+      }
+
+      // The repo row carries the whole class's summary where a file row carries people.
+      el.querySelector('.tsum').textContent = row.root
+        ? (row.count ? plural(row.count, 'student') + ' in a file'
+            + (row.help ? ` · ${row.help} need${row.help === 1 ? 's' : ''} help` : '')
+            + (row.watch ? ` · ${row.watch} to watch` : '') : 'nobody has a file open')
+        : '';
+
+      reconcile(el.querySelector('.tpeople'), row.people, s => s.student, () => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'tperson';
         return b;
       }, (b, s) => {
         b.className = 'tperson' + (s.struggle === 'help' ? ' help' : s.struggle === 'watch' ? ' watch' : '');
-        b.title = `${s.student} — open terminal`;
+        b.title = `${s.student} — open their file`;
         b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname">${esc(s.student)}</span>`
           + (s.struggle === 'help' ? '<span class="pill help">needs help</span>'
             : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '');
@@ -915,10 +1047,6 @@
         .filter(d => !String(d).includes('/'));
       const root = buildTree(students, dirs);
       const rows = treeRows(root);
-      if (rows.length) {
-        const c = courseList.find(c => c.slug === currentCourse);
-        rows.unshift({ key: '__root__', branch: '', name: (c && c.repoUrl) ? repoLabel(c.repoUrl) : '.', dir: true, root: true, people: [] });
-      }
       if (!rows.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
@@ -928,6 +1056,17 @@
         board.replaceChildren(empty);
         return;
       }
+
+      // Every row's name cell is as wide as the widest needs, so the people line
+      // up in one column down the page. `ch` is a monospace character, and the
+      // rest is the room for chevron, icon, count and gaps.
+      let maxLen = 0, maxDepth = 0;
+      for (const r of rows) { maxLen = Math.max(maxLen, r.name.length); maxDepth = Math.max(maxDepth, r.depth); }
+      board.style.setProperty('--name-w', `min(45%, calc(${maxDepth} * 22px + ${maxLen}ch + 100px))`);
+
+      const c = courseList.find(c => c.slug === currentCourse);
+      rows.unshift({ key: '__root__', name: (c && c.repoUrl) ? repoLabel(c.repoUrl) : '.', dir: true, root: true,
+        depth: 0, kids: 0, open: false, ...census(root), people: [] });
       reconcile(board, rows, r => r.key, createTreeRow, updateTreeRow);
     }
 

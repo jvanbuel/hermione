@@ -68,6 +68,12 @@ async function shoot(page, url, file, opts = {}) {
     console.log(`[${LABEL}] ${theme}`);
     await shoot(page, `${BASE}/`, `${LABEL}-board-${theme}.png`);
 
+    // The same class laid out as the files students have open.
+    await shoot(page, `${BASE}/`, `${LABEL}-tree-${theme}.png`, {
+      action: async (pg) => { await pg.locator('button[data-view="tree"]').click(); },
+    });
+    await page.evaluate(() => localStorage.removeItem('hermione.view'));
+
     // Board with a student's terminal open (click the first card).
     await shoot(page, `${BASE}/`, `${LABEL}-terminal-${theme}.png`, {
       action: async (pg) => { await pg.locator('.card').first().click(); },

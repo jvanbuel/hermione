@@ -48,6 +48,7 @@ the server. You'll get these PNGs in `$OUT_DIR` (× `dark` and `light`):
 
 ```
 <LABEL>-board-<theme>.png        # live class overview (the hero screen)
+<LABEL>-tree-<theme>.png         # the tree view: repo folders, students on the files they have open
 <LABEL>-terminal-<theme>.png     # board with a student's xterm pane open
 <LABEL>-file-<theme>.png         # the same pane on the file they have open (cursor + syntax)
 <LABEL>-file-diff-<theme>.png    # … with the git diff toggled on
