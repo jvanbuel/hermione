@@ -5,6 +5,7 @@ mod assistant;
 mod auth;
 mod exercises;
 mod files;
+mod github_access;
 mod github_app;
 mod grpc;
 mod highlight;
@@ -13,6 +14,7 @@ mod identity;
 mod messages;
 mod repo;
 mod snapshots;
+mod solutions;
 mod state;
 mod student;
 mod tenancy;
@@ -258,6 +260,17 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let github = github_access::GitHubAccess::new(
+        config.github_token.clone(),
+        config
+            .github_allowed_owners
+            .iter()
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty())
+            .collect(),
+        github_app,
+    );
+
     let state = AppState {
         db,
         hub: Hub::default(),
@@ -270,14 +283,8 @@ async fn main() -> anyhow::Result<()> {
         open_dev: Arc::new(AtomicBool::new(!has_admins)),
         assistant,
         assistant_default_model: config.assistant_model.clone(),
-        github_token: config.github_token.clone(),
-        github_allowed_owners: config
-            .github_allowed_owners
-            .iter()
-            .map(|o| o.trim().to_string())
-            .filter(|o| !o.is_empty())
-            .collect(),
-        github_app,
+        solutions: solutions::Solutions::github(github.clone()),
+        github,
     };
 
     let grpc_addr = config.grpc_addr.parse().context("parsing grpc address")?;

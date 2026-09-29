@@ -132,6 +132,8 @@ pub async fn create_course_with_profile(
         enrollment_token: Set(Uuid::new_v4().simple().to_string()),
         repo_url: Set(repo_url.map(str::to_string)),
         archived_at: Set(None),
+        solutions_ref: Set(None),
+        solutions_dir: Set(None),
         description: Set(profile.description.clone()),
         term: Set(profile.term.clone()),
         institution: Set(profile.institution.clone()),
@@ -150,6 +152,8 @@ pub async fn create_course_with_profile(
 pub struct CoursePatch {
     pub name: Option<String>,
     pub repo_url: Option<Option<String>>,
+    pub solutions_ref: Option<Option<String>>,
+    pub solutions_dir: Option<Option<String>>,
     pub description: Option<Option<String>>,
     pub term: Option<Option<String>>,
     pub institution: Option<Option<String>>,
@@ -161,6 +165,8 @@ impl CoursePatch {
     pub fn is_empty(&self) -> bool {
         self.name.is_none()
             && self.repo_url.is_none()
+            && self.solutions_ref.is_none()
+            && self.solutions_dir.is_none()
             && self.description.is_none()
             && self.term.is_none()
             && self.institution.is_none()
@@ -183,6 +189,12 @@ pub async fn update_course(
     }
     if let Some(repo_url) = &patch.repo_url {
         model.repo_url = Set(repo_url.clone());
+    }
+    if let Some(solutions_ref) = &patch.solutions_ref {
+        model.solutions_ref = Set(solutions_ref.clone());
+    }
+    if let Some(solutions_dir) = &patch.solutions_dir {
+        model.solutions_dir = Set(solutions_dir.clone());
     }
     if let Some(description) = &patch.description {
         model.description = Set(description.clone());

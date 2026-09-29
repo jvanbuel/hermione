@@ -57,6 +57,14 @@ async fn app() -> (AppState, Router) {
 }
 
 async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Router) {
+    let github = crate::github_access::GitHubAccess::default();
+    app_with(identity, crate::solutions::Solutions::github(github)).await
+}
+
+async fn app_with(
+    identity: crate::identity::Identity,
+    solutions: crate::solutions::Solutions,
+) -> (AppState, Router) {
     ensure_schema();
     let state = AppState {
         db: Database::connect(test_url())
@@ -72,9 +80,8 @@ async fn app_with_identity(identity: crate::identity::Identity) -> (AppState, Ro
         open_dev: Arc::new(AtomicBool::new(false)),
         assistant: crate::assistant::Assistant::new(None, None),
         assistant_default_model: "claude-opus-4-8".to_string(),
-        github_token: None,
-        github_allowed_owners: Vec::new(),
-        github_app: None,
+        github: crate::github_access::GitHubAccess::default(),
+        solutions,
     };
     let router = http::router(state.clone());
     (state, router)
@@ -460,6 +467,118 @@ async fn teacher_manages_course_settings() {
         .unwrap();
     let outsider = login(&app, &format!("outsider{s}"), "pw").await.unwrap();
     let resp = req_with_cookie(&app, "PATCH", &uri, &outsider, Some(r#"{"name":"nope"}"#)).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn reference_solution_settings_are_validated_stored_and_reported() {
+    let (state, app) = app().await;
+    let s = rnd();
+    let course = tenancy::create_course(&state.db, &format!("sol{s}"), "Sol", None)
+        .await
+        .unwrap();
+    let admin = tenancy::create_admin(&state.db, &format!("own{s}"), "pw")
+        .await
+        .unwrap();
+    tenancy::grant_membership(&state.db, admin.id, course.id)
+        .await
+        .unwrap();
+    let cookie = login(&app, &format!("own{s}"), "pw").await.unwrap();
+    let uri = format!("/api/courses/sol{s}");
+    let patch = |body: &'static str| {
+        let (app, uri, cookie) = (app.clone(), uri.clone(), cookie.clone());
+        async move { req_with_cookie(&app, "PATCH", &uri, &cookie, Some(body)).await }
+    };
+    let detail = || {
+        let (app, uri, cookie) = (app.clone(), uri.clone(), cookie.clone());
+        async move {
+            let resp = get_with_cookie(&app, &uri, &cookie).await;
+            serde_json::from_str::<serde_json::Value>(&body_string(resp).await).unwrap()
+        }
+    };
+    let listed = || {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        let slug = format!("sol{s}");
+        async move {
+            let resp = get_with_cookie(&app, "/api/courses", &cookie).await;
+            let all: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+            all.as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["slug"] == slug.as_str())
+                .cloned()
+                .unwrap()
+        }
+    };
+
+    // Nothing configured to begin with.
+    assert_eq!(listed().await["hasSolutions"], false);
+
+    // A branch and a folder are stored in their canonical form and reported.
+    let resp = patch(r#"{"solutionsRef":"  solutions ","solutionsDir":"answers/"}"#).await;
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let d = detail().await;
+    assert_eq!(
+        (d["solutionsRef"].as_str(), d["solutionsDir"].as_str()),
+        (Some("solutions"), Some("answers"))
+    );
+    let c = listed().await;
+    assert_eq!(c["hasSolutions"], true);
+    assert!(
+        c.get("solutionsRef").is_none(),
+        "the list says only whether, not where"
+    );
+
+    // Anything that could steer a GitHub request is refused, with a reason,
+    // and changes nothing.
+    for bad in [
+        r#"{"solutionsRef":"a b"}"#,
+        r#"{"solutionsRef":"x/../y"}"#,
+        r#"{"solutionsRef":"a?b=c"}"#,
+        r#"{"solutionsDir":"../secrets"}"#,
+        r#"{"solutionsDir":"/etc"}"#,
+        r#"{"solutionsDir":"a\\b"}"#,
+    ] {
+        let resp = patch(bad).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+        assert!(!body_string(resp).await.is_empty(), "{bad} says why");
+    }
+    let d = detail().await;
+    assert_eq!(
+        (d["solutionsRef"].as_str(), d["solutionsDir"].as_str()),
+        (Some("solutions"), Some("answers")),
+        "refusals change nothing"
+    );
+
+    // Each half clears on its own; with both gone the course has no solutions.
+    assert_eq!(
+        patch(r#"{"solutionsRef":null}"#).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        listed().await["hasSolutions"],
+        true,
+        "the folder alone is enough"
+    );
+    assert_eq!(
+        patch(r#"{"solutionsDir":""}"#).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(listed().await["hasSolutions"], false);
+
+    // Not somebody else's to change.
+    tenancy::create_admin(&state.db, &format!("out{s}"), "pw")
+        .await
+        .unwrap();
+    let outsider = login(&app, &format!("out{s}"), "pw").await.unwrap();
+    let resp = req_with_cookie(
+        &app,
+        "PATCH",
+        &uri,
+        &outsider,
+        Some(r#"{"solutionsRef":"x"}"#),
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
@@ -1481,5 +1600,341 @@ mod control_socket {
             .publish(&alice, Control::SnapshotRequest)
             .await;
         assert_eq!(next_frame(&mut socket).await, None);
+    }
+}
+
+/// A teacher, a course, a student's editor and a fake GitHub, wired through the
+/// real HTTP stack.
+mod reference_solutions {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::solutions::{Fake, FetchError, Solutions};
+
+    struct Class {
+        app: Router,
+        cookie: String,
+        slug: String,
+        token: String,
+        student: String,
+        fake: Arc<Fake>,
+        state: AppState,
+    }
+
+    /// `repo` is the course's linked repo; `solutions` its (ref, folder).
+    async fn class(fake: Fake, repo: Option<&str>, solutions: Option<(&str, &str)>) -> Class {
+        let fake = Arc::new(fake);
+        let (state, app) = app_with(
+            crate::identity::Identity::disabled(),
+            Solutions::new(fake.clone()),
+        )
+        .await;
+        let s = rnd();
+        let course = tenancy::create_course(&state.db, &format!("rs{s}"), "Rs", repo)
+            .await
+            .unwrap();
+        if let Some((git_ref, dir)) = solutions {
+            let patch = tenancy::CoursePatch {
+                solutions_ref: Some(Some(git_ref.to_string()).filter(|r| !r.is_empty())),
+                solutions_dir: Some(Some(dir.to_string()).filter(|d| !d.is_empty())),
+                ..Default::default()
+            };
+            tenancy::update_course(&state.db, course.id, &patch)
+                .await
+                .unwrap();
+        }
+        let admin = tenancy::create_admin(&state.db, &format!("rs{s}"), "pw")
+            .await
+            .unwrap();
+        tenancy::grant_membership(&state.db, admin.id, course.id)
+            .await
+            .unwrap();
+        let cookie = login(&app, &format!("rs{s}"), "pw").await.unwrap();
+        Class {
+            app,
+            cookie,
+            slug: format!("rs{s}"),
+            token: course.enrollment_token,
+            student: format!("st{s}"),
+            fake,
+            state,
+        }
+    }
+
+    impl Class {
+        /// The student's editor posts a file.
+        async fn posts(&self, relative_path: &str, content: &str, truncated: bool) {
+            let payload = serde_json::json!({
+                "student": self.student, "state": "file",
+                "path": format!("/w/{relative_path}"), "relativePath": relative_path,
+                "language": "c", "content": content, "truncated": truncated,
+                "baseline": {"kind": "untracked"},
+            });
+            let resp = self
+                .app
+                .clone()
+                .oneshot(
+                    Request::post("/api/file-snapshots")
+                        .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(payload.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        /// The teacher polls, optionally asking for the comparison.
+        async fn polls(&self, compare: bool) -> serde_json::Value {
+            let extra = if compare { "&compare=solution" } else { "" };
+            let uri = format!(
+                "/api/students/file?course={}&student={}{extra}",
+                self.slug, self.student
+            );
+            let resp = get_with_cookie(&self.app, &uri, &self.cookie).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            serde_json::from_str(&body_string(resp).await).unwrap()
+        }
+
+        fn fetches(&self) -> usize {
+            self.fake.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    const REPO: Option<&str> = Some("https://github.com/acme/cs101");
+
+    #[tokio::test]
+    async fn a_file_that_matches_the_solution_says_so() {
+        let fake = Fake::default().with("answers/ex1/a.c", Ok(Some("int main() {}\r\n".into())));
+        let c = class(fake, REPO, Some(("solutions", "answers"))).await;
+        c.posts("ex1/a.c", "int main() {}\n", false).await;
+        let v = c.polls(true).await;
+        assert_eq!(v["solution"]["state"], "identical");
+        assert_eq!(
+            v["solution"]["file"],
+            serde_json::json!({"path": "answers/ex1/a.c", "ref": "solutions"}),
+            "the reader sees which file it was checked against"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_that_differs_comes_back_as_rows_with_the_solution_as_the_old_side() {
+        let fake = Fake::default().with("ex1/a.c", Ok(Some("a\nb\nc\n".into())));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("ex1/a.c", "a\nB\nc\n", false).await;
+        let s = c.polls(true).await["solution"].clone();
+        assert_eq!(s["state"], "differs");
+        assert_eq!(
+            (s["added"].clone(), s["removed"].clone()),
+            (1.into(), 1.into())
+        );
+        let rows = &s["hunks"][0]["rows"];
+        assert_eq!(
+            rows[1]["sign"], "-",
+            "what the solution has and the student lacks"
+        );
+        assert_eq!(rows[1]["spans"][0][1], "b");
+        assert_eq!(rows[2]["sign"], "+");
+        assert_eq!(rows[2]["spans"][0][1], "B");
+    }
+
+    #[tokio::test]
+    async fn nothing_is_read_from_github_unless_the_teacher_asks() {
+        let fake = Fake::default().with("ex1/a.c", Ok(Some("x\n".into())));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("ex1/a.c", "x\n", false).await;
+        let v = c.polls(false).await;
+        assert!(v.get("solution").is_none());
+        assert_eq!(c.fetches(), 0, "an ordinary poll costs GitHub nothing");
+        assert_eq!(
+            v["latest"]["snapshot"]["state"], "file",
+            "the file itself still arrives"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_polls_read_the_solution_once() {
+        let fake = Fake::default().with("ex1/a.c", Ok(Some("x\n".into())));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("ex1/a.c", "x\n", false).await;
+        for _ in 0..5 {
+            c.polls(true).await;
+        }
+        assert_eq!(c.fetches(), 1);
+    }
+
+    #[tokio::test]
+    async fn every_way_of_having_nothing_to_compare_says_which() {
+        // No solutions configured.
+        let c = class(Fake::default(), REPO, None).await;
+        c.posts("a.c", "x\n", false).await;
+        assert_eq!(c.polls(true).await["solution"]["state"], "unconfigured");
+
+        // Configured, but no repository to read from.
+        let c = class(Fake::default(), None, Some(("solutions", ""))).await;
+        c.posts("a.c", "x\n", false).await;
+        let s = c.polls(true).await["solution"].clone();
+        assert_eq!(
+            (s["state"].as_str(), s["code"].as_str()),
+            (Some("unavailable"), Some("noRepository"))
+        );
+        assert!(s["message"]
+            .as_str()
+            .unwrap()
+            .contains("no linked repository"));
+
+        // A repository that isn't on GitHub.
+        let c = class(
+            Fake::default(),
+            Some("https://gitlab.com/acme/cs101"),
+            Some(("solutions", "")),
+        )
+        .await;
+        c.posts("a.c", "x\n", false).await;
+        assert_eq!(c.polls(true).await["solution"]["code"], "notGithub");
+        assert_eq!(c.fetches(), 0, "neither of those reached for GitHub");
+
+        // The solutions have no file for this one.
+        let c = class(Fake::default(), REPO, Some(("solutions", ""))).await;
+        c.posts("nope.c", "x\n", false).await;
+        let s = c.polls(true).await["solution"].clone();
+        assert_eq!(s["state"], "noReference");
+        assert_eq!(s["file"]["path"], "nope.c");
+
+        // GitHub said no.
+        let fake = Fake::default().with("a.c", Err(FetchError::Denied));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("a.c", "x\n", false).await;
+        let s = c.polls(true).await["solution"].clone();
+        assert_eq!(
+            (s["state"].as_str(), s["code"].as_str()),
+            (Some("unavailable"), Some("denied"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_buffer_that_was_cut_short_is_not_compared() {
+        let fake = Fake::default().with("a.c", Ok(Some("line 1\nline 2\n".into())));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("a.c", "line 1\n", true).await;
+        assert_eq!(
+            c.polls(true).await["solution"]["state"],
+            "uncomparable",
+            "else line 2 would show as missing from the student"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_that_is_not_inside_the_repo_is_never_looked_up() {
+        let c = class(Fake::default(), REPO, Some(("solutions", "answers"))).await;
+        for hostile in [
+            "/etc/passwd",
+            "../../other/secret.c",
+            "a/../../b.c",
+            "C:\\Users\\x\\a.c",
+        ] {
+            c.posts(hostile, "x\n", false).await;
+            assert_eq!(
+                c.polls(true).await["solution"]["state"],
+                "noReference",
+                "{hostile}"
+            );
+        }
+        assert_eq!(c.fetches(), 0, "none of them became a request");
+    }
+
+    #[tokio::test]
+    async fn only_a_file_can_be_compared() {
+        let c = class(Fake::default(), REPO, Some(("solutions", ""))).await;
+        let v = c.polls(true).await;
+        assert!(v.get("solution").is_none(), "nothing has arrived yet");
+
+        let payload = serde_json::json!({"student": c.student, "state": "declined"});
+        c.app
+            .clone()
+            .oneshot(
+                Request::post("/api/file-snapshots")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", c.token))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            c.polls(true).await.get("solution").is_none(),
+            "a refusal has nothing to compare"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_courses_teachers_can_ask_and_students_never_get_the_solution() {
+        let fake = Fake::default().with("a.c", Ok(Some("SECRET ANSWER\n".into())));
+        let c = class(fake, REPO, Some(("solutions", ""))).await;
+        c.posts("a.c", "x\n", false).await;
+        let uri = format!(
+            "/api/students/file?course={}&student={}&compare=solution",
+            c.slug, c.student
+        );
+
+        // The student's own credential (the enrollment token) opens nothing here.
+        let resp = c
+            .app
+            .clone()
+            .oneshot(
+                Request::get(&uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {}", c.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Nor does another course's teacher.
+        let s = rnd();
+        let other = tenancy::create_course(&c.state.db, &format!("ro{s}"), "Ro", None)
+            .await
+            .unwrap();
+        let outsider = tenancy::create_admin(&c.state.db, &format!("ro{s}"), "pw")
+            .await
+            .unwrap();
+        tenancy::grant_membership(&c.state.db, outsider.id, other.id)
+            .await
+            .unwrap();
+        let theirs = login(&c.app, &format!("ro{s}"), "pw").await.unwrap();
+        let resp = get_with_cookie(&c.app, &uri, &theirs).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // The ingest response — all a student's editor ever sees — carries nothing.
+        let resp = c
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/file-snapshots")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", c.token))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"student": c.student, "state": "empty"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!body_string(resp).await.contains("SECRET"));
+        assert_eq!(c.fetches(), 0, "and none of that read the solution");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_comparison_is_refused() {
+        let c = class(Fake::default(), REPO, Some(("solutions", ""))).await;
+        let uri = format!(
+            "/api/students/file?course={}&student={}&compare=everything",
+            c.slug, c.student
+        );
+        let resp = get_with_cookie(&c.app, &uri, &c.cookie).await;
+        assert!(resp.status().is_client_error(), "{}", resp.status());
     }
 }

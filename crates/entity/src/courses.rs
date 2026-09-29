@@ -22,6 +22,12 @@ pub struct Model {
     /// When the course was archived (dropped from the active switcher). `None`
     /// while the course is active.
     pub archived_at: Option<DateTimeWithTimeZone>,
+    /// Where reference solutions live in the linked repo: a branch, tag or commit
+    /// (`None` ⇒ the repo's default branch)…
+    pub solutions_ref: Option<String>,
+    /// …and a folder under which a student's file path is looked up (`None` ⇒ the
+    /// repo root). A course with neither set has no solutions configured.
+    pub solutions_dir: Option<String>,
     // --- descriptive profile (all optional) ---
     /// What the course is about.
     pub description: Option<String>,

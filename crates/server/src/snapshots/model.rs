@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::compare::{self, Comparison};
 use super::diff::{Colour, Diff};
 use super::report;
 use crate::highlight::{Grammar, Highlighted};
@@ -171,6 +172,31 @@ impl File {
             highlight,
             baseline,
         }
+    }
+}
+
+impl File {
+    /// The path of this file relative to the student's workspace.
+    pub fn relative_path(&self) -> &str {
+        &self.relative_path
+    }
+
+    /// This buffer against a reference solution's text. Coloured like the rest
+    /// of the file, so the rows read the same as a commit diff.
+    pub fn compared_with(&self, reference: &str) -> Comparison {
+        // A buffer that was cut short has fewer lines than the file: comparing
+        // it would show everything past the cut as missing from the student.
+        if self.text.truncated {
+            return Comparison::Uncomparable;
+        }
+        let hunks = compare::hunks(reference, &self.text.content);
+        if hunks.is_empty() {
+            return Comparison::Identical;
+        }
+        let colour = Grammar::detect(&self.language, &self.relative_path)
+            .zip(self.highlight.as_deref())
+            .map(|(grammar, buffer)| Colour { buffer, grammar });
+        Comparison::Differs(Diff::new(hunks, colour))
     }
 }
 

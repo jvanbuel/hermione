@@ -25,6 +25,7 @@
 //! [`model`] is what we keep and show; [`diff`] turns a diff into rows;
 //! [`store`] holds the latest per student.
 
+mod compare;
 mod diff;
 mod intraline;
 mod model;
@@ -40,12 +41,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
-use crate::http::{resolve_course, CourseCtx, VerifiedStudent};
+use crate::http::{authorized_course, CourseCtx, VerifiedStudent};
+use crate::solutions::{GitHubRepo, RepoPath, SolutionsSource};
 use crate::state::{AppState, Control};
 use crate::student::{Slot, Student};
 
 pub use store::SnapshotStore;
 
+use compare::{Comparison, Located, Solution, Unavailable};
 use model::Snapshot;
 use report::Report;
 use store::Latest;
@@ -90,6 +93,17 @@ pub async fn ingest(
 pub struct FileQuery {
     student: Student,
     course: Option<String>,
+    /// What else to answer with besides the file itself.
+    compare: Option<Compare>,
+}
+
+/// An extra thing a teacher can ask for alongside the file. An enum, so an
+/// unknown value is refused at the door rather than silently ignored.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Compare {
+    /// The file against the course's reference solution.
+    Solution,
 }
 
 /// What a teacher polls for.
@@ -101,6 +115,10 @@ struct View<'a> {
     connected: bool,
     /// The latest snapshot, or `None` until the editor answers.
     latest: Option<LatestView<'a>>,
+    /// The file against the reference solution — only when asked for, and only
+    /// once there is a file to compare.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    solution: Option<Solution>,
 }
 
 #[derive(Serialize)]
@@ -130,12 +148,13 @@ pub async fn student_file(
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<FileQuery>,
 ) -> Response {
-    let course = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let course =
+        match authorized_course(&state, ctx, q.course.as_deref().unwrap_or("default")).await {
+            Ok(course) => course,
+            Err(resp) => return resp,
+        };
     let slot = Slot {
-        course,
+        course: course.id,
         student: q.student,
     };
 
@@ -147,6 +166,12 @@ pub async fn student_file(
     }
 
     let latest = state.snapshots.latest(&slot);
+    let solution = match (q.compare, latest.as_ref()) {
+        (Some(Compare::Solution), Some(latest)) => {
+            solution_for(&state, &course, &latest.snapshot).await
+        }
+        _ => None,
+    };
     Json(View {
         student: &slot.student,
         // Whether an editor is there to answer is the hub's to say, not
@@ -154,6 +179,65 @@ pub async fn student_file(
         // throttled.
         connected: state.ctrl_hub.is_listening(&slot).await,
         latest: latest.as_ref().map(LatestView::from),
+        solution,
     })
     .into_response()
+}
+
+/// The student's file against the course's reference solution: find the
+/// reference in the linked repo, then compare. `None` when the snapshot isn't a
+/// file, since a refusal or an empty editor has nothing to compare.
+///
+/// Every way this can come up empty is a [`Comparison`] of its own, so the page
+/// says which — no repo linked, GitHub unreachable, no solution for this file —
+/// instead of showing an empty pane.
+async fn solution_for(
+    state: &AppState,
+    course: &hermione_entity::courses::Model,
+    snapshot: &std::sync::Arc<Snapshot>,
+) -> Option<Solution> {
+    let Snapshot::File(file) = &**snapshot else {
+        return None;
+    };
+    let Some(source) = SolutionsSource::from_course(course) else {
+        return Some(Solution::without_file(Comparison::Unconfigured));
+    };
+    let Some(repo_url) = course.repo_url.as_deref() else {
+        return Some(Solution::without_file(Comparison::Unavailable(
+            Unavailable::no_repository(),
+        )));
+    };
+    let Some(repo) = GitHubRepo::parse(repo_url) else {
+        return Some(Solution::without_file(Comparison::Unavailable(
+            Unavailable::not_github(),
+        )));
+    };
+    // The path is whatever the student's editor said. One that isn't a path
+    // inside a repository (an absolute path, a `..`) has no solution.
+    let Ok(path) = RepoPath::parse(file.relative_path()) else {
+        return Some(Solution::without_file(Comparison::NoReference));
+    };
+    let located = Located::new(&source.locate(&path), source.git_ref());
+
+    let reference = match state.solutions.read(&repo, &source, &path).await {
+        Ok(Some(text)) => text,
+        Ok(None) => return Some(Solution::new(Comparison::NoReference, Some(located))),
+        Err(e) => {
+            return Some(Solution::new(
+                Comparison::Unavailable(e.into()),
+                Some(located),
+            ))
+        }
+    };
+
+    // Diffing two files is CPU work, and this runs once per poll.
+    let snapshot = std::sync::Arc::clone(snapshot);
+    let compared = tokio::task::spawn_blocking(move || match &*snapshot {
+        Snapshot::File(file) => Some(file.compared_with(&reference)),
+        _ => None,
+    })
+    .await
+    .ok()
+    .flatten()?;
+    Some(Solution::new(compared, Some(located)))
 }

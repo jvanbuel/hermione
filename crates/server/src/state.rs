@@ -145,14 +145,9 @@ pub struct AppState {
     pub assistant: crate::assistant::Assistant,
     /// Default model for newly configured course assistants.
     pub assistant_default_model: String,
-    /// GitHub token for reading a linked repo's folders when seeding exercises.
-    /// `None` still works for public repos.
-    pub github_token: Option<String>,
-    /// Owners/orgs whose repos may be read with `github_token`. The token is
-    /// never sent to any other owner (guards against cross-repo disclosure).
-    pub github_allowed_owners: Vec<String>,
-    /// GitHub App for minting repository-scoped installation tokens when seeding
-    /// exercises. Preferred over `github_token`: it reads only the linked repo,
-    /// enforcing the authorization boundary at runtime. `None` disables it.
-    pub github_app: Option<crate::github_app::GithubApp>,
+    /// How the server may read a course's linked GitHub repo: seeding exercises,
+    /// drawing the repo tree, reading reference solutions.
+    pub github: crate::github_access::GitHubAccess,
+    /// Reference solutions read from a course's linked repo, cached briefly.
+    pub solutions: crate::solutions::Solutions,
 }

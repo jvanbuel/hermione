@@ -640,19 +640,7 @@ pub async fn resolve_course(
     slug: Option<String>,
 ) -> Result<Uuid, Response> {
     let slug = slug.unwrap_or_else(|| "default".to_string());
-    let Some(course) = tenancy::course_by_slug(&state.db, &slug).await else {
-        return Err((StatusCode::NOT_FOUND, "no such course").into_response());
-    };
-    match ctx {
-        AuthCtx::OpenDev => Ok(course.id),
-        AuthCtx::Admin(admin_id) => {
-            if tenancy::is_member(&state.db, admin_id, course.id).await {
-                Ok(course.id)
-            } else {
-                Err((StatusCode::FORBIDDEN, "not a member of this course").into_response())
-            }
-        }
-    }
+    authorized_course(state, ctx, &slug).await.map(|c| c.id)
 }
 
 /// Loads a session and checks the caller may access its course.
@@ -691,16 +679,21 @@ struct CourseDto {
     archived: bool,
     /// Included so the switcher can show it as a tooltip.
     description: Option<String>,
+    /// Whether reference solutions are set up, so the file pane knows whether to
+    /// offer the Solution view. Only the fact — never any solution text.
+    has_solutions: bool,
 }
 
 impl From<hermione_entity::courses::Model> for CourseDto {
     fn from(c: hermione_entity::courses::Model) -> Self {
+        let has_solutions = crate::solutions::SolutionsSource::from_course(&c).is_some();
         CourseDto {
             slug: c.slug,
             name: c.name,
             repo_url: c.repo_url,
             archived: c.archived_at.is_some(),
             description: c.description,
+            has_solutions,
         }
     }
 }
@@ -902,24 +895,10 @@ async fn create_course_for_teacher(
         if let Some(repo) = course.repo_url.as_deref() {
             match crate::repo::parse_github(repo) {
                 Some((owner, name)) => {
-                    // Prefer a repository-scoped GitHub App installation token: it
-                    // can read only this repo, so a teacher can't disclose an
-                    // unrelated repo's folders. Fall back to the shared PAT, which
-                    // is only sent to allow-listed owners for the same reason, and
-                    // finally to unauthenticated (public-repo) seeding.
-                    let app_token = match &state.github_app {
-                        Some(app) => match app.installation_token(&owner, &name).await {
-                            Ok(t) => Some(t),
-                            Err(e) => {
-                                tracing::debug!("no GitHub App token for {owner}/{name}: {e}");
-                                None
-                            }
-                        },
-                        None => None,
-                    };
-                    let allowed = crate::repo::owner_allowed(&owner, &state.github_allowed_owners);
-                    let pat = state.github_token.as_deref().filter(|_| allowed);
-                    let token = app_token.as_deref().or(pat);
+                    // Repo-scoped App token first, then the shared token for
+                    // allow-listed owners, then unauthenticated (public repos).
+                    let credential = state.github.credential_for(&owner, &name).await;
+                    let token = credential.token();
                     match crate::repo::discover_exercises(&owner, &name, token).await {
                         Ok(found) if !found.is_empty() => {
                             let items: Vec<(String, String, i32)> = found
@@ -938,7 +917,7 @@ async fn create_course_for_teacher(
                         // When a PAT exists but this owner isn't allow-listed (and no
                         // app token covered it), say so — otherwise the failure looks
                         // like a missing token.
-                        Err(e) if token.is_none() && state.github_token.is_some() && !allowed => {
+                        Err(e) if credential.withheld() => {
                             seed_note = Some(format!(
                                 "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS \
                                  and no GitHub App is installed on the repo, so no token was used"
@@ -970,7 +949,7 @@ async fn create_course_for_teacher(
 
 /// Resolves a course by slug and checks the caller may access it, returning the
 /// full model (unlike `resolve_course`, which returns just the id).
-async fn authorized_course(
+pub(crate) async fn authorized_course(
     state: &AppState,
     ctx: AuthCtx,
     slug: &str,
@@ -997,6 +976,9 @@ struct CourseDetailDto {
     repo_url: Option<String>,
     enrollment_token: String,
     archived: bool,
+    /// Where reference solutions live in the linked repo (see `solutions`).
+    solutions_ref: Option<String>,
+    solutions_dir: Option<String>,
     members: Vec<String>,
     description: Option<String>,
     term: Option<String>,
@@ -1034,17 +1016,8 @@ async fn course_tree(
         return note("the linked repository is not on GitHub");
     };
 
-    // Same token ladder as course seeding: a repo-scoped GitHub App token
-    // first, then the shared PAT but only for allow-listed owners, then
-    // unauthenticated for public repos. A teacher must not be able to point a
-    // course at an arbitrary private repo and read its layout.
-    let app_token = match &state.github_app {
-        Some(app) => app.installation_token(&owner, &name).await.ok(),
-        None => None,
-    };
-    let allowed = crate::repo::owner_allowed(&owner, &state.github_allowed_owners);
-    let pat = state.github_token.as_deref().filter(|_| allowed);
-    let token = app_token.as_deref().or(pat);
+    let credential = state.github.credential_for(&owner, &name).await;
+    let token = credential.token();
 
     match crate::repo::fetch_dirs(&owner, &name, token).await {
         Ok(dirs) => Json(serde_json::json!({ "dirs": dirs })).into_response(),
@@ -1071,6 +1044,8 @@ async fn get_course(
         repo_url: course.repo_url,
         enrollment_token: course.enrollment_token,
         archived: course.archived_at.is_some(),
+        solutions_ref: course.solutions_ref,
+        solutions_dir: course.solutions_dir,
         members,
         description: course.description,
         term: course.term,
@@ -1088,6 +1063,12 @@ struct UpdateCourseBody {
     #[serde(default, deserialize_with = "double_option")]
     repo_url: Option<Option<String>>,
     archived: Option<bool>,
+    /// Where reference solutions live in the linked repo: a branch/tag/commit
+    /// and a folder. Present ⇒ set, `null`/empty ⇒ clear.
+    #[serde(default, deserialize_with = "double_option")]
+    solutions_ref: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    solutions_dir: Option<Option<String>>,
     // Profile fields: present ⇒ set, `null`/empty ⇒ clear.
     #[serde(default, deserialize_with = "double_option")]
     description: Option<Option<String>>,
@@ -1110,6 +1091,18 @@ fn patch_field(v: &Option<Option<String>>) -> Option<Option<String>> {
     })
 }
 
+/// A PATCH field that must parse: like [`patch_field`], but a non-empty value is
+/// run through `parse`, and the canonical form is what gets stored.
+fn validated(
+    v: &Option<Option<String>>,
+    parse: impl Fn(&str) -> Result<String, crate::solutions::Invalid>,
+) -> Result<Option<Option<String>>, crate::solutions::Invalid> {
+    match patch_field(v) {
+        Some(Some(raw)) => parse(&raw).map(|canonical| Some(Some(canonical))),
+        other => Ok(other),
+    }
+}
+
 /// PATCH /api/courses/{slug} — rename, relink the repo, edit the profile, or
 /// (un)archive.
 async fn patch_course(
@@ -1123,6 +1116,21 @@ async fn patch_course(
         Err(resp) => return resp,
     };
 
+    // Reference-solution settings end up in requests to GitHub, so they are
+    // parsed, and stored in their canonical form, or refused.
+    let solutions_ref = match validated(&body.solutions_ref, |s| {
+        crate::solutions::GitRef::parse(s).map(|r| r.to_string())
+    }) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    let solutions_dir = match validated(&body.solutions_dir, |s| {
+        crate::solutions::RepoPath::parse(s).map(|p| p.to_string())
+    }) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
     let patch = tenancy::CoursePatch {
         name: body
             .name
@@ -1131,6 +1139,8 @@ async fn patch_course(
             .filter(|s| !s.is_empty())
             .map(str::to_string),
         repo_url: patch_field(&body.repo_url),
+        solutions_ref,
+        solutions_dir,
         description: patch_field(&body.description),
         term: patch_field(&body.term),
         institution: patch_field(&body.institution),
