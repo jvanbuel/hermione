@@ -413,8 +413,9 @@
       light: { background: '#ffffff', foreground: '#1f2328', cursor: '#1f2328' },
     };
     const openPanes = new Map(); // student -> { term, fit, es, el }
-    // Struggle thresholds (seconds) — mirror the backend so the sparkline marks
-    // the same watch/help lines the server uses to flag students.
+    // Fallback struggle thresholds (seconds), used only when the server sends none.
+    // Normally each exercise carries its own, derived from how the class is doing
+    // on it, so the sparkline marks the same lines the server flags students by.
     const WATCH_SECS = 10 * 60, HELP_SECS = 25 * 60;
     const HINT_KEY = 'hermione.hintSeen';
 
@@ -609,10 +610,11 @@
     // A compact distribution strip of time-on-exercise across the group, with
     // the watch/help thresholds marked — so "everyone's piled up at 25 min"
     // reads as a shape, not a number you compute by scanning cards.
-    function sparkline(students) {
+    function sparkline(students, st) {
       if (!students.length) return '';
+      const watchAt = (st && st.watchSecs) || WATCH_SECS, helpAt = (st && st.helpSecs) || HELP_SECS;
       const W = 232, H = 22, padX = 4;
-      const max = Math.max(HELP_SECS, ...students.map(s => s.secondsOnExercise || 0));
+      const max = Math.max(helpAt, ...students.map(s => s.secondsOnExercise || 0));
       const x = secs => padX + (W - 2 * padX) * Math.min(secs, max) / max;
       // Severity is ordinal (ok < watch < help), so encode it TWICE: by hue and
       // by mark size. Red↔amber are indistinguishable under deuteranopia, so the
@@ -621,7 +623,7 @@
       // that pile up at the same time.
       const sev = s => s.struggle === 'help' ? 2 : s.struggle === 'watch' ? 1 : 0;
       const R = [2.8, 3.6, 4.4], COLOR = ['var(--green)', 'var(--amber)', 'var(--red)'];
-      const thr = [WATCH_SECS, HELP_SECS]
+      const thr = [watchAt, helpAt]
         .map(t => `<line class="thr" x1="${x(t).toFixed(1)}" y1="1" x2="${x(t).toFixed(1)}" y2="${H - 1}"/>`)
         .join('');
       // Draw calm dots first so the ones that need attention sit on top.
@@ -629,7 +631,7 @@
         .map(s => { const k = sev(s);
           return `<circle cx="${x(s.secondsOnExercise || 0).toFixed(1)}" cy="${H / 2}" r="${R[k]}" fill="${COLOR[k]}" fill-opacity="0.9" stroke="var(--surface)" stroke-width="1"/>`; })
         .join('');
-      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group; larger dots are students who need attention">${thr}${dots}</svg>`;
+      return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Time-on-exercise distribution across the group; larger dots are students who need attention"><title>${st && st.cohortSize ? `Lines mark outliers of this exercise's class: watch past ${fmtDuration(watchAt)}, help past ${fmtDuration(helpAt)}` : `Lines mark ${fmtDuration(watchAt)} and ${fmtDuration(helpAt)} — too few students to compare against the class`}</title>${thr}${dots}</svg>`;
     }
 
     function summaryHtml(st) {
@@ -657,7 +659,7 @@
       const summary = col.querySelector('.summary');
       if (isEx) {
         summary.style.display = '';
-        summary.innerHTML = summaryHtml(st) + sparkline(g.students);
+        summary.innerHTML = summaryHtml(st) + sparkline(g.students, st);
       } else {
         summary.style.display = 'none';
         summary.innerHTML = '';

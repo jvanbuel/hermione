@@ -363,7 +363,7 @@ mod tests {
             recent: 40,
             since_last_secs: Some(5),
         };
-        let (level, _) = assess(Signals::default(), WATCH_SECS + 60, edits);
+        let (level, _) = assess(Signals::default(), WATCH_SECS + 60, edits, Fences::FIXED);
         // Long time on the exercise still warrants a look, but steady typing
         // must not escalate it.
         assert_eq!(level, "watch");
@@ -375,6 +375,7 @@ mod tests {
             Signals::default(),
             WATCH_SECS + 60,
             stalled_for(STALL_SECS + 60),
+            Fences::FIXED,
         );
         assert_eq!(level, "watch");
         assert!(reasons.iter().any(|r| r.starts_with("no edits for")));
@@ -386,7 +387,12 @@ mod tests {
             errors: 1,
             failed_runs: 0,
         };
-        let (level, _) = assess(sig, WATCH_SECS + 60, stalled_for(STALL_SECS + 60));
+        let (level, _) = assess(
+            sig,
+            WATCH_SECS + 60,
+            stalled_for(STALL_SECS + 60),
+            Fences::FIXED,
+        );
         assert_eq!(level, "help");
     }
 
@@ -395,8 +401,13 @@ mod tests {
         // `since_last_secs: None` is what an older extension produces; it must
         // read exactly as it did before the signal existed.
         let quiet = EditActivity::default();
-        let (with, reasons) = assess(Signals::default(), WATCH_SECS + 60, quiet);
-        let (without, _) = assess(Signals::default(), WATCH_SECS + 60, EditActivity::default());
+        let (with, reasons) = assess(Signals::default(), WATCH_SECS + 60, quiet, Fences::FIXED);
+        let (without, _) = assess(
+            Signals::default(),
+            WATCH_SECS + 60,
+            EditActivity::default(),
+            Fences::FIXED,
+        );
         assert_eq!(with, without);
         assert!(!reasons.iter().any(|r| r.starts_with("no edits")));
     }
@@ -404,8 +415,71 @@ mod tests {
     #[test]
     fn a_stall_early_in_an_exercise_is_not_a_signal() {
         // Thinking for five minutes at the start of a problem is normal.
-        let (level, _) = assess(Signals::default(), 60, stalled_for(STALL_SECS + 60));
+        let (level, _) = assess(
+            Signals::default(),
+            60,
+            stalled_for(STALL_SECS + 60),
+            Fences::FIXED,
+        );
         assert_eq!(level, "ok");
+    }
+
+    const MIN: i64 = 60;
+
+    #[test]
+    fn a_small_cohort_falls_back_to_fixed_thresholds() {
+        assert_eq!(Fences::for_cohort(&[60, 90, 120]), Fences::FIXED);
+    }
+
+    #[test]
+    fn thresholds_follow_the_class_not_a_fixed_clock() {
+        // A hard exercise: everyone takes 30-45 minutes. 27 minutes is quick.
+        let hard = Fences::for_cohort(&[30 * MIN, 34 * MIN, 38 * MIN, 41 * MIN, 45 * MIN]);
+        assert!(hard.watch > 45 * MIN, "{hard:?}");
+        let (level, _) = assess(Signals::default(), 40 * MIN, EditActivity::default(), hard);
+        assert_eq!(level, "ok", "a normal time for this exercise is not a flag");
+
+        // An easy one: everyone is done in 6-9 minutes. 20 minutes stands out.
+        let easy = Fences::for_cohort(&[6 * MIN, 7 * MIN, 7 * MIN, 8 * MIN, 9 * MIN]);
+        let (level, reasons) = assess(Signals::default(), 20 * MIN, EditActivity::default(), easy);
+        assert_eq!(level, "help");
+        assert!(
+            reasons.iter().any(|r| r.contains("class median 7 min")),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_tight_class_does_not_flag_a_few_extra_minutes() {
+        let tight = Fences::for_cohort(&[2 * MIN, 2 * MIN, 2 * MIN, 2 * MIN, 2 * MIN]);
+        assert_eq!((tight.watch, tight.help), (MIN_WATCH_SECS, MIN_HELP_SECS));
+        let (level, _) = assess(Signals::default(), 4 * MIN, EditActivity::default(), tight);
+        assert_eq!(level, "ok");
+    }
+
+    #[test]
+    fn a_slow_student_who_is_typing_is_watched_not_helped() {
+        let f = Fences::for_cohort(&[8 * MIN, 9 * MIN, 10 * MIN, 10 * MIN, 12 * MIN]);
+        let typing = EditActivity {
+            recent: 30,
+            since_last_secs: Some(10),
+        };
+        let (level, _) = assess(Signals::default(), f.help + MIN, typing, f);
+        assert_eq!(level, "watch");
+        let (level, _) = assess(
+            Signals::default(),
+            f.help + MIN,
+            stalled_for(STALL_SECS + 60),
+            f,
+        );
+        assert_eq!(level, "help");
+    }
+
+    #[test]
+    fn quantiles_interpolate() {
+        assert_eq!(quantile(&[10, 20, 30, 40], 0.5), 25);
+        assert_eq!(quantile(&[10, 20, 30, 40], 0.25), 18);
+        assert_eq!(quantile(&[7], 0.75), 7);
     }
 }
 
@@ -455,9 +529,70 @@ struct OverviewStudent {
     last_edit_unix_ms: Option<i64>,
 }
 
-/// Time-on-exercise thresholds (seconds) that contribute to struggle level.
+/// Fixed time-on-exercise thresholds (seconds). Only used when a cohort is too
+/// small to say what "long" means for an exercise; otherwise the thresholds are
+/// derived from how the class itself is doing (see `Fences::for_cohort`).
 const WATCH_SECS: i64 = 10 * 60;
 const HELP_SECS: i64 = 25 * 60;
+
+/// Fewest students needed on an exercise before its own distribution is trusted.
+const MIN_COHORT: usize = 5;
+
+/// However tightly a class clusters, nobody is an outlier before this long.
+const MIN_WATCH_SECS: i64 = 5 * 60;
+const MIN_HELP_SECS: i64 = 10 * 60;
+
+/// Where "unusually long on this exercise" starts, for one exercise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fences {
+    watch: i64,
+    help: i64,
+    /// Students the thresholds were derived from; 0 when they are the fixed ones.
+    cohort: usize,
+    /// Median time on the exercise across that cohort (seconds).
+    median: i64,
+}
+
+impl Fences {
+    const FIXED: Fences = Fences {
+        watch: WATCH_SECS,
+        help: HELP_SECS,
+        cohort: 0,
+        median: 0,
+    };
+
+    /// Outliers of the distribution of time spent on one exercise, counting
+    /// everyone who has spent time on it — including students who moved on, whose
+    /// finished times say how long the exercise takes.
+    ///
+    /// Tukey's fences: past `Q3 + 1.5·IQR` is a mild outlier (watch), past
+    /// `Q3 + 3·IQR` an extreme one (help). Times are right-skewed and a tight
+    /// class has a tiny IQR, so each fence is also held to a multiple of the
+    /// median and to a floor, or a few extra minutes would flag someone.
+    fn for_cohort(times: &[i64]) -> Fences {
+        if times.len() < MIN_COHORT {
+            return Fences::FIXED;
+        }
+        let mut t = times.to_vec();
+        t.sort_unstable();
+        let (q1, med, q3) = (quantile(&t, 0.25), quantile(&t, 0.5), quantile(&t, 0.75));
+        let iqr = q3 - q1;
+        Fences {
+            watch: (q3 + iqr * 3 / 2).max(med * 3 / 2).max(MIN_WATCH_SECS),
+            help: (q3 + iqr * 3).max(med * 2).max(MIN_HELP_SECS),
+            cohort: t.len(),
+            median: med,
+        }
+    }
+}
+
+/// Linear-interpolated quantile of an ascending, non-empty slice.
+fn quantile(sorted: &[i64], q: f64) -> i64 {
+    let pos = q * (sorted.len() - 1) as f64;
+    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+    let frac = pos - lo as f64;
+    (sorted[lo] as f64 + (sorted[hi] - sorted[lo]) as f64 * frac).round() as i64
+}
 
 /// A present student who has been on the same exercise a while but hasn't typed
 /// for this long is more likely stuck than working.
@@ -493,7 +628,12 @@ fn struggle_rank(level: &str) -> u8 {
 }
 
 /// Combines signals into a struggle level and the reasons for it.
-fn assess(sig: Signals, seconds_on_exercise: i64, edits: EditActivity) -> (String, Vec<String>) {
+fn assess(
+    sig: Signals,
+    seconds_on_exercise: i64,
+    edits: EditActivity,
+    fences: Fences,
+) -> (String, Vec<String>) {
     let mut reasons = Vec::new();
     if sig.errors > 0 {
         reasons.push(format!(
@@ -509,25 +649,31 @@ fn assess(sig: Signals, seconds_on_exercise: i64, edits: EditActivity) -> (Strin
             if sig.failed_runs == 1 { "" } else { "s" }
         ));
     }
-    if seconds_on_exercise >= WATCH_SECS {
-        reasons.push(format!("{} min on this exercise", seconds_on_exercise / 60));
+    let long = seconds_on_exercise >= fences.watch;
+    if long {
+        let mins = seconds_on_exercise / 60;
+        reasons.push(if fences.cohort > 0 {
+            format!("{mins} min, class median {} min", fences.median / 60)
+        } else {
+            format!("{mins} min on this exercise")
+        });
     }
 
     // Time-on-task alone is ambiguous: a student steadily writing code for 20
     // minutes looks identical to one who has been staring at the same screen.
     // A long stretch with no typing is what separates them.
-    let stalled = seconds_on_exercise >= WATCH_SECS
-        && matches!(edits.since_last_secs, Some(s) if s >= STALL_SECS);
+    let stalled = long && matches!(edits.since_last_secs, Some(s) if s >= STALL_SECS);
     if let (true, Some(s)) = (stalled, edits.since_last_secs) {
         reasons.push(format!("no edits for {} min", s / 60));
     }
+    // Slow but visibly working: an outlier on the clock, not necessarily stuck.
+    let working = edits.recent > 0 && matches!(edits.since_last_secs, Some(s) if s < STALL_SECS);
 
     let help = sig.errors >= 3
         || sig.failed_runs >= 2
-        || seconds_on_exercise >= HELP_SECS
+        || (seconds_on_exercise >= fences.help && !working)
         || (stalled && (sig.errors >= 1 || sig.failed_runs >= 1));
-    let watch =
-        stalled || sig.errors >= 1 || sig.failed_runs >= 1 || seconds_on_exercise >= WATCH_SECS;
+    let watch = stalled || sig.errors >= 1 || sig.failed_runs >= 1 || long;
     let level = if help {
         "help"
     } else if watch {
@@ -555,9 +701,14 @@ struct GroupStats {
     need_help: usize,
     /// Median time-on-exercise across the group (seconds).
     median_seconds: i64,
+    /// Time-on-exercise past which a student is an outlier for this exercise.
+    watch_secs: i64,
+    help_secs: i64,
+    /// Students the thresholds came from; 0 means the fixed fallback.
+    cohort_size: usize,
 }
 
-fn group_stats(students: &[OverviewStudent]) -> GroupStats {
+fn group_stats(students: &[OverviewStudent], fences: Fences) -> GroupStats {
     let mut secs: Vec<i64> = students.iter().map(|s| s.seconds_on_exercise).collect();
     secs.sort_unstable();
     let median = if secs.is_empty() {
@@ -570,6 +721,9 @@ fn group_stats(students: &[OverviewStudent]) -> GroupStats {
         active: students.iter().filter(|s| s.status == "active").count(),
         need_help: students.iter().filter(|s| s.struggle == "help").count(),
         median_seconds: median,
+        watch_secs: fences.watch,
+        help_secs: fences.help,
+        cohort_size: fences.cohort,
     }
 }
 
@@ -577,6 +731,7 @@ fn into_group(
     exercise: String,
     title: String,
     mut students: Vec<OverviewStudent>,
+    fences: Fences,
 ) -> ExerciseGroup {
     // Struggling students float to the top, then by time-on-exercise.
     students.sort_by(|a, b| {
@@ -584,7 +739,7 @@ fn into_group(
             .cmp(&struggle_rank(&a.struggle))
             .then(b.seconds_on_exercise.cmp(&a.seconds_on_exercise))
     });
-    let stats = group_stats(&students);
+    let stats = group_stats(&students, fences);
     ExerciseGroup {
         exercise,
         title,
@@ -659,6 +814,34 @@ pub async fn overview(
         per_student.entry(ev.student.clone()).or_default().push(ev);
     }
 
+    // What "long" means depends on the exercise, so measure each one against the
+    // whole class's time on it — not only the students on it right now.
+    let mut cohort_times: HashMap<String, Vec<i64>> = HashMap::new();
+    for evs in per_student.values() {
+        let mut per_exercise: HashMap<&str, i64> = HashMap::new();
+        for pair in evs.windows(2) {
+            let (cur, next) = (&pair[0], &pair[1]);
+            let Some(ex) = cur.exercise.as_deref() else {
+                continue;
+            };
+            if cur.kind == "close" {
+                continue;
+            }
+            *per_exercise.entry(ex).or_default() +=
+                (next.at.timestamp() - cur.at.timestamp()).clamp(0, IDLE_GAP_SECS);
+        }
+        for (ex, secs) in per_exercise {
+            if secs > 0 {
+                cohort_times.entry(ex.to_string()).or_default().push(secs);
+            }
+        }
+    }
+    let fences: HashMap<String, Fences> = cohort_times
+        .into_iter()
+        .map(|(ex, times)| (ex, Fences::for_cohort(&times)))
+        .collect();
+    let fences_for = |ex: &str| fences.get(ex).copied().unwrap_or(Fences::FIXED);
+
     let now = Utc::now().timestamp();
     let mut students: Vec<OverviewStudent> = Vec::new();
 
@@ -721,7 +904,14 @@ pub async fn overview(
 
         let terminal = terminals.get(&student);
         let sig = signals.get(&student).copied().unwrap_or_default();
-        let (struggle, struggle_reasons) = assess(sig, seconds_on_exercise, edit_activity);
+        let (struggle, struggle_reasons) = assess(
+            sig,
+            seconds_on_exercise,
+            edit_activity,
+            current_exercise
+                .as_deref()
+                .map_or(Fences::FIXED, &fences_for),
+        );
 
         students.push(OverviewStudent {
             student: student.clone(),
@@ -767,13 +957,15 @@ pub async fn overview(
     let mut output: Vec<ExerciseGroup> = Vec::new();
     for ex in defined {
         let students = groups.remove(&ex.slug).unwrap_or_default();
-        output.push(into_group(ex.slug, ex.title, students));
+        let f = fences_for(&ex.slug);
+        output.push(into_group(ex.slug, ex.title, students, f));
     }
     let mut leftover: Vec<(String, Vec<OverviewStudent>)> = groups.into_iter().collect();
     leftover.sort_by(|a, b| a.0.cmp(&b.0));
     for (slug, students) in leftover {
         let title = slug.clone();
-        output.push(into_group(slug, title, students));
+        let f = fences_for(&slug);
+        output.push(into_group(slug, title, students, f));
     }
 
     no_exercise.sort_by_key(|s| std::cmp::Reverse(s.last_seen_unix_ms));

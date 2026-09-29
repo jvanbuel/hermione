@@ -64,18 +64,20 @@ function buildFixtures(now) {
       {
         exercise: 'ex01-pointers',
         title: 'Exercise 1 — Pointers & memory',
-        stats: { total: 6, active: 5, needHelp: 1, medianSeconds: 8 * 60 },
+        // Six students is enough to derive fences from the class itself.
+        stats: { total: 6, active: 5, needHelp: 1, medianSeconds: 8 * 60,
+                 watchSecs: 23 * 60 + 15, helpSecs: 34 * 60 + 30, cohortSize: 6 },
         students: [
           // Ada and Grace are the contrast the edit signal exists for: both have
           // a big number on the clock, but only one of them is still writing code.
           { student: 'Ada Lovelace', file: 'src/list.c', exercise: 'ex01-pointers',
             status: 'active', secondsOnExercise: 27 * 60, lastSeenUnixMs: mins(0.1),
-            struggle: 'help', struggleReasons: ['27 min on one file', 'many failing compiles', 'no edits for 18 min'],
+            struggle: 'help', struggleReasons: ['many failing compiles', '27 min, class median 8 min', 'no edits for 18 min'],
             editsRecent: 0, lastEditUnixMs: mins(18),
             terminalSessionId: 's1', studentSource: 'github', repo: 'ada/systems-hw' },
           { student: 'Grace Hopper', file: 'src/list.c', exercise: 'ex01-pointers',
-            status: 'active', secondsOnExercise: 13 * 60, lastSeenUnixMs: mins(0.3),
-            struggle: 'watch', struggleReasons: ['13 min, no test run'],
+            status: 'active', secondsOnExercise: 24 * 60, lastSeenUnixMs: mins(0.3),
+            struggle: 'watch', struggleReasons: ['24 min, class median 8 min'],
             editsRecent: 62, lastEditUnixMs: mins(0.2),
             terminalSessionId: 's2', studentSource: 'github', repo: 'grace/hw' },
           { student: 'Alan Turing', file: 'src/main.c', exercise: 'ex01-pointers',
@@ -99,7 +101,8 @@ function buildFixtures(now) {
       {
         exercise: 'ex02-strings',
         title: 'Exercise 2 — Strings',
-        stats: { total: 4, active: 2, needHelp: 0, medianSeconds: 5 * 60 },
+        stats: { total: 4, active: 2, needHelp: 0, medianSeconds: 5 * 60,
+                 watchSecs: 10 * 60, helpSecs: 25 * 60, cohortSize: 0 },
         students: [
           { student: 'Dennis Ritchie', file: 'strings.c', exercise: 'ex02-strings',
             status: 'active', secondsOnExercise: 12 * 60, lastSeenUnixMs: mins(0.2),
@@ -123,7 +126,8 @@ function buildFixtures(now) {
       {
         exercise: 'ex03-trees',
         title: 'Exercise 3 — Binary trees',
-        stats: { total: 3, active: 1, needHelp: 0, medianSeconds: 2 * 60 },
+        stats: { total: 3, active: 1, needHelp: 0, medianSeconds: 2 * 60,
+                 watchSecs: 10 * 60, helpSecs: 25 * 60, cohortSize: 0 },
         students: [
           { student: 'Edsger Dijkstra', file: 'tree.c', exercise: 'ex03-trees',
             status: 'active', secondsOnExercise: 2 * 60, lastSeenUnixMs: mins(0.6),
