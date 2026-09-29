@@ -349,6 +349,19 @@
     .time .typing { color: var(--green-text); display: inline-flex; align-items: center; gap: 4px; }
 
     .empty { margin: auto; color: var(--fg-muted); padding: 40px; text-align: center; }
+    .checklist { max-width: 560px; text-align: left; }
+    .checklist h2 { margin: 0 0 4px; font-size: var(--fs-lg); color: var(--fg); font-weight: 600; }
+    .checklist > p { margin: 0 0 16px; }
+    .checklist ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+    .checklist li { display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+    .checklist .tick { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+      border: 2px solid var(--border); font-size: var(--fs-sm); font-weight: 700; color: #fff; }
+    .checklist li.done .tick { background: var(--primary-bg); border-color: transparent; }
+    .checklist .btn { white-space: nowrap; flex: none; }
+    .checklist .what { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .checklist .what b { color: var(--fg); font-weight: 600; }
+    .checklist .what span:not(.visually-hidden) { font-size: var(--fs-sm); color: var(--fg-muted); }
     .empty.first-run { max-width: 420px; display: flex; flex-direction: column; align-items: center; gap: 6px; }
     .empty.first-run h2 { margin: 0; font-size: var(--fs-lg); color: var(--fg); font-weight: 600; }
     .empty.first-run p { margin: 0 0 8px; font-size: var(--fs-base); }
@@ -976,11 +989,8 @@
       board.classList.toggle('tree', currentView === 'tree');
       board.classList.toggle('table', currentView === 'table');
 
-      if (data.exercises.length === 0 && data.noExercise.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'empty';
-        empty.innerHTML = 'No exercises defined and no activity yet.<br>Define exercises and start the recorder + VSCode extension.';
-        board.replaceChildren(empty);
+      if (allStudents.length === 0) {
+        renderChecklist(board, data);
         return;
       }
       if (currentView === 'tree') renderTree(board, data);
@@ -1307,6 +1317,47 @@
       document.getElementById('course').style.display = courses.length ? '' : 'none';
       updateCourseRepo();
       if (!courses.length) showNoCourses();
+    }
+
+    // A course nobody has joined yet: what to do, in order, with each step's
+    // button beside it and what is already done ticked. It stands where the board
+    // would be and goes away by itself when the first student appears.
+    function renderChecklist(board, data) {
+      const course = courseList.find(c => c.slug === currentCourse);
+      const steps = [
+        { done: !!(course && course.repoUrl), title: 'Link the course repo',
+          text: 'The repo\'s folders become the exercises and the file tree.', action: 'Course settings', id: 'settings' },
+        { done: data.exercises.length > 0, title: 'Define the exercises',
+          text: 'Seeded from the repo, or listed by hand.', action: 'Edit exercises', id: 'exercises' },
+        { done: false, title: 'Give students the enrollment token',
+          text: 'Commit it as .hermione.json in the repo, or share the token.', action: 'Show token', id: 'token' },
+        { done: false, title: 'Students open the repo in VS Code',
+          text: 'With the Hermione extension installed. They appear here as soon as they open a file.' },
+      ];
+      // Rebuilding on every refresh would take a button out from under a
+      // keyboard user; only redraw when something a step shows has changed.
+      const sig = [currentCourse, ...steps.map(s => s.done)].join('|');
+      if (board.dataset.checklist === sig && board.querySelector('.checklist')) return;
+      board.dataset.checklist = sig;
+      const el = document.createElement('div');
+      el.className = 'empty checklist';
+      el.innerHTML = `<h2>Connect your students</h2>
+        <p>Nobody has joined ${esc(course ? course.name : 'this course')} yet.</p>
+        <ol>${steps.map(s => `<li class="${s.done ? 'done' : ''}">
+          <span class="tick" aria-hidden="true">${s.done ? '✓' : ''}</span>
+          <div class="what"><b>${esc(s.title)}</b>${s.done ? '<span class="visually-hidden"> (done)</span>' : ''}<span>${esc(s.text)}</span></div>
+          ${s.action ? `<button class="btn" type="button" data-step="${s.id}">${esc(s.action)}</button>` : ''}</li>`).join('')}</ol>`;
+      board.replaceChildren(el);
+      board.classList.remove('tree', 'table');
+      el.querySelector('[data-step="settings"]').addEventListener('click', openCourseSettings);
+      el.querySelector('[data-step="exercises"]').addEventListener('click', () => openExercisesEditor(currentCourse, course ? course.name : currentCourse));
+      el.querySelector('[data-step="token"]').addEventListener('click', async () => {
+        try {
+          const res = await fetch(`/api/courses/${encodeURIComponent(currentCourse)}`);
+          if (!res.ok) throw new Error(res.status);
+          showEnrollmentToken(await res.json(), 'Enrollment token');
+        } catch (_) { toast('Could not load the enrollment token'); }
+      });
     }
 
     // First-run: a teacher with no courses yet. Prompt them to create one rather
@@ -2212,21 +2263,34 @@
 
     // A course is only useful once students can enroll into it, so surface the
     // freshly minted enrollment token with a one-click copy.
-    function showEnrollmentToken(c) {
+    function showEnrollmentToken(c, heading = 'Course created') {
+      // What a student's editor reads: commit this as .hermione.json in the
+      // course repo and every student who opens it is enrolled, with no setup.
+      const snippet = JSON.stringify({ backend: location.origin, token: c.enrollmentToken || '' }, null, 2);
       const { backdrop, close } = openDialog(`
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="et-title">
-          <h2 id="et-title">Course created</h2>
+          <h2 id="et-title">${esc(heading)}</h2>
           <p class="sub">Share this enrollment token so students (recorder / extension) can join ${esc(c.name)}.</p>
           <div class="field">
             <label for="et-token">Enrollment token</label>
             <input type="text" id="et-token" class="mono" readonly value="${esc(c.enrollmentToken || '')}" />
           </div>
+          <div class="field">
+            <label for="et-file">Or commit this as <code>.hermione.json</code> in the course repo</label>
+            <textarea id="et-file" class="mono" readonly rows="4">${esc(snippet)}</textarea>
+          </div>
           <div class="row">
-            <span class="ct" id="et-msg"></span>
-            <button class="btn" id="et-copy" type="button">Copy</button>
+            <span class="ct" id="et-msg" role="status"></span>
+            <button class="btn" id="et-copy-file" type="button">Copy .hermione.json</button>
+            <button class="btn" id="et-copy" type="button">Copy token</button>
             <button class="btn primary" id="et-done" type="button">Done</button>
           </div>
         </div>`);
+      backdrop.querySelector('#et-copy-file').addEventListener('click', async () => {
+        const area = backdrop.querySelector('#et-file');
+        try { await navigator.clipboard.writeText(snippet); backdrop.querySelector('#et-msg').textContent = 'Copied'; }
+        catch (_) { area.select(); backdrop.querySelector('#et-msg').textContent = 'Press ⌘/Ctrl+C'; }
+      });
       backdrop.querySelector('#et-done').addEventListener('click', close);
       const field = backdrop.querySelector('#et-token');
       field.focus(); field.select();

@@ -42,6 +42,14 @@ fires while the tab is in the background, once per student.
 What you have seen is remembered by this browser (per course, for the day). A
 co-teacher's browser keeps its own.
 
+### A course nobody has joined yet
+
+Until the first student appears the board shows a short checklist instead of empty
+columns: link the repo, define the exercises, give students the token, and have
+them open the repo in VS Code. Steps that are done are ticked, each has its button,
+and **Show token** offers a ready-to-commit `.hermione.json` (backend and token) as
+well as the bare token. The checklist goes away on its own when someone joins.
+
 ## The tree view
 
 ![The tree view: repository folders, with students on the files they have open](images/teacher-tree.png)
