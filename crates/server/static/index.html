@@ -357,7 +357,7 @@
      * control keeps its size: a pane whose close button had been pushed out of
      * sight could not be closed. */
     .pane-head .who { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .pane-head > .avatar, .pane-head .modes, .pane-head .diff, .pane-head .solution, .pane-head .close { flex: 0 0 auto; }
+    .pane-head > .avatar, .pane-head .modes, .pane-head .diff, .pane-head .since, .pane-head .solution, .pane-head .close { flex: 0 0 auto; }
     .pane-head .close {
       margin-left: auto; cursor: pointer; color: var(--fg-muted); border: none; background: none;
       font-size: var(--fs-lg); line-height: 1; padding: 2px 6px; border-radius: 5px;
@@ -372,16 +372,16 @@
       display: flex; gap: 2px; background: var(--bg);
       border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px;
     }
-    .pane-head .modes button, .pane-head .diff, .pane-head .solution {
+    .pane-head .modes button, .pane-head .diff, .pane-head .since, .pane-head .solution {
       cursor: pointer; border: none; background: none; color: var(--fg-muted);
       font: inherit; font-size: var(--fs-xs); padding: 2px 10px; border-radius: 4px;
       min-height: 24px;
     }
-    .pane-head .modes button:hover, .pane-head .diff:hover, .pane-head .solution:hover { color: var(--fg); }
+    .pane-head .modes button:hover, .pane-head .diff:hover, .pane-head .since:hover, .pane-head .solution:hover { color: var(--fg); }
     .pane-head .modes button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); }
-    .pane-head .diff, .pane-head .solution { border: 1px solid var(--border-subtle); display: none; }
-    .pane.mode-file .pane-head .diff, .pane.mode-file .pane-head .solution { display: block; }
-    .pane-head .diff[aria-pressed="true"], .pane-head .solution[aria-pressed="true"] {
+    .pane-head .diff, .pane-head .since, .pane-head .solution { border: 1px solid var(--border-subtle); display: none; }
+    .pane.mode-file .pane-head .diff, .pane.mode-file .pane-head .since, .pane.mode-file .pane-head .solution { display: block; }
+    .pane-head .diff[aria-pressed="true"], .pane-head .since[aria-pressed="true"], .pane-head .solution[aria-pressed="true"] {
       background: var(--accent-wash); color: var(--accent-text);
       border-color: color-mix(in srgb, var(--accent) 45%, transparent);
     }
@@ -612,6 +612,7 @@
 
   <script src="/assets/common.js"></script>
   <script src="/assets/attention.js"></script>
+  <script src="/assets/since.js"></script>
   <script>
     // xterm palettes per theme — kept in step with --bg / --fg in tokens.css so
     // the embedded terminals match the page chrome (dark = chalkboard slate).
@@ -1371,6 +1372,7 @@
             <button type="button" data-mode="file" aria-pressed="false">File</button>
           </div>
           <button class="diff" type="button" aria-pressed="false" title="Show the diff against their last commit">Diff</button>
+          ${Since.anything(localStorage, lookKey(student), Date.now()) ? '<button class="since" type="button" aria-pressed="false" title="Show what changed since you last had this file open">Since last look</button>' : ''}
           ${hasSolutions() ? '<button class="solution" type="button" aria-pressed="false" title="Compare with the reference solution">Solution</button>' : ''}
           <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s pane">${ICONS.close}</button>
         </div>
@@ -1387,6 +1389,7 @@
         b.addEventListener('click', () => setPaneMode(student, b.dataset.mode));
       }
       pane.querySelector('.diff').addEventListener('click', () => setPaneView(student, 'changes'));
+      pane.querySelector('.since')?.addEventListener('click', () => setPaneView(student, 'since'));
       pane.querySelector('.solution')?.addEventListener('click', () => setPaneView(student, 'solution'));
 
       const body = pane.querySelector('.term');
@@ -1407,7 +1410,8 @@
         el: pane, sessionId, term, fit,
         es: null,                 // the terminal stream, open only while the terminal is showing
         mode: 'term',             // 'term' | 'file'
-        view: 'code',             // in file mode: 'code' | 'changes' | 'solution'
+        view: 'code',             // in file mode: 'code' | 'changes' | 'since' | 'solution'
+        sinceCache: null,         // the comparison with the last look, for the snapshot it was made from
         last: null,               // the latest reply for the file view
         lastKey: null, lastHead: null, lastLine: null,   // what was last drawn, so a poll that changed nothing redraws nothing
         pollFailed: false,        // the file view's last poll did not arrive
@@ -1441,6 +1445,7 @@
     function closeTerminal(student) {
       const p = openPanes.get(student);
       if (!p) return;
+      rememberLook(student, p);
       if (p.es) p.es.close();
       if (p.term) p.term.dispose();
       p.el.remove();
@@ -1530,6 +1535,7 @@
       if (!p) return;
       p.view = p.view === view ? 'code' : view;
       p.el.querySelector('.diff').setAttribute('aria-pressed', String(p.view === 'changes'));
+      p.el.querySelector('.since')?.setAttribute('aria-pressed', String(p.view === 'since'));
       p.el.querySelector('.solution')?.setAttribute('aria-pressed', String(p.view === 'solution'));
       p.lastKey = null;
       // Code and changes are both in the snapshot already, so that's a redraw.
@@ -1621,8 +1627,9 @@
       const solution = p.view === 'solution' ? data.solution : undefined;
       // The solution can change without the snapshot doing so (the cache
       // refreshes when the teacher has pushed a fix), so it is part of the key.
+      const since = p.view === 'since' ? sinceOf(student, p, s, latest.rev) : undefined;
       const key = `${p.view}:${latest.rev}:${solutionKey(solution)}`;
-      const headHtml = snapshotHead(s, latest.ageMs, p.pollFailed, p.view, solution);
+      const headHtml = snapshotHead(s, latest.ageMs, p.pollFailed, p.view, solution, since);
       if (headHtml !== p.lastHead) {
         head.innerHTML = headHtml; // freshness still ticks
         p.lastHead = headHtml;
@@ -1631,11 +1638,13 @@
       p.lastKey = key;
 
       const html = p.view === 'solution' ? solutionHtml(solution)
+        : p.view === 'since' ? sinceHtml(s, since)
         : p.view === 'changes' ? diffHtml(s) : codeHtml(s);
       const prevTop = body.scrollTop;
       body.classList.toggle('empty', html === null);
       body.innerHTML = html === null
-        ? `<div class="note" role="status">${p.view === 'solution' ? solutionNote(solution, esc(student)) : diffNote(s, esc(student))}</div>`
+        ? `<div class="note" role="status">${p.view === 'solution' ? solutionNote(solution, esc(student))
+            : p.view === 'since' ? sinceNote(since, esc(student)) : diffNote(s, esc(student))}</div>`
         : `<div class="rows">${html}</div>`;
       if (html === null) return;
 
@@ -1648,7 +1657,7 @@
       body.scrollTop = cur ? Math.max(0, cur.offsetTop - body.clientHeight / 2) : prevTop;
     }
 
-    function snapshotHead(s, ageMs, connectionLost, view, solution) {
+    function snapshotHead(s, ageMs, connectionLost, view, solution, since) {
       const chip = (text, cls = '') => `<span class="chip${cls && ' ' + cls}">${text}</span>`;
       const bits = [`<span class="fp" title="${esc(s.path)}">${esc(s.relativePath)}</span>`];
       if (s.dirty) bits.push(chip('unsaved'));
@@ -1658,8 +1667,68 @@
       } else if (ageMs > SNAPSHOT_STALE_MS) {
         bits.push(chip(timeAgo(Date.now() - ageMs), 'stale'));
       }
-      bits.push(`<span class="sum">${view === 'solution' ? solutionSummary(solution) : diffSummary(s.baseline)}</span>`);
+      bits.push(`<span class="sum">${view === 'solution' ? solutionSummary(solution)
+        : view === 'since' ? sinceSummary(since) : diffSummary(s.baseline)}</span>`);
       return bits.join('');
+    }
+
+    // ---- since you last looked ----
+    // The file as it was when this teacher last closed the student's pane (or the
+    // page), kept in this browser and compared with the file now. See since.js.
+    const lookKey = (student) => `hermione.look:${currentCourse}:${student}`;
+
+    function rememberLook(student, p) {
+      const shown = p.last && p.last.latest && p.last.latest.snapshot;
+      if (!shown || shown.state !== 'file' || shown.truncated) return;
+      Since.remember(localStorage, lookKey(student), shown.path, shown.content, Date.now());
+    }
+    // A pane left open when the tab goes away is a look too.
+    window.addEventListener('pagehide', () => openPanes.forEach((p, student) => rememberLook(student, p)));
+
+    /** The comparison, made once per snapshot rather than once per redraw. */
+    function sinceOf(student, p, s, rev) {
+      if (p.sinceCache && p.sinceCache.rev === rev) return p.sinceCache.result;
+      const before = Since.recall(localStorage, lookKey(student), s.path, Date.now());
+      const result = !before ? { state: 'never' }
+        : s.truncated ? { state: 'uncomparable', at: before.at }
+        : { ...Since.diff(before.content, s.content), at: before.at };
+      p.sinceCache = { rev, result };
+      return result;
+    }
+
+    function sinceSummary(r) {
+      if (!r) return '';
+      const ago = r.at ? ` since you looked ${timeAgo(r.at)}` : '';
+      switch (r.state) {
+        case 'differs': return `<span class="plus">+${r.added}</span> <span class="minus">−${r.removed}</span>${ago}`;
+        case 'same': return `no changes${ago}`;
+        case 'uncomparable': return 'too large to compare';
+        default: return 'first time you have opened this file';
+      }
+    }
+
+    function sinceHtml(s, r) {
+      if (!r || r.state !== 'differs') return null;
+      // The new side of every row is a line of the buffer on screen, so it takes
+      // the server's highlighting; a removed line has none and is drawn plain.
+      const hl = s.highlight;
+      return hunksHtml({
+        hunks: r.hunks.map(h => ({
+          ...h,
+          rows: h.rows.map(row => ({
+            ...row,
+            spans: (row.new !== null && hl && hl[row.new - 1]) || [['', row.text]],
+          })),
+        })),
+      });
+    }
+
+    function sinceNote(r, student) {
+      switch (r && r.state) {
+        case 'same': return `No changes to this file since you last looked, ${timeAgo(r.at)}.`;
+        case 'uncomparable': return 'This file is too large to compare with the last look.';
+        default: return `You haven't had this file of <b>${student}</b>'s open before — there is nothing to compare it with yet.`;
+      }
     }
 
     // ---- the reference solution view ----

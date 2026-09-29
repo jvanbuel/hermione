@@ -93,6 +93,19 @@ It says when there is nothing to compare with:
 - *The diff is too large to show.* Very large changes are cut rather than sent
   whole.
 
+### Since you last looked
+
+Did your hint work? Open a student's file, say what you like, close the pane, and
+come back later: **Since last look** shows exactly what changed in that file since
+you last had it open — additions in green, removals in red, with a few lines of
+context, and how long ago you looked.
+
+This browser keeps the file as it was when you closed the pane (or the tab), for
+the last few files per student, for a day. It is kept only in your browser: the
+server stores nothing extra, and a co-teacher's browser has its own memory. The
+button appears once there is a previous look to compare with; a file too large to
+compare says so.
+
 ### Solution
 
 ![The file against the reference solution](images/teacher-file-solution.png)

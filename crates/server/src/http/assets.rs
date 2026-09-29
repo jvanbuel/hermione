@@ -86,6 +86,7 @@ mod tests {
                 "assets/attention.js",
                 "application/javascript; charset=utf-8",
             ),
+            ("assets/since.js", "application/javascript; charset=utf-8"),
         ] {
             assert!(
                 asset(path).is_some_and(|b| !b.is_empty()),
@@ -100,9 +101,8 @@ mod tests {
             }
         }
         let board = String::from_utf8(asset("index.html").unwrap().to_vec()).unwrap();
-        assert!(
-            board.contains("/assets/attention.js"),
-            "the board loads attention.js"
-        );
+        for script in ["/assets/attention.js", "/assets/since.js"] {
+            assert!(board.contains(script), "the board loads {script}");
+        }
     }
 }
