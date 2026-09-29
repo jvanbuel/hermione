@@ -10,6 +10,7 @@
 #   LABEL        filename prefix, e.g. before/after (default: shot)
 #   STATIC_DIR   path to crates/server/static (default: inferred from repo)
 #   PORT         server port (default: an unlikely-busy 8799)
+#   SCALE        device pixel ratio (default 2; use 1 for small files, e.g. for docs)
 #   PW_CHROMIUM  chromium binary (default: /opt/pw-browsers/chromium, else the
 #                local Playwright browser cache)
 set -euo pipefail

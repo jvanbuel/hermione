@@ -167,6 +167,9 @@ cd vscode-extension && npm install && npm run compile
 # then press F5 in VSCode to launch an Extension Development Host
 ```
 
+For a tour of what teachers see, with screenshots, read the
+[teacher's guide](docs/teacher-guide.md).
+
 ### 6. (Optional) Watch a file
 
 With the extension installed, a student's pane on the board has a
@@ -202,10 +205,10 @@ line and compared word by word (`similar`, over words, whitespace runs and singl
 symbols); a marked span carries a third element, `[class, text, 1]`, and the page
 underlines it in the row's colour. A pair that shares less than half of the
 shorter line's text (spacing doesn't count), or would be marked from end to end,
-is left to the row's wash. The
-mark is an underline rather than the stronger background GitHub uses because the
-syntax colours already sit just above 4.5:1 on the row washes, and a second wash
-under the changed words would take them below it.
+is left to the row's wash. The mark is an underline rather than the stronger
+background GitHub uses because the syntax colours already sit just above 4.5:1
+on the row washes, and a second wash under the changed words would take them
+below it.
 
 The contents of a file are **pulled, never pushed**: the backend asks that one
 student's editor for a snapshot only while a teacher has their file pane open,

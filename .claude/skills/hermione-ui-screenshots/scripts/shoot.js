@@ -51,7 +51,7 @@ async function shoot(page, url, file, opts = {}) {
   for (const theme of ['dark', 'light']) {
     const ctx = await browser.newContext({
       viewport: { width: 1440, height: 900 },
-      deviceScaleFactor: 2,
+      deviceScaleFactor: Number(process.env.SCALE || 2),
       colorScheme: theme === 'light' ? 'light' : 'dark',
     });
     await ctx.addInitScript(freezeTime);
