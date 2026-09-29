@@ -98,9 +98,10 @@ pub async fn ingest(
             .is_some_and(|r| r.starts_with('/'))
     }) {
         crate::exercises::list_for_course(&state.db, course_id)
-            .await
-            .map(|rows| rows.into_iter().map(|r| r.slug).collect())
-            .unwrap_or_default()
+            .await?
+            .into_iter()
+            .map(|r| r.slug)
+            .collect()
     } else {
         Vec::new()
     };
@@ -766,7 +767,7 @@ pub async fn overview(
     );
     let events = events?;
     let recent_sessions = recent_sessions?;
-    let defined = defined.unwrap_or_default();
+    let defined = defined?;
 
     // Latest terminal session per student (within this course), plus struggle
     // signals (errors / failed runs) from each student's recent sessions.

@@ -1141,12 +1141,7 @@ async fn find_or_create_conversation(
     course_id: Uuid,
     student: &str,
 ) -> Result<assistant_conversations::Model, DbErr> {
-    if let Some(c) = assistant_conversations::Entity::find()
-        .filter(assistant_conversations::Column::CourseId.eq(course_id))
-        .filter(assistant_conversations::Column::Student.eq(student))
-        .one(&state.db)
-        .await?
-    {
+    if let Some(c) = find_conversation(state, course_id, student).await? {
         return Ok(c);
     }
     let now = Utc::now();
@@ -1158,8 +1153,25 @@ async fn find_or_create_conversation(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    assistant_conversations::Entity::insert(model)
+    match assistant_conversations::Entity::insert(model)
         .exec_with_returning(&state.db)
+        .await
+    {
+        Ok(created) => Ok(created),
+        // A double-submit raced us to the (course, student) row: use theirs.
+        Err(e) => find_conversation(state, course_id, student).await?.ok_or(e),
+    }
+}
+
+async fn find_conversation(
+    state: &AppState,
+    course_id: Uuid,
+    student: &str,
+) -> Result<Option<assistant_conversations::Model>, DbErr> {
+    assistant_conversations::Entity::find()
+        .filter(assistant_conversations::Column::CourseId.eq(course_id))
+        .filter(assistant_conversations::Column::Student.eq(student))
+        .one(&state.db)
         .await
 }
 

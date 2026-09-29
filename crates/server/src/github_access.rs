@@ -25,16 +25,25 @@ use crate::repo::owner_allowed;
 /// One client is built and shared: a `Client` is a handle to a connection pool,
 /// so cloning it is cheap and keeps connections to GitHub alive between reads.
 pub fn client() -> reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .expect("a plain HTTPS client always builds")
-        })
-        .clone()
+    fn build() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("a plain HTTPS client always builds")
+    }
+    // Pooled connections live on the runtime that opened them, and every test
+    // has a runtime of its own, so tests get a fresh client rather than a
+    // pool whose connections died with an earlier test.
+    #[cfg(test)]
+    {
+        build()
+    }
+    #[cfg(not(test))]
+    {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(build).clone()
+    }
 }
 
 /// The GitHub credentials the server was configured with.

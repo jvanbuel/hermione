@@ -143,7 +143,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running database migrations")?;
 
-    let mut has_admins = tenancy::count_admins(&db).await > 0;
+    // A failed count must stop startup, not read as "no admins": that would open
+    // the dashboard to everyone on a deployment that has some.
+    let mut has_admins = tenancy::count_admins(&db)
+        .await
+        .context("counting admin accounts")?
+        > 0;
 
     // Seeding the first admin here closes the window in which a fresh
     // deployment serves an unauthenticated dashboard. It only ever runs on an

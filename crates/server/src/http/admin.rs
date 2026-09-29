@@ -25,8 +25,11 @@ pub(super) async fn create_admin_handler(
     let admin = tenancy::create_admin(&state.db, &body.username, &body.password)
         .await
         .map_err(|e| match e {
-            tenancy::CreateAdminError::Db(e) => ApiError::from(e),
-            e @ tenancy::CreateAdminError::Hash(_) => ApiError::internal(e),
+            tenancy::CreateAdminError::Db(e) => ApiError::already_exists_or_internal(
+                e,
+                "an admin with that username already exists",
+            ),
+            e => ApiError::internal(e),
         })?;
     // First admin created: lock down the dashboard.
     state.open_dev.store(false, Ordering::Relaxed);
@@ -70,7 +73,10 @@ pub(super) async fn create_course_handler(
         repo_url.as_deref(),
         &profile,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        ApiError::already_exists_or_internal(e, "a course with that slug already exists")
+    })?;
     Ok(Json(serde_json::json!({
         "slug": course.slug,
         "name": course.name,

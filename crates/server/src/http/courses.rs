@@ -200,7 +200,13 @@ async fn seed_exercises(state: &AppState, course: &courses::Model) -> (usize, Op
         .collect();
     match crate::exercises::upsert(&state.db, course.id, &items).await {
         Ok(()) => (items.len(), None),
-        Err(e) => (0, Some(format!("could not save exercises: {e}"))),
+        Err(e) => {
+            tracing::error!(error = %e, course = %course.slug, "could not save seeded exercises");
+            (
+                0,
+                Some("could not save the exercises found in the repo".to_string()),
+            )
+        }
     }
 }
 
@@ -229,7 +235,11 @@ pub(super) async fn create_course_for_teacher(
         repo_url.as_deref(),
         &create_profile(&body),
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        // Lost a race with a same-slug create that passed the check above.
+        ApiError::already_exists_or_internal(e, "a course with that slug already exists")
+    })?;
 
     // The creating teacher becomes a member; open-dev callers aren't a specific
     // admin, so there's nobody to grant (they can already see every course).

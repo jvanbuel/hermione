@@ -76,12 +76,18 @@ impl ApiError {
 
 impl From<sea_orm::DbErr> for ApiError {
     fn from(e: sea_orm::DbErr) -> Self {
+        Self::internal(e)
+    }
+}
+
+impl ApiError {
+    /// A failed insert of something the caller asked to create: a unique
+    /// violation means it already exists (their doing, so `message`), anything
+    /// else is ours. Only for inserts the caller chose to make — elsewhere a
+    /// unique violation is a race, not their mistake.
+    pub fn already_exists_or_internal(e: sea_orm::DbErr, message: &'static str) -> Self {
         match e.sql_err() {
-            // The one database failure that is the caller's doing: what they
-            // asked to create is already there.
-            Some(sea_orm::SqlErr::UniqueConstraintViolation(_)) => {
-                Self::conflict("that already exists")
-            }
+            Some(sea_orm::SqlErr::UniqueConstraintViolation(_)) => Self::conflict(message),
             _ => Self::internal(e),
         }
     }
@@ -152,7 +158,8 @@ mod tests {
         ));
         // Only a recognised unique violation is the caller's doing (the
         // integration tests cover a real duplicate); anything else is ours.
-        assert_eq!(read(dup.into()).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        let err = ApiError::already_exists_or_internal(dup, "taken");
+        assert_eq!(read(err).await.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

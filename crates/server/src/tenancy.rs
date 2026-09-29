@@ -38,6 +38,8 @@ fn verify_password(password: &str, hash: &str) -> bool {
 pub enum CreateAdminError {
     #[error("could not hash the password: {0}")]
     Hash(String),
+    #[error("the hashing task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
     #[error(transparent)]
     Db(#[from] DbErr),
 }
@@ -50,8 +52,7 @@ pub async fn create_admin(
     // Argon2 is intentionally CPU-heavy; keep it off the async worker threads.
     let owned = password.to_string();
     let hash = tokio::task::spawn_blocking(move || hash_password(&owned))
-        .await
-        .map_err(|e| CreateAdminError::Hash(e.to_string()))?
+        .await?
         .map_err(|e| CreateAdminError::Hash(e.to_string()))?;
     let model = admins::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -85,8 +86,8 @@ pub async fn verify_login(
     Ok(ok.then_some(admin.id))
 }
 
-pub async fn count_admins(db: &DatabaseConnection) -> u64 {
-    admins::Entity::find().count(db).await.unwrap_or(0)
+pub async fn count_admins(db: &DatabaseConnection) -> Result<u64, DbErr> {
+    admins::Entity::find().count(db).await
 }
 
 pub async fn admin_by_username(

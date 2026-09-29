@@ -190,10 +190,9 @@ async fn a_duplicate_username_is_a_conflict_and_leaks_no_database_text() {
     else {
         panic!("a second admin with the same username must be refused");
     };
-    let resp = crate::error::ApiError::from(dup).into_response();
+    let resp = crate::error::ApiError::already_exists_or_internal(dup, "taken").into_response();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
-    let body = body_string(resp).await;
-    assert!(!body.contains("admins"), "database text leaked: {body}");
+    assert_eq!(body_string(resp).await, "taken");
 }
 
 #[tokio::test]
