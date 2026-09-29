@@ -3,8 +3,6 @@
 //! Behind a trait so everything above it — the cache, the comparison, the
 //! endpoint — is tested against an in-memory fake instead of the network.
 
-use std::time::Duration;
-
 use super::source::{GitRef, RepoPath};
 use crate::github_access::GitHubAccess;
 
@@ -87,14 +85,7 @@ impl GitHub {
     }
 
     fn with_base(access: GitHubAccess, base: reqwest::Url) -> Self {
-        // No redirects: GitHub redirects renamed and transferred repos, and
-        // reqwest keeps the Authorization header on a same-host redirect, so
-        // following one could send the token for one owner to another's repo.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("a plain HTTPS client always builds");
+        let client = crate::github_access::client();
         Self {
             access,
             client,

@@ -7,8 +7,6 @@
 //! limit, or a network hiccup just yields no exercises, never a failed course
 //! creation.
 
-use std::time::Duration;
-
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Deserialize;
 
@@ -84,16 +82,7 @@ pub async fn discover_exercises(
     repo: &str,
     token: Option<&str>,
 ) -> Result<Vec<DiscoveredExercise>, String> {
-    // No automatic redirects: GitHub 301-redirects renamed/transferred repos on
-    // api.github.com, and reqwest keeps the Authorization header on same-host
-    // redirects — so following one could send the token to a different (not
-    // allow-listed) owner. Refusing to follow keeps the token on the exact URL
-    // whose owner we validated. A redirecting repo just isn't seeded.
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::github_access::client();
 
     // Prefer .hermione.json — the same file the extension resolves against.
     if let Some(cfg) = fetch_hermione_json(&client, token, owner, repo).await {
@@ -131,13 +120,7 @@ pub async fn fetch_dirs(
     repo: &str,
     token: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    // Same redirect policy as discover_exercises, for the same reason: a
-    // renamed repo must not carry the token to a different owner.
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = crate::github_access::client();
 
     let url = format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1");
     let resp = gh_get(&client, token, &url).await?;

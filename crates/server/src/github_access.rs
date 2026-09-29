@@ -14,6 +14,21 @@
 use crate::github_app::GithubApp;
 use crate::repo::owner_allowed;
 
+/// The HTTP client every read of api.github.com goes through.
+///
+/// It never follows redirects: GitHub 301-redirects renamed and transferred
+/// repos, and reqwest keeps the `Authorization` header on a same-host redirect,
+/// so following one could send the credential for one owner to another's repo.
+/// A repo that redirects simply isn't read. Kept in one place so no caller can
+/// forget it.
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a plain HTTPS client always builds")
+}
+
 /// The GitHub credentials the server was configured with.
 #[derive(Clone, Default)]
 pub struct GitHubAccess {

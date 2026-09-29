@@ -14,8 +14,6 @@
 //! the repo, minting fails and the caller falls back to the PAT (or public
 //! seeding) — everything here stays best-effort.
 
-use std::time::Duration;
-
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
@@ -79,15 +77,7 @@ impl GithubApp {
     /// falls back to the PAT or public seeding) when the app isn't installed on
     /// the repo or GitHub rejects the request.
     pub async fn installation_token(&self, owner: &str, repo: &str) -> Result<String, String> {
-        // Don't follow redirects: GitHub 301-redirects renamed/transferred repos
-        // and reqwest keeps the Authorization header on same-host redirects, so
-        // following one could aim the app JWT at a different owner. A redirecting
-        // repo simply isn't seeded via the app.
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = crate::github_access::client();
         let jwt = self.app_jwt()?;
 
         // Which installation covers this repo? (404 ⇒ app not installed there.)
