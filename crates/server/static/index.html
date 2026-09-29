@@ -131,6 +131,28 @@
       flex: 1 1 0; min-width: 0; overflow-x: auto;
       display: flex; gap: 16px; padding: 16px; align-items: flex-start;
     }
+    /* ---- Per-student actions in a pane's header, and the hint row under it ---- */
+    .pane-head .act { flex: 0 0 auto; cursor: pointer; border: 1px solid var(--border-subtle); background: none;
+      color: var(--fg-muted); border-radius: 5px; padding: 2px 6px; min-width: 26px; min-height: 26px; }
+    .pane-head .act:hover { color: var(--fg); background: var(--surface-2); }
+    .pane-head .act[aria-pressed="true"], .pane-head .act[aria-expanded="true"] { background: var(--accent-wash); color: var(--accent-text);
+      border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+    .hint-row { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--surface-2); }
+    .hint-row[hidden] { display: none; }
+    .hint-row input { flex: 1 1 auto; min-width: 0; background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 10px; font: inherit; font-size: var(--fs-sm); }
+    .pin-mark { color: var(--amber-text); margin-right: 2px; }
+    .kbd-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 10px 0 0; font-size: var(--fs-sm); }
+    .kbd-list dt { text-align: right; }
+    .kbd-list dd { margin: 0; color: var(--fg-muted); }
+    kbd { font: inherit; font-weight: 600; padding: 0 5px; border: 1px solid var(--border-strong, var(--border)); border-radius: 4px; }
+    .find-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+    .find-list button { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border-radius: 6px; cursor: pointer; color: var(--fg); }
+    .find-list button:hover, .find-list button[aria-selected="true"] { background: var(--surface-2); }
+    .find-list button:focus-visible { outline: 2px solid var(--accent); }
+    .find-list .where { margin-left: auto; color: var(--fg-subtle); font-size: var(--fs-xs); }
+
     /* ---- Table view: one line per student, who needs help first ---- */
     #board.table { display: block; padding: 16px max(16px, calc((100% - 1280px) / 2)) 32px; overflow: auto; }
     .stable { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-sm);
@@ -630,6 +652,7 @@
           <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6 1h4l.4 2.1 1.4.8 2-.8 2 3.4-1.6 1.4v1.6L15.2 11l-2 3.4-2-.8-1.4.8L10 16H6l-.4-2.6-1.4-.8-2 .8L.2 10l1.6-1.4V7L.2 5.6l2-3.4 2 .8 1.4-.8zM8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5z"/></svg>
           Assistant settings
         </button>
+        <button id="shortcuts-open" type="button" role="menuitem">Keyboard shortcuts</button>
         <button id="notify-toggle" type="button" role="menuitem" hidden></button>
         <button id="theme-toggle" type="button" role="menuitem"></button>
         <hr role="separator">
@@ -649,7 +672,7 @@
     <span id="freshness" class="freshness">Connecting…</span>
     <span class="spacer"></span>
     <span id="hint" class="hint">Click a student to open their terminal</span>
-    <span id="hint-next" class="hint"><kbd>N</kbd> next student who needs help</span>
+    <span id="hint-next" class="hint"><kbd>N</kbd> next student who needs help · <kbd>?</kbd> shortcuts</span>
   </footer>
   <div id="toasts" role="status" aria-live="polite"></div>
 
@@ -671,6 +694,9 @@
     const HINT_KEY = 'hermione.hintSeen';
 
     const ICONS = {
+      star: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.5l1.9 4 4.4.5-3.3 3 .9 4.3L8 11.1l-3.9 2.2.9-4.3-3.3-3 4.4-.5L8 1.5z"/></svg>',
+      snooze: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h4L3 9.5h4M9 7h3.5L9 11.5h3.5"/></svg>',
+      chat: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 2h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6l-3 3v-3H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>',
       book: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 1H13v11H4.5a1.5 1.5 0 0 0-1.5 1.5V2.5A1.5 1.5 0 0 1 4.5 1zM3 13.5A1.5 1.5 0 0 1 4.5 12H13v3H4.5A1.5 1.5 0 0 1 3 13.5z"/></svg>',
       clock: '<svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
       warn: '<svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.6 15 14H1L8 1.6zM7.3 6h1.4v3.6H7.3V6zm0 4.6h1.4V12.2H7.3v-1.6z"/></svg>',
@@ -795,35 +821,175 @@
     }
     // Runs on every refresh. Decorates the students with `seen`, retitles the tab
     // with how many flagged students are still waiting, and alerts on new ones.
+    const flagMarks = (s) => (s.seen ? ' ✓' : '') + (s.snoozed ? ' · snoozed' : '');
     function trackAttention(students) {
       if (attention.course !== currentCourse) loadAttention(currentCourse);
       const r = Attention.update(attention.entries, students, Date.now());
       attention.entries = r.entries;
       saveAttention();
-      for (const s of students) s.seen = Attention.isSeen(attention.entries, s.student);
-      const waiting = Attention.unseen(attention.entries, students).length;
+      if (pinsCourse !== currentCourse) loadPins();
+      const now = Date.now();
+      for (const s of students) {
+        s.seen = Attention.isSeen(attention.entries, s.student);
+        s.snoozed = Attention.isSnoozed(attention.entries, s.student, now);
+        s.pinned = !!pins[s.student];
+      }
+      const waiting = Attention.unseen(attention.entries, students, now).length;
       document.title = waiting ? `(${waiting}) ${BASE_TITLE}` : BASE_TITLE;
       // The first pass after a load sees everyone already flagged as new; only
       // what changes afterwards is news.
       if (attention.primed) r.escalated.forEach(name => notifyNeedsHelp(students.find(s => s.student === name)));
       attention.primed = true;
     }
-    function nextUp() {
-      if (!lastOverview) return;
-      const all = lastOverview.exercises.flatMap(g => g.students).concat(lastOverview.noExercise);
-      const s = Attention.next(attention.entries, all);
-      if (!s) { toast('Nobody else needs help right now'); return; }
-      openTerminal(s.student, s.terminalSessionId, s.exercise);
+    // ---- snooze, pin, hint ----
+    const SNOOZE_MS = 10 * 60 * 1000;
+    const PINS_KEY = 'hermione.pins:';
+    let pins = {}, pinsCourse = null, lastOpened = null;
+    function loadPins() {
+      pinsCourse = currentCourse;
+      try { pins = JSON.parse(localStorage.getItem(PINS_KEY + currentCourse) || '{}') || {}; } catch (_) { pins = {}; }
     }
+    function allStudents() {
+      return lastOverview ? lastOverview.exercises.flatMap(g => g.students).concat(lastOverview.noExercise) : [];
+    }
+    function snoozeStudent(student) {
+      attention.entries = Attention.snooze(attention.entries, student, Date.now() + SNOOZE_MS);
+      saveAttention();
+      if (lastOverview) renderView(lastOverview);
+      toast(`Won't ask about ${student} for 10 minutes unless they get worse`);
+    }
+    function togglePinStudent(student) {
+      if (pinsCourse !== currentCourse) loadPins();
+      pins = Attention.togglePin(pins, student);
+      try { localStorage.setItem(PINS_KEY + currentCourse, JSON.stringify(pins)); } catch (_) {}
+      if (lastOverview) renderView(lastOverview);
+      refreshPinButtons();
+    }
+    function refreshPinButtons() {
+      for (const [student, p] of openPanes) {
+        const b = p.el.querySelector('.pin');
+        if (b) b.setAttribute('aria-pressed', String(!!pins[student]));
+      }
+    }
+    function toggleHint(student, open) {
+      const p = openPanes.get(student);
+      if (!p) return;
+      const row = p.el.querySelector('.hint-row');
+      const show = open === undefined ? row.hidden : open;
+      row.hidden = !show;
+      p.el.querySelector('.hint').setAttribute('aria-expanded', String(show));
+      if (show) row.querySelector('input').focus();
+    }
+    async function sendHint(student) {
+      const p = openPanes.get(student);
+      const input = p && p.el.querySelector('.hint-row input');
+      const text = input && input.value.trim();
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const res = await fetch('/api/messages', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ course: currentCourse, text, students: [student] }),
+        });
+        if (!res.ok) throw new Error(res.status);
+        input.value = '';
+        toggleHint(student, false);
+        toast(`Hint sent to ${student}`);
+      } catch (_) { toast('Could not send the hint'); }
+      finally { input.disabled = false; }
+    }
+
+    // ---- keyboard ----
+    // The student a key means: the card or row with focus, else the pane opened last.
+    function currentStudent() {
+      const el = document.activeElement && document.activeElement.closest && document.activeElement.closest('.card, .stable tbody tr');
+      const named = el && (el.dataset.student || el.dataset.key);
+      return named || (openPanes.has(lastOpened) ? lastOpened : null);
+    }
+    function openStudent(s) { openTerminal(s.student, s.terminalSessionId, s.exercise); }
+    function nextUp() {
+      const s = Attention.next(attention.entries, allStudents());
+      if (!s) { toast('Nobody else needs help right now'); return; }
+      openStudent(s);
+    }
+    function stepStudent(direction) {
+      const s = Attention.step(allStudents(), currentStudent(), direction);
+      if (!s) { toast('Nobody is flagged right now'); return; }
+      openStudent(s);
+    }
+
+    const SHORTCUTS = [
+      ['N', 'Open the next student who needs help and you have not seen'],
+      ['P', 'Step back to the student before the current one'],
+      ['/', 'Find a student by name'],
+      ['H', 'Send the current student a hint'],
+      ['S', 'Snooze the current student for 10 minutes'],
+      ['*', 'Pin or unpin the current student'],
+      ['Esc', 'Close the newest pane'],
+      ['?', 'Show this list'],
+    ];
+    function openShortcuts() {
+      const { backdrop, close } = openDialog(`
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ks-title">
+          <h2 id="ks-title">Keyboard shortcuts</h2>
+          <p class="sub">"Current student" is the card or row with focus, else the pane you opened last.</p>
+          <dl class="kbd-list">${SHORTCUTS.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join('')}</dl>
+          <div class="row"><button class="btn primary" id="ks-done" type="button">Done</button></div>
+        </div>`);
+      backdrop.querySelector('#ks-done').addEventListener('click', close);
+      backdrop.querySelector('#ks-done').focus();
+    }
+    document.getElementById('shortcuts-open').addEventListener('click', openShortcuts);
+
+    // "/": type part of a name, arrows to choose, Enter to open.
+    function openFind() {
+      const everyone = allStudents().slice().sort((a, b) => a.student.localeCompare(b.student));
+      const { backdrop, close } = openDialog(`
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fd-title">
+          <h2 id="fd-title">Find a student</h2>
+          <input type="text" id="fd-q" placeholder="Start typing a name…" autocomplete="off" aria-label="Student name"
+            role="combobox" aria-expanded="true" aria-controls="fd-list" aria-autocomplete="list">
+          <ul class="find-list" id="fd-list" role="listbox" aria-label="Students"></ul>
+        </div>`);
+      const q = backdrop.querySelector('#fd-q'), list = backdrop.querySelector('#fd-list');
+      let shown = [], at = 0;
+      const draw = () => {
+        const needle = q.value.trim().toLowerCase();
+        shown = everyone.filter(s => s.student.toLowerCase().includes(needle)).slice(0, 8);
+        at = Math.min(at, Math.max(0, shown.length - 1));
+        list.innerHTML = shown.length ? shown.map((s, i) =>
+          `<li role="presentation"><button type="button" role="option" data-i="${i}" aria-selected="${i === at}">
+            <span class="sn">${esc(s.student)}</span><span class="where">${esc(s.exercise || '—')}</span></button></li>`).join('')
+          : '<li class="where" style="padding:6px 8px">Nobody by that name</li>';
+      };
+      const go = (i) => { const s = shown[i]; if (s) { close(); openStudent(s); } };
+      q.addEventListener('input', () => { at = 0; draw(); });
+      q.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); at = Math.min(at + 1, shown.length - 1); draw(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); at = Math.max(at - 1, 0); draw(); }
+        else if (e.key === 'Enter') { e.preventDefault(); go(at); }
+      });
+      list.addEventListener('click', (e) => { const b = e.target.closest('button[data-i]'); if (b) go(Number(b.dataset.i)); });
+      draw(); q.focus();
+    }
+
     document.addEventListener('keydown', (e) => {
-      if (e.key.toLowerCase() !== 'n' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       // Never steal a keystroke meant for something else: a text field, a
-      // terminal, or a dialog that is open.
+      // terminal, or a dialog or menu that is open.
       const t = e.target;
-      if (t.closest && t.closest('input, textarea, select, [contenteditable], .xterm, .modal-backdrop')) return;
-      if (document.querySelector('.modal-backdrop')) return;
-      e.preventDefault();
-      nextUp();
+      if (t.closest && t.closest('input, textarea, select, [contenteditable], .xterm')) return;
+      if (document.querySelector('.modal-backdrop') || !document.getElementById('more-menu').hidden) return;
+      const who = currentStudent();
+      const act = {
+        n: nextUp, p: () => stepStudent(-1), '/': openFind, '?': openShortcuts,
+        h: () => who ? toggleHint(who, true) : toast('Open a student first'),
+        s: () => who ? snoozeStudent(who) : toast('Open a student first'),
+        '*': () => who ? togglePinStudent(who) : toast('Open a student first'),
+        Escape: () => { const last = [...openPanes.keys()].pop(); if (last) closeTerminal(last); else return false; },
+      }[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+      if (!act) return;
+      if (act() !== false) e.preventDefault();
     });
 
     // Opt-in desktop alerts for a student who newly needs help, only while this
@@ -861,8 +1027,8 @@
 
     // ---- board rendering ----
     function cardInner(s) {
-      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
-                 : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '';
+      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${flagMarks(s)}</span>`
+                 : s.struggle === 'watch' ? `<span class="pill watch">watch${flagMarks(s)}</span>` : '';
       const reason = (s.struggleReasons && s.struggleReasons.length)
         ? `<div class="reason">${ICONS.warn}<span>${esc(s.struggleReasons.join(' · '))}</span></div>` : '';
       // Recent typing is the counterweight to the clock: a long time on an
@@ -876,7 +1042,7 @@
       return `
         ${avatarHtml(s.student, s.status)}
         <div class="who">
-          <div class="name"><span class="nm sn">${esc(s.student)}</span>${pill}</div>
+          <div class="name">${s.pinned ? '<span class="pin-mark" aria-hidden="true">★</span>' : ''}<span class="nm sn">${esc(s.student)}</span>${pill}</div>
           <div class="file">${esc(s.file || '—')}</div>
           ${prov}
           ${reason}
@@ -905,7 +1071,7 @@
       b.classList.toggle('struggle-watch', s.struggle === 'watch');
       const label = `${s.student}, ${s.exercise || 'no exercise'}, ${s.status}`
         + (s.struggle === 'help' ? ', needs help' : s.struggle === 'watch' ? ', watch' : '')
-        + (s.seen ? ', already looked at' : '');
+        + (s.seen ? ', already looked at' : '') + (s.snoozed ? ', snoozed' : '') + (s.pinned ? ', pinned' : '');
       b.setAttribute('aria-label', label);
       b.innerHTML = cardInner(s);
     }
@@ -967,7 +1133,7 @@
         summary.style.display = 'none';
         summary.innerHTML = '';
       }
-      reconcile(col.querySelector('.cards'), g.students, s => s.student, createCard, updateCard);
+      reconcile(col.querySelector('.cards'), Attention.pinnedFirst(g.students, pins), s => s.student, createCard, updateCard);
     }
 
     let lastAudience = 0;
@@ -985,7 +1151,7 @@
       const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
       lastAudience = allStudents.length;
       trackAttention(allStudents);
-      setAlert(allStudents.filter(s => s.struggle === 'help').length);
+      setAlert(allStudents.filter(s => s.struggle === 'help' && !s.snoozed).length);
       board.classList.toggle('tree', currentView === 'tree');
       board.classList.toggle('table', currentView === 'table');
 
@@ -1167,8 +1333,8 @@
         b.className = 'tperson' + (s.struggle === 'help' ? ' help' : s.struggle === 'watch' ? ' watch' : '');
         b.title = `${s.student} — open their file`;
         b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname sn">${esc(s.student)}</span>`
-          + (s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
-            : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '');
+          + (s.struggle === 'help' ? `<span class="pill help">needs help${flagMarks(s)}</span>`
+            : s.struggle === 'watch' ? `<span class="pill watch">watch${flagMarks(s)}</span>` : '');
         // Clicking someone in the file tree means "show me that file", not
         // "show me their shell".
         b.onclick = () => openTerminal(s.student, s.terminalSessionId, s.exercise, 'file');
@@ -1231,22 +1397,22 @@
         board.replaceChildren(table);
       }
       const rank = s => (s.struggle === 'help' ? 2 : s.struggle === 'watch' ? 1 : 0);
-      const rows = students.slice().sort((a, b) =>
-        rank(b) - rank(a) || a.student.localeCompare(b.student));
+      const rows = Attention.pinnedFirst(students.slice().sort((a, b) =>
+        rank(b) - rank(a) || a.student.localeCompare(b.student)), pins);
       reconcile(table.tBodies[0], rows, s => s.student, () => document.createElement('tr'), updateTableRow);
     }
     function updateTableRow(tr, s) {
       tr.className = (s.struggle === 'help' ? 'struggle-help' : s.struggle === 'watch' ? 'struggle-watch' : '')
         + (openPanes.has(s.student) ? ' open' : '');
-      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
-        : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '';
+      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${flagMarks(s)}</span>`
+        : s.struggle === 'watch' ? `<span class="pill watch">watch${flagMarks(s)}</span>` : '';
       const typing = s.status === 'active' && s.editsRecent > 0
         ? `<span class="typing">${ICONS.pencil}typing</span>` : '';
       const reason = (s.struggleReasons && s.struggleReasons.length)
         ? `<span class="reason" title="${esc(s.struggleReasons.join(' · '))}">${esc(s.struggleReasons[0])}</span>` : '';
       tr.innerHTML = `
         <td><div class="who-cell"><button type="button" class="open-row" aria-label="Open ${esc(s.student)}${s.exercise ? ', ' + esc(s.exercise) : ''}, ${esc(s.status)}${s.struggle ? ', ' + (s.struggle === 'help' ? 'needs help' : 'watch') : ''}${s.seen ? ', already looked at' : ''}">
-          ${avatarHtml(s.student, s.status)}<span class="sn">${esc(s.student)}</span></button>${pill}</div></td>
+          ${avatarHtml(s.student, s.status)}${s.pinned ? '<span class="pin-mark" aria-hidden="true">★</span>' : ''}<span class="sn">${esc(s.student)}</span></button>${pill}</div></td>
         <td>${esc(s.exercise || '—')}</td>
         <td class="file-cell" title="${esc(s.file || '')}">${esc(s.file || '—')}</td>
         <td class="num">${fmtDuration(s.secondsOnExercise)}</td>
@@ -1428,7 +1594,8 @@
       const close = () => { backdrop.remove(); if (opener && opener.focus) opener.focus(); };
       backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
       backdrop.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { close(); return; }
+        // Handled here, so the page's own Escape (which closes a pane) doesn't also fire.
+        if (e.key === 'Escape') { e.stopPropagation(); close(); return; }
         if (e.key !== 'Tab') return;
         const stops = [...backdrop.querySelectorAll('input, select, textarea, button, a[href], [tabindex]:not([tabindex="-1"])')]
           .filter(x => !x.disabled && x.offsetParent !== null);
@@ -1483,6 +1650,7 @@
     function openTerminal(student, sessionId, exercise, mode) {
       if (!student) return;
       markStudentSeen(student);
+      lastOpened = student;
       if (openPanes.has(student)) {
         if (mode) setPaneMode(student, mode);
         flashPane(student);
@@ -1507,8 +1675,15 @@
           <button class="diff" type="button" aria-pressed="false" title="Show the diff against their last commit">Diff</button>
           ${Since.anything(localStorage, lookKey(student), Date.now()) ? '<button class="since" type="button" aria-pressed="false" title="Show what changed since you last had this file open">Since last look</button>' : ''}
           ${hasSolutions() ? '<button class="solution" type="button" aria-pressed="false" title="Compare with the reference solution">Solution</button>' : ''}
+          <button class="act hint" type="button" aria-expanded="false" title="Send a hint — only they see it (H)" aria-label="Send ${esc(student)} a hint">${ICONS.chat}</button>
+          <button class="act snooze" type="button" title="Snooze — stop asking about them for 10 minutes (S)" aria-label="Snooze ${esc(student)} for 10 minutes">${ICONS.snooze}</button>
+          <button class="act pin" type="button" aria-pressed="false" title="Pin — keep them at the top (*)" aria-label="Pin ${esc(student)}">${ICONS.star}</button>
           <button class="close" type="button" title="Close" aria-label="Close ${esc(student)}'s pane">${ICONS.close}</button>
         </div>
+        <form class="hint-row" hidden>
+          <input type="text" maxlength="280" placeholder="A hint for ${esc(student)} — only they will see it" aria-label="Hint for ${esc(student)}" autocomplete="off">
+          <button class="btn primary" type="submit">Send</button>
+        </form>
         <div class="term"></div>
         <div class="filev">
           <div class="fv-head"></div>
@@ -1518,6 +1693,15 @@
       dock.classList.add('active');
       document.getElementById('divider').classList.add('active');
       pane.querySelector('.close').addEventListener('click', () => closeTerminal(student));
+      pane.querySelector('.snooze').addEventListener('click', () => snoozeStudent(student));
+      pane.querySelector('.pin').addEventListener('click', () => togglePinStudent(student));
+      pane.querySelector('.hint').addEventListener('click', () => toggleHint(student));
+      pane.querySelector('.hint-row').addEventListener('submit', (e) => { e.preventDefault(); sendHint(student); });
+      pane.querySelector('.hint-row input').addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { e.stopPropagation(); toggleHint(student, false); }
+      });
+      lastOpened = student;
+      refreshPinButtons();
       for (const b of pane.querySelectorAll('.modes button')) {
         b.addEventListener('click', () => setPaneMode(student, b.dataset.mode));
       }
@@ -1550,6 +1734,7 @@
         pollFailed: false,        // the file view's last poll did not arrive
       };
       openPanes.set(student, rec);
+      refreshPinButtons();
       // Opening from the tree means the teacher is already looking at files.
       if (mode === 'file') setPaneMode(student, mode); else startTerminalStream(rec);
       relayout();

@@ -77,3 +77,50 @@ test('a saved list from long ago is not believed', () => {
   assert.deepEqual(Object.keys(Attention.prune(saved, 10_000, 5_000)), ['recent']);
   assert.deepEqual(Attention.prune(undefined, 1, 1), {});
 });
+
+test('a snoozed student is left out of what asks for attention until the time is up', () => {
+  const students = [help('ada', 100), help('bo', 50)];
+  let { entries } = Attention.update({}, students, 0);
+  entries = Attention.snooze(entries, 'ada', 1000);
+  assert.deepEqual(Attention.unseen(entries, students, 500).map((x) => x.student), ['bo']);
+  assert.equal(Attention.isSnoozed(entries, 'ada', 500), true);
+  // Time is up: back in the queue, most urgent first.
+  assert.deepEqual(Attention.unseen(entries, students, 1000).map((x) => x.student), ['ada', 'bo']);
+  assert.equal(Attention.isSnoozed(entries, 'ada', 1000), false);
+});
+
+test('getting worse ends a snooze', () => {
+  let { entries } = Attention.update({}, [watch('bo')], 0);
+  entries = Attention.snooze(entries, 'bo', 10_000);
+  const r = Attention.update(entries, [help('bo')], 5);
+  assert.equal(Attention.isSnoozed(r.entries, 'bo', 6), false);
+  assert.deepEqual(r.escalated, ['bo']);
+});
+
+test('snoozing someone who is not flagged records nothing', () => {
+  assert.deepEqual(Attention.snooze({}, 'di', 99), {});
+});
+
+test('P and N walk the same ring of flagged students, wrapping at the ends', () => {
+  const students = [help('ada', 300), help('cy', 100), watch('bo', 999), fine('di')];
+  // Ring order: ada, cy (help, longest first), then bo (watch).
+  const at = (from, dir) => Attention.step(students, from, dir).student;
+  assert.equal(at('ada', 1), 'cy');
+  assert.equal(at('cy', 1), 'bo');
+  assert.equal(at('bo', 1), 'ada');
+  assert.equal(at('ada', -1), 'bo');
+  assert.equal(at('bo', -1), 'cy');
+  // From someone who is not flagged (or nobody): forwards starts at the top,
+  // backwards at the bottom.
+  assert.equal(at('di', 1), 'ada');
+  assert.equal(at(undefined, -1), 'bo');
+  assert.equal(Attention.step([fine('x')], undefined, 1), undefined);
+});
+
+test('pinned students go first and keep their order otherwise', () => {
+  const students = [fine('a'), fine('b'), fine('c'), fine('d')];
+  const pins = Attention.togglePin(Attention.togglePin({}, 'c'), 'b');
+  assert.deepEqual(Attention.pinnedFirst(students, pins).map((x) => x.student), ['b', 'c', 'a', 'd']);
+  assert.deepEqual(Attention.togglePin(pins, 'c'), { b: true });
+  assert.deepEqual(pins, { b: true, c: true }, 'the original is untouched');
+});

@@ -42,6 +42,23 @@ fires while the tab is in the background, once per student.
 What you have seen is remembered by this browser (per course, for the day). A
 co-teacher's browser keeps its own.
 
+### More keys, snooze, pin and hints
+
+Press **?** for the list. Besides **N**: **P** steps back round the flagged
+students, **/** finds a student by name, **Esc** closes the newest pane. Keys that
+act on "the current student" mean the card or row with focus, else the pane you
+opened last:
+
+- **S** (or the *zz* button in the pane header) **snoozes** them for ten minutes:
+  they stay flagged on the board but stop counting in the tab title, the header
+  count and **N** — until the time is up, or they get worse.
+- **\*** (or the star button) **pins** them: a ★ marks them and they go first in
+  their column and in the table, for as long as you keep them pinned.
+- **H** (or the speech-bubble button) opens a one-line box to send them a **hint**,
+  a private message only they see, without leaving the pane.
+
+Snoozes and pins are kept by this browser, per course.
+
 ### A course nobody has joined yet
 
 Until the first student appears the board shows a short checklist instead of empty

@@ -50,18 +50,55 @@ const Attention = (() => {
     return !!e && e.seenAt !== undefined && e.seenAt >= e.flaggedAt;
   };
 
-  // Flagged students not yet looked at: the worst first, then whoever has been at
-  // the exercise longest, then by name so the order never flickers between polls.
-  function unseen(entries, students) {
+  // "Not now": the teacher knows about this one and will come back. A snoozed
+  // student stays flagged on the board but drops out of what asks for attention
+  // — the next-up key, the count in the tab title — until the time is up, or
+  // until they get worse, which starts their entry afresh and so ends the snooze.
+  function snooze(entries, student, until) {
+    const e = entries[student];
+    return e ? { ...entries, [student]: { ...e, snoozedUntil: until } } : entries;
+  }
+  const isSnoozed = (entries, student, now) => {
+    const e = entries[student];
+    return !!e && typeof e.snoozedUntil === 'number' && e.snoozedUntil > now;
+  };
+
+  // Worst first, then whoever has been at the exercise longest, then by name so
+  // the order never flickers between polls.
+  const byUrgency = (a, b) =>
+    rankOf(b) - rankOf(a)
+    || (b.secondsOnExercise || 0) - (a.secondsOnExercise || 0)
+    || a.student.localeCompare(b.student);
+
+  // Flagged students not yet looked at and not snoozed, most urgent first.
+  function unseen(entries, students, now = Date.now()) {
     return students
-      .filter((s) => rankOf(s) && !isSeen(entries, s.student))
-      .sort((a, b) =>
-        rankOf(b) - rankOf(a)
-        || (b.secondsOnExercise || 0) - (a.secondsOnExercise || 0)
-        || a.student.localeCompare(b.student));
+      .filter((s) => rankOf(s) && !isSeen(entries, s.student) && !isSnoozed(entries, s.student, now))
+      .sort(byUrgency);
   }
 
-  const next = (entries, students) => unseen(entries, students)[0];
+  const next = (entries, students, now) => unseen(entries, students, now)[0];
+
+  // Everyone flagged, most urgent first: the ring N and P walk round. From
+  // `student` (who need not be flagged) one step forwards or backwards, wrapping;
+  // from nobody, forwards starts at the top and backwards at the bottom.
+  function step(students, student, direction) {
+    const ring = students.filter(rankOf).sort(byUrgency);
+    if (!ring.length) return undefined;
+    const at = ring.findIndex((s) => s.student === student);
+    if (at < 0) return direction > 0 ? ring[0] : ring[ring.length - 1];
+    return ring[(at + direction + ring.length) % ring.length];
+  }
+
+  // Pinned students are the teacher's own priority ("keep an eye on this one
+  // all lesson"): they go first wherever a list is drawn, in their existing order.
+  const pinnedFirst = (students, pins) =>
+    students.slice().sort((a, b) => (pins[b.student] ? 1 : 0) - (pins[a.student] ? 1 : 0));
+  function togglePin(pins, student) {
+    const next = { ...pins };
+    if (next[student]) delete next[student]; else next[student] = true;
+    return next;
+  }
 
   // Drop entries older than `maxAgeMs`, so a saved list from last week's class
   // can't mark this week's students as already looked at.
@@ -73,6 +110,6 @@ const Attention = (() => {
     return out;
   }
 
-  return { update, markSeen, isSeen, unseen, next, prune };
+  return { update, markSeen, isSeen, snooze, isSnoozed, unseen, next, step, pinnedFirst, togglePin, prune };
 })();
 if (typeof module !== 'undefined') module.exports = Attention;
