@@ -260,10 +260,9 @@ class Reporter {
             return;
         }
         const base = this.serverUrl.replace(/^http/, 'ws');
+        // The enrollment token goes in the Authorization header with the rest of
+        // `authHeaders()`, not in the URL, where proxies and access logs keep it.
         const params = new URLSearchParams();
-        if (this.token) {
-            params.set('token', this.token);
-        }
         params.set('since', String(this.lastMessageId));
         // Lets the backend route snapshot requests to this editor alone rather
         // than to the whole course. Routing only: the snapshot that goes back
@@ -274,9 +273,9 @@ class Reporter {
 
         let ws: WebSocket;
         try {
-            // The identity goes with the socket as it does with every other
-            // request: where students are verified, the backend routes this
-            // editor's frames by who it proves to be, not by the `student` above.
+            // Credentials go with the socket as they do with every other request:
+            // where students are verified, the backend routes this editor's
+            // frames by who it proves to be, not by the `student` above.
             ws = new WebSocket(`${base}/ws?${params.toString()}`, { headers: this.authHeaders() });
         } catch (_) {
             this.scheduleReconnect();

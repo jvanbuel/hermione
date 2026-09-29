@@ -1317,6 +1317,41 @@ mod control_socket {
     }
 
     #[tokio::test]
+    async fn an_enrollment_token_can_travel_in_a_header_instead_of_the_url() {
+        let (state, app) = app().await;
+        let course = course(&state).await;
+        let addr = serve(app).await;
+        let bearer = format!("Bearer {}", course.enrollment_token);
+
+        // Header alone: no secret in the URL, and the socket is Alice's.
+        let mut socket = connect(addr, "student=alice", &[("authorization", &bearer)])
+            .await
+            .expect("a Bearer token is enough");
+        let alice = Slot {
+            course: course.id,
+            student: student("alice"),
+        };
+        listening(&state, &alice).await;
+        socket.close(None).await.ok();
+
+        // The query form still works for editors that haven't updated.
+        let query = format!("token={}&student=alice", course.enrollment_token);
+        connect(addr, &query, &[])
+            .await
+            .expect("?token= is still accepted");
+
+        // A wrong header is refused even beside a right query: the header wins.
+        let refused = connect(addr, &query, &[("authorization", "Bearer nope")]).await;
+        assert!(
+            refused.is_err(),
+            "the header is judged, not the query beside it"
+        );
+
+        // And no token at all is not a teacher's socket by accident.
+        assert!(connect(addr, "student=alice", &[]).await.is_err());
+    }
+
+    #[tokio::test]
     async fn a_verified_identity_decides_whose_frames_a_socket_gets() {
         let identity = crate::identity::Identity::for_test("secret", vec![github()]);
         let bob_token = identity.issue("github:bob").unwrap();

@@ -308,6 +308,14 @@ async fn require_super_admin(
     }
 }
 
+/// The enrollment token an editor sends as `Authorization: Bearer <token>`.
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+}
+
 /// Gate for agent ingest: resolves the course enrollment token (which tenant
 /// the data belongs to) and injects it as a `CourseCtx`.
 async fn require_ingest(
@@ -315,11 +323,7 @@ async fn require_ingest(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let token = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "));
+    let token = bearer_token(request.headers());
 
     let course_id = match token {
         Some(token) => match tenancy::course_by_token(&state.db, token).await {
@@ -469,7 +473,9 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 
 #[derive(Deserialize)]
 struct WsQuery {
-    /// Enrollment token (extension clients).
+    /// Enrollment token, in the query. Deprecated: a URL is written to proxy and
+    /// access logs, so current editors send it as a Bearer header instead. Still
+    /// read so an editor that hasn't updated keeps working.
     token: Option<String>,
     /// Course slug (teacher/dashboard clients, paired with the session cookie).
     course: Option<String>,
@@ -483,7 +489,8 @@ struct WsQuery {
 }
 
 /// Live message channel. Authenticates the same way the rest of the API does —
-/// an enrollment token (students) or the session cookie + course (teachers) —
+/// an enrollment token (students; a Bearer header, or `?token=` from older
+/// editors) or the session cookie + course (teachers) —
 /// then upgrades and streams that course's messages.
 async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -491,7 +498,9 @@ async fn ws_handler(
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let (course_id, student) = if let Some(token) = q.token.as_deref() {
+    // The header wins over the query, so a client sending both is judged by the
+    // one that isn't in a log.
+    let (course_id, student) = if let Some(token) = bearer_token(&headers).or(q.token.as_deref()) {
         let course = match tenancy::course_by_token(&state.db, token).await {
             Some(course) => course,
             None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),

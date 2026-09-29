@@ -266,7 +266,9 @@ the course's `.hermione.json`, or the `hermione.shareFileContents` setting.
   stats.
 - `POST /api/messages` — teacher broadcasts a message to a course (persisted).
 - `GET /ws` — live message stream (WebSocket). Authenticated by the enrollment
-  token (`?token=`) or the session cookie (`?course=`); pass `?since=<id>` to
+  token (`Authorization: Bearer …`; `?token=` is still read for older editors, but
+  a URL ends up in proxy logs, so don't use it in new clients) or the session
+  cookie (`?course=`); pass `?since=<id>` to
   replay missed messages, omit it for live-only. Used by the extension (real-time
   broadcasts) and the dashboard.
 - `GET /api/inbox?since=<id>` — HTTP fallback for the message inbox.
