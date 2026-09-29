@@ -190,11 +190,7 @@ pub(super) async fn auth_exchange(
     State(state): State<AppState>,
     Json(req): Json<ExchangeRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let student = state
-        .identity
-        .verify_idp(&req.provider, &req.token)
-        .await
-        .map_err(ApiError::unauthorized)?;
+    let student = state.identity.verify_idp(&req.provider, &req.token).await?;
     issue_identity(&state, student)
 }
 
@@ -208,11 +204,7 @@ pub(super) async fn auth_device_start(
     State(state): State<AppState>,
     Json(req): Json<DeviceStartRequest>,
 ) -> ApiResult<Json<crate::identity::DeviceStart>> {
-    let start = state
-        .identity
-        .device_start(&req.provider)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let start = state.identity.device_start(&req.provider).await?;
     Ok(Json(start))
 }
 
@@ -231,8 +223,7 @@ pub(super) async fn auth_device_poll(
     let polled = state
         .identity
         .device_poll(&req.provider, &req.device_code)
-        .await
-        .map_err(ApiError::unauthorized)?;
+        .await?;
     match polled {
         crate::identity::DevicePoll::Pending => {
             Ok(Json(serde_json::json!({ "status": "pending" })).into_response())

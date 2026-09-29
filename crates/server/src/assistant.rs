@@ -78,6 +78,66 @@ fn parse_json_list<T: for<'de> Deserialize<'de>>(s: &str) -> Vec<T> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
+// --- errors ------------------------------------------------------------------
+
+/// Why a call to the Managed Agents API did not give an answer.
+///
+/// Kept apart from a plain string because the people who may see the failure
+/// differ: the log gets all of it, a teacher who just changed the config gets
+/// what Anthropic said about that request ([`Self::for_teacher`]), and a student
+/// gets only that the assistant is unavailable.
+#[derive(Debug, thiserror::Error)]
+pub enum AssistantError {
+    #[error("assistant not configured (HERMIONE_ANTHROPIC_API_KEY unset)")]
+    NotConfigured,
+    #[error("request to anthropic failed: {0}")]
+    Transport(#[from] reqwest::Error),
+    #[error("anthropic answered {status}: {body}")]
+    Upstream {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("unexpected answer from anthropic: {0}")]
+    Malformed(String),
+    #[error("session terminated")]
+    Terminated,
+    #[error("assistant timed out")]
+    TimedOut,
+}
+
+impl AssistantError {
+    /// What a teacher configuring the assistant may be told: for a request
+    /// Anthropic rejected (a 4xx), its own explanation of what was wrong with
+    /// it; otherwise only that the service is unavailable.
+    pub fn for_teacher(&self) -> String {
+        match self {
+            Self::NotConfigured => self.to_string(),
+            Self::Upstream { status, body } if status.is_client_error() => {
+                serde_json::from_str::<Value>(body)
+                    .ok()
+                    .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| format!("anthropic rejected the request ({status})"))
+            }
+            _ => "the assistant service is unavailable".to_string(),
+        }
+    }
+}
+
+/// What a student, or any caller that is not configuring the assistant, sees.
+/// The detail goes to the log.
+impl From<AssistantError> for ApiError {
+    fn from(e: AssistantError) -> Self {
+        tracing::warn!(error = %e, "assistant request failed");
+        match e {
+            AssistantError::NotConfigured => {
+                ApiError::unavailable("the assistant is not configured on this server")
+            }
+            AssistantError::TimedOut => ApiError::bad_gateway("the assistant took too long"),
+            _ => ApiError::bad_gateway("the assistant is unavailable right now"),
+        }
+    }
+}
+
 // --- the Managed Agents client ---------------------------------------------
 
 /// Handle to Anthropic's Managed Agents API. Cloneable; lives in [`AppState`].
@@ -114,10 +174,8 @@ impl Assistant {
         self.api_key.is_some()
     }
 
-    fn key(&self) -> Result<&str, String> {
-        self.api_key.as_deref().ok_or_else(|| {
-            "assistant not configured (HERMIONE_ANTHROPIC_API_KEY unset)".to_string()
-        })
+    fn key(&self) -> Result<&str, AssistantError> {
+        self.api_key.as_deref().ok_or(AssistantError::NotConfigured)
     }
 
     async fn api(
@@ -125,7 +183,7 @@ impl Assistant {
         method: reqwest::Method,
         path: &str,
         body: Option<Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, AssistantError> {
         let key = self.key()?;
         let mut req = self
             .client
@@ -136,32 +194,29 @@ impl Assistant {
         if let Some(b) = body {
             req = req.json(&b);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
+        let resp = req.send().await?;
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(format!("anthropic {status}: {text}"));
+            return Err(AssistantError::Upstream { status, body: text });
         }
         if text.is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_str(&text).map_err(|e| format!("bad response json: {e}"))
+        serde_json::from_str(&text).map_err(|e| AssistantError::Malformed(e.to_string()))
     }
 
-    async fn get(&self, path: &str) -> Result<Value, String> {
+    async fn get(&self, path: &str) -> Result<Value, AssistantError> {
         self.api(reqwest::Method::GET, path, None).await
     }
 
-    async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, AssistantError> {
         self.api(reqwest::Method::POST, path, Some(body)).await
     }
 
     /// Resolves the shared cloud environment, creating it if absent. Cached for
     /// the process lifetime.
-    async fn ensure_environment(&self) -> Result<String, String> {
+    async fn ensure_environment(&self) -> Result<String, AssistantError> {
         if let Some(id) = self.environment_id.read().await.clone() {
             return Ok(id);
         }
@@ -176,15 +231,20 @@ impl Assistant {
         });
         let id = match self.post("/v1/environments", body).await {
             Ok(v) => v.get("id").and_then(|i| i.as_str()).map(String::from),
-            Err(e) if e.contains("409") => self.find_environment_by_name().await?,
+            Err(AssistantError::Upstream { status, .. })
+                if status == reqwest::StatusCode::CONFLICT =>
+            {
+                self.find_environment_by_name().await?
+            }
             Err(e) => return Err(e),
         };
-        let id = id.ok_or_else(|| "environment create returned no id".to_string())?;
+        let id = id
+            .ok_or_else(|| AssistantError::Malformed("environment create returned no id".into()))?;
         *guard = Some(id.clone());
         Ok(id)
     }
 
-    async fn find_environment_by_name(&self) -> Result<Option<String>, String> {
+    async fn find_environment_by_name(&self) -> Result<Option<String>, AssistantError> {
         let list = self.get("/v1/environments").await?;
         let id = list
             .get("data")
@@ -207,7 +267,7 @@ impl Assistant {
         system_prompt: &str,
         skills: &[SkillRef],
         mcp_servers: &[McpServer],
-    ) -> Result<(String, String), String> {
+    ) -> Result<(String, String), AssistantError> {
         // Built-in toolset (bash/read/edit/web) plus one mcp_toolset per server,
         // so declared MCP servers are actually reachable by the agent.
         let mut tools = vec![json!({ "type": "agent_toolset_20260401" })];
@@ -255,13 +315,13 @@ impl Assistant {
         let agent_id = existing_agent_id
             .map(String::from)
             .or_else(|| resp.get("id").and_then(|i| i.as_str()).map(String::from))
-            .ok_or_else(|| "agent sync returned no id".to_string())?;
+            .ok_or_else(|| AssistantError::Malformed("agent sync returned no id".into()))?;
         let version = version_string(&resp);
         Ok((agent_id, version))
     }
 
     /// Opens a fresh session bound to the given agent.
-    async fn open_session(&self, agent_id: &str) -> Result<String, String> {
+    async fn open_session(&self, agent_id: &str) -> Result<String, AssistantError> {
         let env = self.ensure_environment().await?;
         let resp = self
             .post(
@@ -272,12 +332,12 @@ impl Assistant {
         resp.get("id")
             .and_then(|i| i.as_str())
             .map(String::from)
-            .ok_or_else(|| "session create returned no id".to_string())
+            .ok_or_else(|| AssistantError::Malformed("session create returned no id".into()))
     }
 
     /// Runs one chat turn: sends the student's message and polls the session's
     /// events until it goes idle, accumulating the agent's reply text.
-    async fn run_turn(&self, session_id: &str, text: &str) -> Result<String, String> {
+    async fn run_turn(&self, session_id: &str, text: &str) -> Result<String, AssistantError> {
         // Seed the seen-set with pre-existing events so we read only this turn's.
         let mut seen = self.list_event_ids(session_id).await?;
 
@@ -325,11 +385,11 @@ impl Assistant {
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("end_turn");
                             if kind != "requires_action" {
-                                return Ok::<(), String>(());
+                                return Ok::<(), AssistantError>(());
                             }
                         }
                         "session.status_terminated" => {
-                            return Err("session terminated".to_string());
+                            return Err(AssistantError::Terminated);
                         }
                         _ => {}
                     }
@@ -340,7 +400,7 @@ impl Assistant {
         match tokio::time::timeout(Duration::from_secs(TURN_TIMEOUT_SECS), poll).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
-            Err(_) if reply.is_empty() => return Err("assistant timed out".to_string()),
+            Err(_) if reply.is_empty() => return Err(AssistantError::TimedOut),
             Err(_) => {}
         }
         let reply = reply.trim().to_string();
@@ -351,7 +411,7 @@ impl Assistant {
         }
     }
 
-    async fn list_event_ids(&self, session_id: &str) -> Result<HashSet<String>, String> {
+    async fn list_event_ids(&self, session_id: &str) -> Result<HashSet<String>, AssistantError> {
         let events = self
             .get(&format!("/v1/sessions/{session_id}/events?limit=1000"))
             .await?;
@@ -367,7 +427,10 @@ impl Assistant {
     /// Opens the session's SSE event stream. Returns once response headers
     /// arrive, so the caller can send the user message into an already-open
     /// stream (the "stream-first" ordering Managed Agents requires).
-    async fn open_event_stream(&self, session_id: &str) -> Result<reqwest::Response, String> {
+    async fn open_event_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<reqwest::Response, AssistantError> {
         let key = self.key()?;
         let resp = self
             .stream_client
@@ -377,12 +440,11 @@ impl Assistant {
             .header("anthropic-beta", MANAGED_AGENTS_BETA)
             .header("accept", "text/event-stream")
             .send()
-            .await
-            .map_err(|e| format!("stream open failed: {e}"))?;
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("anthropic {status}: {body}"));
+            return Err(AssistantError::Upstream { status, body });
         }
         Ok(resp)
     }
@@ -398,7 +460,7 @@ impl Assistant {
         session_id: &str,
         text: &str,
         tx: &mpsc::Sender<TurnEvent>,
-    ) -> Result<String, String> {
+    ) -> Result<String, AssistantError> {
         let resp = self.open_event_stream(session_id).await?;
         self.post(
             &format!("/v1/sessions/{session_id}/events"),
@@ -649,7 +711,13 @@ pub async fn put_config(
                 agent_version = Some(version);
                 environment_id = state.assistant.environment_id.read().await.clone();
             }
-            Err(e) => return Err(ApiError::bad_gateway(format!("agent sync failed: {e}"))),
+            Err(e) => {
+                tracing::warn!(error = %e, "agent sync failed");
+                return Err(ApiError::bad_gateway(format!(
+                    "agent sync failed: {}",
+                    e.for_teacher()
+                )));
+            }
         }
     }
 
@@ -991,8 +1059,9 @@ pub async fn chat_stream(
                     s
                 }
                 Err(e) => {
+                    tracing::warn!(error = %e, "could not open an assistant session");
                     let _ = tx
-                        .send(TurnEvent::Error(format!("could not start a session: {e}")))
+                        .send(TurnEvent::Error("could not start a session".into()))
                         .await;
                     let _ = tx.send(TurnEvent::Done).await;
                     return;
@@ -1015,8 +1084,9 @@ pub async fn chat_stream(
                         .unwrap_or_default()
                 }
                 Err(e) => {
+                    tracing::warn!(error = %e, "assistant unavailable");
                     let _ = tx
-                        .send(TurnEvent::Error(format!("assistant unavailable: {e}")))
+                        .send(TurnEvent::Error("assistant unavailable".into()))
                         .await;
                     String::new()
                 }
@@ -1049,14 +1119,8 @@ async fn run_with_session(
     agent_id: &str,
     prompt: &str,
 ) -> ApiResult<String> {
-    // What the upstream said is for the caller: it is a 502, not our failure.
-    let upstream = |e: String| ApiError::bad_gateway(format!("assistant error: {e}"));
     let open = || async {
-        let session = state
-            .assistant
-            .open_session(agent_id)
-            .await
-            .map_err(upstream)?;
+        let session = state.assistant.open_session(agent_id).await?;
         set_session(state, conversation.id, &session).await?;
         Ok::<_, ApiError>(session)
     };
@@ -1070,11 +1134,7 @@ async fn run_with_session(
         // The session may have terminated/expired — open a fresh one and retry.
         Err(_) => {
             let fresh = open().await?;
-            state
-                .assistant
-                .run_turn(&fresh, prompt)
-                .await
-                .map_err(upstream)
+            Ok(state.assistant.run_turn(&fresh, prompt).await?)
         }
     }
 }
@@ -1209,4 +1269,68 @@ async fn insert_message(
         .exec(&state.db)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+
+    fn upstream(status: u16, body: &str) -> AssistantError {
+        AssistantError::Upstream {
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            body: body.to_string(),
+        }
+    }
+
+    async fn shown_to_caller(e: AssistantError) -> (u16, String) {
+        let resp = ApiError::from(e).into_response();
+        let status = resp.status().as_u16();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_student_never_sees_what_anthropic_said() {
+        let e = upstream(
+            400,
+            r#"{"error":{"message":"model 'x' not found for org acme"}}"#,
+        );
+        let (status, body) = shown_to_caller(e).await;
+        assert_eq!(status, 502);
+        assert!(
+            !body.contains("acme") && !body.contains("anthropic"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn not_configured_and_slow_are_told_apart() {
+        assert_eq!(shown_to_caller(AssistantError::NotConfigured).await.0, 503);
+        assert_eq!(shown_to_caller(AssistantError::TimedOut).await.0, 502);
+    }
+
+    #[test]
+    fn a_teacher_hears_why_anthropic_rejected_their_config() {
+        let e = upstream(400, r#"{"error":{"message":"unknown model 'sonet'"}}"#);
+        assert_eq!(e.for_teacher(), "unknown model 'sonet'");
+        // An unparseable rejection still says it was a rejection, not the body.
+        assert_eq!(
+            upstream(422, "<html>oops</html>").for_teacher(),
+            "anthropic rejected the request (422 Unprocessable Entity)"
+        );
+    }
+
+    #[test]
+    fn a_teacher_is_not_told_about_our_or_their_outages() {
+        assert_eq!(
+            upstream(500, "internal secret detail").for_teacher(),
+            "the assistant service is unavailable"
+        );
+        assert_eq!(
+            AssistantError::Malformed("bad json at byte 3".into()).for_teacher(),
+            "the assistant service is unavailable"
+        );
+    }
 }

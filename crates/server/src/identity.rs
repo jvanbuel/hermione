@@ -5,6 +5,7 @@
 //! *Hermione identity token* that the agents cache and present with each ingest,
 //! so the `student` is server-trusted rather than self-asserted.
 
+use crate::error::ApiError;
 use jsonwebtoken::{
     decode, decode_header, encode, jwk::JwkSet, Algorithm, DecodingKey, EncodingKey, Header,
     Validation,
@@ -160,11 +161,11 @@ impl Identity {
         self.secret.is_some() && !self.providers.is_empty()
     }
 
-    fn provider(&self, name: &str) -> Result<&Provider, String> {
+    fn provider(&self, name: &str) -> Result<&Provider, IdentityError> {
         self.providers
             .iter()
             .find(|p| p.name == name)
-            .ok_or_else(|| format!("unknown provider: {name}"))
+            .ok_or_else(|| IdentityError::UnknownProvider(name.to_string()))
     }
 
     // --- Hermione identity token (HS256) ------------------------------------
@@ -201,7 +202,11 @@ impl Identity {
 
     /// Verifies an IdP credential and returns a namespaced student id
     /// (e.g. "github:alice", "google:alice@x.edu").
-    pub async fn verify_idp(&self, provider_name: &str, token: &str) -> Result<String, String> {
+    pub async fn verify_idp(
+        &self,
+        provider_name: &str,
+        token: &str,
+    ) -> Result<String, IdentityError> {
         let provider = self.provider(provider_name)?;
         match provider.kind {
             ProviderKind::Github => {
@@ -212,38 +217,39 @@ impl Identity {
                 let issuer = provider
                     .issuer
                     .as_deref()
-                    .ok_or("oidc provider needs issuer")?;
+                    .ok_or(IdentityError::Misconfigured(
+                        "oidc provider needs an issuer",
+                    ))?;
                 let email = self.verify_oidc(issuer, &provider.client_id, token).await?;
                 Ok(format!("{}:{}", provider.name, email))
             }
         }
     }
 
-    async fn github_login(&self, access_token: &str) -> Result<String, String> {
+    async fn github_login(&self, access_token: &str) -> Result<String, IdentityError> {
         #[derive(Deserialize)]
         struct GithubUser {
             login: String,
         }
-        let user: GithubUser = self
+        let resp = self
             .http
             .get("https://api.github.com/user")
             .header("Authorization", format!("Bearer {access_token}"))
             .header("User-Agent", "hermione")
             .header("Accept", "application/vnd.github+json")
             .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .error_for_status()
-            .map_err(|_| "github rejected the token".to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
+        let status = resp.status();
+        if status.is_client_error() {
+            return Err(IdentityError::Rejected("github rejected the token".into()));
+        }
+        let user: GithubUser = resp.error_for_status()?.json().await?;
         Ok(user.login)
     }
 
     /// Returns the provider's discovery doc + JWKS, served from cache when fresh.
     /// `refresh` forces a refetch (used on a JWKS miss, e.g. after key rotation).
-    async fn meta(&self, issuer: &str, refresh: bool) -> Result<OidcMeta, String> {
+    async fn meta(&self, issuer: &str, refresh: bool) -> Result<OidcMeta, IdentityError> {
         if !refresh {
             if let Some(meta) = self.oidc_cache.read().await.get(issuer) {
                 if meta.fetched_at.elapsed() < OIDC_CACHE_TTL {
@@ -255,24 +261,14 @@ impl Identity {
             "{}/.well-known/openid-configuration",
             issuer.trim_end_matches('/')
         );
-        let discovery: Discovery = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?
-            .json()
-            .await
-            .map_err(|e| e.to_string())?;
+        let discovery: Discovery = self.http.get(url).send().await?.json().await?;
         let jwks: JwkSet = self
             .http
             .get(&discovery.jwks_uri)
             .send()
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .json()
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         let meta = OidcMeta {
             discovery,
             jwks,
@@ -290,11 +286,11 @@ impl Identity {
         issuer: &str,
         client_id: &str,
         id_token: &str,
-    ) -> Result<String, String> {
+    ) -> Result<String, IdentityError> {
         let kid = decode_header(id_token)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| IdentityError::Rejected(e.to_string()))?
             .kid
-            .ok_or("token missing kid")?;
+            .ok_or_else(|| IdentityError::Rejected("token missing kid".into()))?;
         let mut meta = self.meta(issuer, false).await?;
         // A cached JWKS that lacks the token's key id may be stale (rotation):
         // refetch once before giving up.
@@ -307,7 +303,7 @@ impl Identity {
 
     // --- Device flow (for the CLI recorder) ---------------------------------
 
-    pub async fn device_start(&self, provider_name: &str) -> Result<DeviceStart, String> {
+    pub async fn device_start(&self, provider_name: &str) -> Result<DeviceStart, IdentityError> {
         let provider = self.provider(provider_name)?;
         let (endpoint, default_scope) = match provider.kind {
             ProviderKind::Github => (
@@ -318,13 +314,17 @@ impl Identity {
                 let issuer = provider
                     .issuer
                     .as_deref()
-                    .ok_or("oidc provider needs issuer")?;
+                    .ok_or(IdentityError::Misconfigured(
+                        "oidc provider needs an issuer",
+                    ))?;
                 let endpoint = self
                     .meta(issuer, false)
                     .await?
                     .discovery
                     .device_authorization_endpoint
-                    .ok_or("provider has no device endpoint")?;
+                    .ok_or(IdentityError::Misconfigured(
+                        "provider has no device endpoint",
+                    ))?;
                 (endpoint, "openid email".to_string())
             }
         };
@@ -337,18 +337,17 @@ impl Identity {
                 ("scope", &scope),
             ])
             .send()
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .json::<DeviceStart>()
             .await
-            .map_err(|e| e.to_string())
+            .map_err(IdentityError::from)
     }
 
     pub async fn device_poll(
         &self,
         provider_name: &str,
         device_code: &str,
-    ) -> Result<DevicePoll, String> {
+    ) -> Result<DevicePoll, IdentityError> {
         let provider = self.provider(provider_name)?;
         let token_endpoint = match provider.kind {
             ProviderKind::Github => "https://github.com/login/oauth/access_token".to_string(),
@@ -356,12 +355,16 @@ impl Identity {
                 let issuer = provider
                     .issuer
                     .as_deref()
-                    .ok_or("oidc provider needs issuer")?;
+                    .ok_or(IdentityError::Misconfigured(
+                        "oidc provider needs an issuer",
+                    ))?;
                 self.meta(issuer, false)
                     .await?
                     .discovery
                     .token_endpoint
-                    .ok_or("provider has no token endpoint")?
+                    .ok_or(IdentityError::Misconfigured(
+                        "provider has no token endpoint",
+                    ))?
             }
         };
 
@@ -381,26 +384,28 @@ impl Identity {
             .header("Accept", "application/json")
             .form(&form)
             .send()
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .json()
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         if let Some(err) = body.get("error").and_then(|v| v.as_str()) {
             return match err {
                 "authorization_pending" | "slow_down" => Ok(DevicePoll::Pending),
-                other => Err(other.to_string()),
+                other => Err(IdentityError::Rejected(other.to_string())),
             };
         }
 
         let student = match provider.kind {
             ProviderKind::Github => {
-                let at = body["access_token"].as_str().ok_or("no access_token")?;
+                let at = body["access_token"]
+                    .as_str()
+                    .ok_or_else(|| IdentityError::Upstream("no access_token".into()))?;
                 format!("{}:{}", provider.name, self.github_login(at).await?)
             }
             ProviderKind::Oidc => {
-                let idt = body["id_token"].as_str().ok_or("no id_token")?;
+                let idt = body["id_token"]
+                    .as_str()
+                    .ok_or_else(|| IdentityError::Upstream("no id_token".into()))?;
                 let issuer = provider.issuer.as_deref().unwrap();
                 let email = self.verify_oidc(issuer, &provider.client_id, idt).await?;
                 format!("{}:{}", provider.name, email)
@@ -416,11 +421,16 @@ fn verify_id_token(
     jwks: &JwkSet,
     issuer: &str,
     client_id: &str,
-) -> Result<OidcClaims, String> {
-    let header = decode_header(id_token).map_err(|e| e.to_string())?;
-    let kid = header.kid.ok_or("token missing kid")?;
-    let jwk = jwks.find(&kid).ok_or("no matching JWK for token kid")?;
-    let key = DecodingKey::from_jwk(jwk).map_err(|e| e.to_string())?;
+) -> Result<OidcClaims, IdentityError> {
+    let rejected = |why: String| IdentityError::Rejected(why);
+    let header = decode_header(id_token).map_err(|e| rejected(e.to_string()))?;
+    let kid = header
+        .kid
+        .ok_or_else(|| rejected("token missing kid".into()))?;
+    let jwk = jwks
+        .find(&kid)
+        .ok_or_else(|| rejected("no matching JWK for token kid".into()))?;
+    let key = DecodingKey::from_jwk(jwk).map_err(|e| rejected(e.to_string()))?;
     // The token is verified against the IdP's *public* JWKS, so only asymmetric
     // signature algorithms are ever legitimate. Reject HMAC/`none` up front
     // rather than trusting the token's own `alg` header — otherwise an attacker
@@ -438,14 +448,62 @@ fn verify_id_token(
             | Algorithm::ES384
             | Algorithm::EdDSA
     ) {
-        return Err("unsupported ID token signature algorithm".to_string());
+        return Err(rejected("unsupported ID token signature algorithm".into()));
     }
     let mut validation = Validation::new(header.alg);
     validation.set_issuer(&[issuer]);
     validation.set_audience(&[client_id]);
     decode::<OidcClaims>(id_token, &key, &validation)
         .map(|d| d.claims)
-        .map_err(|e| e.to_string())
+        .map_err(|e| rejected(e.to_string()))
+}
+
+/// Why an identity check did not produce a student.
+///
+/// The variants differ in whose fault it is, which decides what the caller is
+/// told: a credential the provider refused is theirs to fix, a provider we
+/// can't reach or that answered nonsense is not, and neither should hand the
+/// provider's own text to whoever asked.
+#[derive(Debug, thiserror::Error)]
+pub enum IdentityError {
+    #[error("unknown provider: {0}")]
+    UnknownProvider(String),
+    /// The credential was refused or is not valid (bad signature, expired, the
+    /// provider said no). Safe to say why: it is about their own token.
+    #[error("{0}")]
+    Rejected(String),
+    /// The provider is set up in a way that cannot work.
+    #[error("provider misconfigured: {0}")]
+    Misconfigured(&'static str),
+    /// The provider could not be reached or answered something unusable.
+    #[error("identity provider failed: {0}")]
+    Upstream(String),
+}
+
+impl From<reqwest::Error> for IdentityError {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Upstream(e.to_string())
+    }
+}
+
+impl From<IdentityError> for ApiError {
+    fn from(e: IdentityError) -> Self {
+        match e {
+            IdentityError::UnknownProvider(name) => {
+                ApiError::bad_request(format!("unknown provider: {name}"))
+            }
+            IdentityError::Rejected(why) => ApiError::unauthorized(why),
+            IdentityError::Misconfigured(_) | IdentityError::Upstream(_) => {
+                tracing::warn!(error = %e, "identity check failed");
+                match e {
+                    IdentityError::Misconfigured(_) => {
+                        ApiError::unavailable("the identity provider is misconfigured")
+                    }
+                    _ => ApiError::bad_gateway("the identity provider is unavailable"),
+                }
+            }
+        }
+    }
 }
 
 fn now() -> i64 {
@@ -485,6 +543,35 @@ mod tests {
         };
         let foreign = other.issue("github:mallory").unwrap();
         assert!(id.verify(&foreign).is_none());
+    }
+
+    async fn shown(e: IdentityError) -> (u16, String) {
+        use axum::response::IntoResponse;
+        let resp = ApiError::from(e).into_response();
+        let status = resp.status().as_u16();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_refused_credential_is_theirs_to_fix() {
+        let (status, body) = shown(IdentityError::Rejected("ExpiredSignature".into())).await;
+        assert_eq!((status, body.as_str()), (401, "ExpiredSignature"));
+        let (status, _) = shown(IdentityError::UnknownProvider("nope".into())).await;
+        assert_eq!(status, 400);
+    }
+
+    #[tokio::test]
+    async fn a_provider_failure_says_nothing_of_what_it_returned() {
+        let e =
+            IdentityError::Upstream("error decoding response body: secret-internal-host".into());
+        let (status, body) = shown(e).await;
+        assert_eq!(status, 502);
+        assert!(!body.contains("secret-internal-host"), "{body}");
+        let (status, _) = shown(IdentityError::Misconfigured("no device endpoint")).await;
+        assert_eq!(status, 503);
     }
 
     #[test]
