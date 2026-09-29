@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 
+use super::intraline;
 use super::model::is_false;
 use super::report::{self, DiffLine};
 use crate::highlight::{Grammar, Highlighted, Line};
@@ -162,6 +163,8 @@ impl Hunk {
             });
         }
 
+        mark_words(&hunk.lines, &mut rows);
+
         let count = |keep: fn(&Row) -> bool| rows.iter().filter(|r| keep(r)).count() as u32;
         Self {
             old_start: hunk.old_start,
@@ -170,6 +173,41 @@ impl Hunk {
             new_lines: count(|r| !matches!(r, Row::Removed { .. })),
             rows,
         }
+    }
+}
+
+/// Marks the words that differ between each removed line and the added line
+/// that replaced it. A run of removed lines followed by a run of added ones is
+/// an edit, so the two are paired line for line; a pair that shares too little
+/// to be an edit of the same line is left to the rows' washes.
+fn mark_words(lines: &[DiffLine], rows: &mut [Row]) {
+    let run =
+        |from: usize, is: fn(&DiffLine) -> bool| lines[from..].iter().take_while(|l| is(l)).count();
+    let mut at = 0;
+    while at < lines.len() {
+        let removed = run(at, |l| matches!(l, DiffLine::Removed(_)));
+        let added = run(at + removed, |l| matches!(l, DiffLine::Added(_)));
+        for k in 0..removed.min(added) {
+            let (gone, came) = (at + k, at + removed + k);
+            let (DiffLine::Removed(old), DiffLine::Added(new)) = (&lines[gone], &lines[came])
+            else {
+                continue;
+            };
+            if let Some(changes) = intraline::changes(old, new) {
+                rows[gone].mark(&changes.old);
+                rows[came].mark(&changes.new);
+            }
+        }
+        // A context line, or a run that was only removed or only added.
+        at += (removed + added).max(1);
+    }
+}
+
+impl Row {
+    fn mark(&mut self, ranges: &[std::ops::Range<usize>]) {
+        let (Self::Context { spans, .. } | Self::Added { spans, .. } | Self::Removed { spans, .. }) =
+            self;
+        *spans = spans.marked(ranges);
     }
 }
 
@@ -268,8 +306,12 @@ mod tests {
             let (Row::Context { spans, .. }
             | Row::Added { spans, .. }
             | Row::Removed { spans, .. }) = row;
-            assert_eq!(spans.spans().len(), 1, "{row:?}");
-            assert_eq!(spans.spans()[0].class(), Class::Plain);
+            // Nothing is coloured. (A row may still be cut where a changed word
+            // starts, so "plain" is about class, not about being a single span.)
+            assert!(
+                spans.spans().iter().all(|s| s.class() == Class::Plain),
+                "{row:?}"
+            );
         }
     }
 
@@ -290,8 +332,105 @@ mod tests {
             let (Row::Context { spans, .. }
             | Row::Added { spans, .. }
             | Row::Removed { spans, .. }) = row;
-            assert_eq!(spans.spans().len(), 1, "fell back to plain: {row:?}");
+            assert!(
+                spans.spans().iter().all(|s| s.class() == Class::Plain),
+                "fell back to plain: {row:?}"
+            );
         }
+    }
+
+    /// The marked text of a row, or `None` if it has no marks.
+    fn marked_text(row: &Row) -> Option<String> {
+        let (Row::Context { spans, .. } | Row::Added { spans, .. } | Row::Removed { spans, .. }) =
+            row;
+        let marked: String = spans
+            .spans()
+            .iter()
+            .filter(|s| s.changed())
+            .map(|s| s.text())
+            .collect();
+        (!marked.is_empty()).then_some(marked)
+    }
+
+    #[test]
+    fn an_edited_line_marks_the_words_that_changed_on_both_sides() {
+        let diff = Diff::new(
+            vec![hunk(1, 1, &[" a", "-x = foo(1, 2)", "+x = foo(1, 3)"])],
+            None,
+        );
+        let rows = rows(&diff);
+        assert_eq!(marked_text(&rows[0]), None, "context is never marked");
+        assert_eq!(marked_text(&rows[1]).as_deref(), Some("2"));
+        assert_eq!(marked_text(&rows[2]).as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn marks_survive_syntax_colouring_and_keep_the_colours() {
+        let buffer = python().highlight(["a = 1", "return 2"]).unwrap();
+        let colour = Colour {
+            buffer: &buffer,
+            grammar: python(),
+        };
+        let diff = Diff::new(vec![hunk(2, 2, &["-return 1", "+return 2"])], Some(colour));
+        let rows = rows(&diff);
+        assert_eq!(marked_text(&rows[0]).as_deref(), Some("1"));
+        assert_eq!(marked_text(&rows[1]).as_deref(), Some("2"));
+        let Row::Added { spans, .. } = &rows[1] else {
+            panic!()
+        };
+        assert!(
+            spans.spans().iter().any(|s| s.class() == Class::Keyword),
+            "the keyword is still a keyword"
+        );
+        assert!(spans.rebuilds("return 2"));
+    }
+
+    #[test]
+    fn removed_and_added_runs_pair_line_for_line() {
+        let diff = Diff::new(
+            vec![hunk(
+                1,
+                1,
+                &["-a = 1", "-b = 2", "+a = 5", "+b = 6", " tail"],
+            )],
+            None,
+        );
+        let marks: Vec<_> = rows(&diff).iter().map(marked_text).collect();
+        assert_eq!(
+            marks,
+            [
+                Some("1".into()),
+                Some("2".into()),
+                Some("5".into()),
+                Some("6".into()),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn lines_that_only_came_or_went_are_not_marked() {
+        let diff = Diff::new(vec![hunk(1, 1, &[" a", "-gone", " b", "+new", " c"])], None);
+        assert!(rows(&diff).iter().all(|r| marked_text(r).is_none()));
+    }
+
+    #[test]
+    fn an_unrelated_pair_is_left_to_the_wash() {
+        let diff = Diff::new(
+            vec![hunk(1, 1, &["-total = price * count", "+print('done')"])],
+            None,
+        );
+        assert!(rows(&diff).iter().all(|r| marked_text(r).is_none()));
+    }
+
+    #[test]
+    fn extra_added_lines_after_a_pair_are_not_paired_with_anything() {
+        let diff = Diff::new(
+            vec![hunk(1, 1, &["-a = 1", "+a = 2", "+brand new line"])],
+            None,
+        );
+        let marks: Vec<_> = rows(&diff).iter().map(marked_text).collect();
+        assert_eq!(marks, [Some("1".into()), Some("2".into()), None]);
     }
 
     #[test]

@@ -448,7 +448,7 @@
     .filev .fv-head .stale { color: var(--amber); }
     .filev .fv-body {
       position: relative; flex: 1 1 auto; min-height: 0; overflow: auto;
-      font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+      font-family: ui-monospace, monospace; font-size: var(--fs-sm); line-height: 1.5;
     }
     .filev .fv-body.empty { display: flex; }
     /* A state note is a sentence, not source: the code font would set it in a
@@ -492,6 +492,14 @@
      * and the washes are kept pale enough to read through. */
     .filev .dl.add { background: var(--diff-add-wash); }
     .filev .dl.del { background: var(--diff-del-wash); }
+    /* Within an edited line, the words that changed are underlined in the row's
+     * own colour. A stronger wash is what GitHub does, but here the syntax
+     * colours already sit just above 4.5:1 on the row washes, and a second wash
+     * under them would take the changed words — the ones a teacher reads
+     * hardest — below it. An underline leaves the text's ground alone. */
+    .filev .dl .wd { border-radius: 1px; }
+    .filev .dl.add .wd { box-shadow: inset 0 -2px 0 var(--green-text); }
+    .filev .dl.del .wd { box-shadow: inset 0 -2px 0 var(--red-text); }
     /* The +/- itself is the one bit of the row that is about the diff. */
     .filev .dl > .t > .sg { color: var(--fg-subtle); }
     .filev .dl.add > .n:last-of-type, .filev .dl.add > .t > .sg { color: var(--green-text); }
@@ -1322,7 +1330,7 @@
       if (!sessionId) {
         body.innerHTML = `<div class="note">No terminal session recorded for <b>${esc(student)}</b> yet.</div>`;
       } else {
-        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 12,
+        term = new Terminal({ fontFamily: 'ui-monospace, monospace', fontSize: 13,
           scrollback: 10000, theme: termTheme(), convertEol: false });
         fit = new FitAddon.FitAddon();
         term.loadAddon(fit);
@@ -1621,9 +1629,12 @@
       let out = '';
       let col = 1;           // 1-based column where the next span starts
       let placed = column == null;
-      for (const [cls, text] of spans) {
-        const open = cls ? `<span class="hl-${cls}">` : '';
-        const close = cls ? '</span>' : '';
+      for (const [cls, text, changed] of spans) {
+        // A third element marks the part of an edited line that changed; it is
+        // a class on the same span, so the caret can still split it.
+        const names = [cls && `hl-${cls}`, changed && 'wd'].filter(Boolean).join(' ');
+        const open = names ? `<span class="${names}">` : '';
+        const close = names ? '</span>' : '';
         if (!placed && column < col + text.length) {
           const at = Math.max(0, column - col);
           out += open + esc(text.slice(0, at)) + '<span class="caret"></span>'

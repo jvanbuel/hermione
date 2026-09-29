@@ -19,6 +19,7 @@
 //! is asked for. A class is a [`Class`], not a string, so the page can never be
 //! sent one it has no colour for.
 
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use serde::{Serialize, Serializer};
@@ -67,11 +68,14 @@ pub enum Class {
 }
 
 /// A run of characters sharing a class. Serialized as a two-element array,
-/// `["k","return"]`.
+/// `["k","return"]`; a run inside a changed part of an edited line carries a
+/// third element, `["k","return",1]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
     class: Class,
     text: String,
+    /// Part of what changed within an edited line (see `snapshots::intraline`).
+    changed: bool,
 }
 
 impl Span {
@@ -79,6 +83,16 @@ impl Span {
         Self {
             class,
             text: text.into(),
+            changed: false,
+        }
+    }
+
+    /// The part of this span at `range`, keeping its class.
+    fn piece(&self, range: Range<usize>, changed: bool) -> Self {
+        Self {
+            class: self.class,
+            text: self.text[range].to_string(),
+            changed,
         }
     }
 
@@ -91,11 +105,20 @@ impl Span {
     pub fn class(&self) -> Class {
         self.class
     }
+
+    #[cfg(test)]
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
 }
 
 impl Serialize for Span {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        (self.class, self.text.as_str()).serialize(serializer)
+        if self.changed {
+            (self.class, self.text.as_str(), 1).serialize(serializer)
+        } else {
+            (self.class, self.text.as_str()).serialize(serializer)
+        }
     }
 }
 
@@ -119,6 +142,34 @@ impl Line {
     #[cfg(test)]
     pub fn spans(&self) -> &[Span] {
         &self.0
+    }
+
+    /// The same line with the given byte ranges of its text marked as changed,
+    /// splitting spans where a range starts or ends. `ranges` must be sorted
+    /// and not overlap, and fall on character boundaries.
+    pub fn marked(&self, ranges: &[Range<usize>]) -> Self {
+        let mut out = Vec::with_capacity(self.0.len() + ranges.len() * 2);
+        let mut start = 0;
+        for span in &self.0 {
+            let end = start + span.text.len();
+            let mut done = start; // everything before this is already emitted
+            for r in ranges {
+                let (from, to) = (r.start.max(start), r.end.min(end));
+                if from >= to {
+                    continue;
+                }
+                if from > done {
+                    out.push(span.piece(done - start..from - start, false));
+                }
+                out.push(span.piece(from - start..to - start, true));
+                done = to;
+            }
+            if done < end {
+                out.push(span.piece(done - start..end - start, false));
+            }
+            start = end;
+        }
+        Self(out)
     }
 
     /// Whether these spans are exactly `text`. Spans are looked up by line
@@ -299,6 +350,8 @@ fn classify(stack: &ScopeStack) -> Class {
 }
 
 #[cfg(test)]
+// `Line::marked` takes a slice of ranges, and one range is a fine slice.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
@@ -308,6 +361,70 @@ mod tests {
 
     fn lines(source: &str) -> Vec<&str> {
         source.split('\n').collect()
+    }
+
+    #[test]
+    fn marking_splits_spans_where_a_range_starts_and_ends() {
+        // `x = 12` as [plain "x = ", number "12"]; mark the "2" alone.
+        let line = Line(vec![
+            Span::new(Class::Plain, "x = "),
+            Span::new(Class::Number, "12"),
+        ]);
+        let marked = line.marked(&[5..6]);
+        let got: Vec<_> = marked
+            .spans()
+            .iter()
+            .map(|s| (s.class(), s.text(), s.changed()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Class::Plain, "x = ", false),
+                (Class::Number, "1", false),
+                (Class::Number, "2", true),
+            ]
+        );
+        assert!(marked.rebuilds("x = 12"), "marking never changes the text");
+    }
+
+    #[test]
+    fn a_mark_can_span_several_spans_and_keeps_each_class() {
+        let line = Line(vec![
+            Span::new(Class::Keyword, "return"),
+            Span::new(Class::Plain, " "),
+            Span::new(Class::Number, "1"),
+        ]);
+        let marked = line.marked(&[3..8]); // "urn 1" -> across all three
+        assert!(marked.rebuilds("return 1"));
+        let changed: Vec<_> = marked
+            .spans()
+            .iter()
+            .filter(|s| s.changed())
+            .map(|s| (s.class(), s.text()))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                (Class::Keyword, "urn"),
+                (Class::Plain, " "),
+                (Class::Number, "1")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_marked_span_carries_a_third_element_and_an_unmarked_one_does_not() {
+        let line = Line(vec![Span::new(Class::Keyword, "if")]).marked(&[0..1]);
+        assert_eq!(
+            serde_json::to_string(&line).unwrap(),
+            r#"[["k","i",1],["k","f"]]"#
+        );
+    }
+
+    #[test]
+    fn no_ranges_leaves_a_line_as_it_was() {
+        let line = Line(vec![Span::new(Class::Plain, "abc")]);
+        assert_eq!(line.marked(&[]), line);
     }
 
     /// Every line's spans must concatenate back to that exact line, or the page

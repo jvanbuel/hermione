@@ -26,6 +26,7 @@
 //! [`store`] holds the latest per student.
 
 mod diff;
+mod intraline;
 mod model;
 mod report;
 mod store;

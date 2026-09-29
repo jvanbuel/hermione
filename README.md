@@ -196,6 +196,17 @@ they rebuild that row's text exactly — a buffer clamped at the size cap has
 fewer lines than its diff refers to — and that check happens once, when the
 snapshot arrives, rather than per row in the browser.
 
+Within an edited line the words that changed are marked too. A run of removed
+rows followed by a run of added ones is an edit, so the two are paired line for
+line and compared word by word (`similar`, over words, whitespace runs and single
+symbols); a marked span carries a third element, `[class, text, 1]`, and the page
+underlines it in the row's colour. A pair that shares less than half of the
+shorter line's text (spacing doesn't count), or would be marked from end to end,
+is left to the row's wash. The
+mark is an underline rather than the stronger background GitHub uses because the
+syntax colours already sit just above 4.5:1 on the row washes, and a second wash
+under the changed words would take them below it.
+
 The contents of a file are **pulled, never pushed**: the backend asks that one
 student's editor for a snapshot only while a teacher has their file pane open,
 nothing is written to Postgres, and the cached snapshot expires in minutes.

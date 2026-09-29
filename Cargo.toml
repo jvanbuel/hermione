@@ -83,6 +83,8 @@ syntect = { version = "5", default-features = false, features = [
     "regex-fancy",
     "parsing",
 ] }
+# Word-level differences inside a changed line.
+similar = "2"
 argon2 = "0.5"
 jsonwebtoken = "9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
