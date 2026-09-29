@@ -25,6 +25,23 @@ long ago they last did anything.
 - The **1 need help** count in the top bar is the whole course at a glance.
 - Click a student to open their pane. Several panes tile side by side.
 
+### Going round the room: **N**
+
+Press **N** to open the flagged student you have not been to yet — the worst
+first (needs help before watch, then whoever has been at it longest). Each one you
+open gets a **✓** on their flag, so pressing **N** again moves on to the next
+person rather than showing you the same red card. When nobody is left it says so.
+A student who gets worse after you have seen them (watch → needs help), or who
+recovers and needs help again later, is unseen again.
+
+The browser tab shows how many are still waiting — **(2) Hermione** — so you can
+leave it in the background. In **⋯ → Alert me when someone needs help** you can
+ask for a desktop notification the moment a student newly needs help; it only
+fires while the tab is in the background, once per student.
+
+What you have seen is remembered by this browser (per course, for the day). A
+co-teacher's browser keeps its own.
+
 ## The tree view
 
 ![The tree view: repository folders, with students on the files they have open](images/teacher-tree.png)

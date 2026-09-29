@@ -82,6 +82,10 @@ mod tests {
         for (path, content_type) in [
             ("assets/common.js", "application/javascript; charset=utf-8"),
             ("assets/chrome.css", "text/css; charset=utf-8"),
+            (
+                "assets/attention.js",
+                "application/javascript; charset=utf-8",
+            ),
         ] {
             assert!(
                 asset(path).is_some_and(|b| !b.is_empty()),
@@ -95,5 +99,10 @@ mod tests {
                 assert!(html.contains(link), "{page} links {link}");
             }
         }
+        let board = String::from_utf8(asset("index.html").unwrap().to_vec()).unwrap();
+        assert!(
+            board.contains("/assets/attention.js"),
+            "the board loads attention.js"
+        );
     }
 }

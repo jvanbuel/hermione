@@ -40,6 +40,9 @@
     #view-toggle button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); font-weight: 600; }
 
     .hint { font-size: var(--fs-sm); color: var(--fg-subtle); }
+    .hint kbd { font: inherit; font-weight: 600; padding: 0 5px; border: 1px solid var(--border-strong, var(--border));
+      border-radius: 4px; color: var(--fg-muted, var(--fg)); }
+    #hint-next { margin-left: 14px; }
     .freshness {
       font-size: var(--fs-sm); color: var(--fg-subtle);
       display: inline-flex; align-items: center; gap: 5px;
@@ -577,6 +580,7 @@
           <svg class="ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M6 1h4l.4 2.1 1.4.8 2-.8 2 3.4-1.6 1.4v1.6L15.2 11l-2 3.4-2-.8-1.4.8L10 16H6l-.4-2.6-1.4-.8-2 .8L.2 10l1.6-1.4V7L.2 5.6l2-3.4 2 .8 1.4-.8zM8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5z"/></svg>
           Assistant settings
         </button>
+        <button id="notify-toggle" type="button" role="menuitem" hidden></button>
         <button id="theme-toggle" type="button" role="menuitem"></button>
         <hr role="separator">
         <button id="logout" type="button" role="menuitem">
@@ -595,10 +599,12 @@
     <span id="freshness" class="freshness">Connecting…</span>
     <span class="spacer"></span>
     <span id="hint" class="hint">Click a student to open their terminal</span>
+    <span id="hint-next" class="hint"><kbd>N</kbd> next student who needs help</span>
   </footer>
   <div id="toasts" role="status" aria-live="polite"></div>
 
   <script src="/assets/common.js"></script>
+  <script src="/assets/attention.js"></script>
   <script>
     // xterm palettes per theme — kept in step with --bg / --fg in tokens.css so
     // the embedded terminals match the page chrome (dark = chalkboard slate).
@@ -703,10 +709,99 @@
       });
     }
 
+    // ---- who needs me next ----
+    // Which flagged students the teacher has already been to (see attention.js),
+    // kept per course in localStorage so a reload doesn't forget it. It is this
+    // browser's memory, not the class's: a co-teacher has their own.
+    const ATTENTION_KEY = 'hermione.attention:';
+    const ATTENTION_MAX_AGE_MS = 12 * 3600 * 1000;
+    const BASE_TITLE = document.title;
+    let attention = { course: null, entries: {}, primed: false };
+
+    function loadAttention(course) {
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(ATTENTION_KEY + course) || '{}'); } catch (_) {}
+      attention = { course, entries: Attention.prune(saved, Date.now(), ATTENTION_MAX_AGE_MS), primed: false };
+    }
+    function saveAttention() {
+      try { localStorage.setItem(ATTENTION_KEY + attention.course, JSON.stringify(attention.entries)); } catch (_) {}
+    }
+    function markStudentSeen(student) {
+      if (attention.course !== currentCourse) return;
+      attention.entries = Attention.markSeen(attention.entries, student, Date.now());
+      saveAttention();
+      if (lastOverview) renderView(lastOverview);
+    }
+    // Runs on every refresh. Decorates the students with `seen`, retitles the tab
+    // with how many flagged students are still waiting, and alerts on new ones.
+    function trackAttention(students) {
+      if (attention.course !== currentCourse) loadAttention(currentCourse);
+      const r = Attention.update(attention.entries, students, Date.now());
+      attention.entries = r.entries;
+      saveAttention();
+      for (const s of students) s.seen = Attention.isSeen(attention.entries, s.student);
+      const waiting = Attention.unseen(attention.entries, students).length;
+      document.title = waiting ? `(${waiting}) ${BASE_TITLE}` : BASE_TITLE;
+      // The first pass after a load sees everyone already flagged as new; only
+      // what changes afterwards is news.
+      if (attention.primed) r.escalated.forEach(name => notifyNeedsHelp(students.find(s => s.student === name)));
+      attention.primed = true;
+    }
+    function nextUp() {
+      if (!lastOverview) return;
+      const all = lastOverview.exercises.flatMap(g => g.students).concat(lastOverview.noExercise);
+      const s = Attention.next(attention.entries, all);
+      if (!s) { toast('Nobody else needs help right now'); return; }
+      openTerminal(s.student, s.terminalSessionId, s.exercise);
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() !== 'n' || e.ctrlKey || e.metaKey || e.altKey) return;
+      // Never steal a keystroke meant for something else: a text field, a
+      // terminal, or a dialog that is open.
+      const t = e.target;
+      if (t.closest && t.closest('input, textarea, select, [contenteditable], .xterm, .modal-backdrop')) return;
+      if (document.querySelector('.modal-backdrop')) return;
+      e.preventDefault();
+      nextUp();
+    });
+
+    // Opt-in desktop alerts for a student who newly needs help, only while this
+    // tab is in the background — with it in front, the board already says so.
+    const NOTIFY_KEY = 'hermione.notify';
+    const notifyOn = () => {
+      try { return localStorage.getItem(NOTIFY_KEY) === '1' && Notification.permission === 'granted'; }
+      catch (_) { return false; }
+    };
+    function renderNotifyToggle() {
+      const b = document.getElementById('notify-toggle');
+      if (!('Notification' in window)) { b.hidden = true; return; }
+      b.hidden = false;
+      b.textContent = notifyOn() ? 'Alerts when someone needs help: on' : 'Alert me when someone needs help';
+    }
+    document.getElementById('notify-toggle').addEventListener('click', async () => {
+      if (notifyOn()) {
+        try { localStorage.setItem(NOTIFY_KEY, '0'); } catch (_) {}
+      } else {
+        const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+        if (permission === 'granted') { try { localStorage.setItem(NOTIFY_KEY, '1'); } catch (_) {} }
+        else toast('Your browser blocked notifications for this page');
+      }
+      renderNotifyToggle();
+    });
+    function notifyNeedsHelp(s) {
+      if (!s || !document.hidden || !notifyOn()) return;
+      const n = new Notification(`${s.student} needs help`, {
+        body: s.exercise ? `on ${s.exercise}` : 'in Hermione',
+        tag: 'hermione-help-' + s.student, // one per student, however often it flips
+      });
+      n.onclick = () => { window.focus(); openTerminal(s.student, s.terminalSessionId, s.exercise); n.close(); };
+    }
+    renderNotifyToggle();
+
     // ---- board rendering ----
     function cardInner(s) {
-      const pill = s.struggle === 'help' ? '<span class="pill help">needs help</span>'
-                 : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '';
+      const pill = s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
+                 : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '';
       const reason = (s.struggleReasons && s.struggleReasons.length)
         ? `<div class="reason">${ICONS.warn}<span>${esc(s.struggleReasons.join(' · '))}</span></div>` : '';
       // Recent typing is the counterweight to the clock: a long time on an
@@ -748,7 +843,8 @@
       b.classList.toggle('struggle-help', s.struggle === 'help');
       b.classList.toggle('struggle-watch', s.struggle === 'watch');
       const label = `${s.student}, ${s.exercise || 'no exercise'}, ${s.status}`
-        + (s.struggle === 'help' ? ', needs help' : s.struggle === 'watch' ? ', watch' : '');
+        + (s.struggle === 'help' ? ', needs help' : s.struggle === 'watch' ? ', watch' : '')
+        + (s.seen ? ', already looked at' : '');
       b.setAttribute('aria-label', label);
       b.innerHTML = cardInner(s);
     }
@@ -827,6 +923,7 @@
       const board = document.getElementById('board');
       const allStudents = data.exercises.flatMap(g => g.students).concat(data.noExercise);
       lastAudience = allStudents.length;
+      trackAttention(allStudents);
       setAlert(allStudents.filter(s => s.struggle === 'help').length);
       board.classList.toggle('tree', currentView === 'tree');
 
@@ -1010,8 +1107,8 @@
         b.className = 'tperson' + (s.struggle === 'help' ? ' help' : s.struggle === 'watch' ? ' watch' : '');
         b.title = `${s.student} — open their file`;
         b.innerHTML = `${avatarHtml(s.student, s.status)}<span class="pname">${esc(s.student)}</span>`
-          + (s.struggle === 'help' ? '<span class="pill help">needs help</span>'
-            : s.struggle === 'watch' ? '<span class="pill watch">watch</span>' : '');
+          + (s.struggle === 'help' ? `<span class="pill help">needs help${s.seen ? ' ✓' : ''}</span>`
+            : s.struggle === 'watch' ? `<span class="pill watch">watch${s.seen ? ' ✓' : ''}</span>` : '');
         // Clicking someone in the file tree means "show me that file", not
         // "show me their shell".
         b.onclick = () => openTerminal(s.student, s.terminalSessionId, s.exercise, 'file');
@@ -1244,6 +1341,7 @@
     // ---- student panes (their terminal, and the file they have open) ----
     function openTerminal(student, sessionId, exercise, mode) {
       if (!student) return;
+      markStudentSeen(student);
       if (openPanes.has(student)) {
         if (mode) setPaneMode(student, mode);
         flashPane(student);
