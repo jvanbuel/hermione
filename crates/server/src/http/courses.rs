@@ -119,21 +119,9 @@ pub(super) struct CreateCourseBody {
     /// Seed the course's exercises from the linked repo's folders (GitHub only).
     /// Defaults to true when a GitHub repo is linked.
     seed_exercises: Option<bool>,
-    // Optional profile fields, set at creation.
-    description: Option<String>,
-    term: Option<String>,
-    institution: Option<String>,
-    level: Option<String>,
-}
-
-/// The profile fields from a create body.
-fn create_profile(body: &CreateCourseBody) -> tenancy::CourseProfile {
-    tenancy::CourseProfile {
-        description: non_blank(body.description.as_deref()),
-        term: non_blank(body.term.as_deref()),
-        institution: non_blank(body.institution.as_deref()),
-        level: non_blank(body.level.as_deref()),
-    }
+    /// Optional profile fields, set at creation.
+    #[serde(flatten)]
+    profile: tenancy::CourseProfile,
 }
 
 /// The resolved (slug, name, repo_url) for a new course, or a refusal saying
@@ -221,7 +209,7 @@ pub(super) async fn create_course_for_teacher(
         &slug,
         &name,
         repo_url.as_deref(),
-        &create_profile(&body),
+        &body.profile.normalized(),
     )
     .await
     .map_err(|e| {

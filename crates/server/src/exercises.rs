@@ -129,28 +129,44 @@ pub async fn delete_missing(
 
 /// Upserts a course's exercises by `(course_id, slug)`, updating title/position
 /// when one already exists. Shared by the define endpoint and repo seeding.
+///
+/// One statement, so either all of them are saved or none. A slug listed twice
+/// keeps its last title and position — Postgres refuses to update one row twice
+/// in a single statement, and the one-at-a-time version this replaced let the
+/// last entry win too.
 pub async fn upsert(
     db: &DatabaseConnection,
     course_id: Uuid,
     items: &[(String, String, i32)],
 ) -> Result<(), sea_orm::DbErr> {
-    for (slug, title, position) in items {
-        let model = exercises::ActiveModel {
+    let mut last: Vec<&(String, String, i32)> = Vec::with_capacity(items.len());
+    for item in items.iter().rev() {
+        if !last.iter().any(|kept| kept.0 == item.0) {
+            last.push(item);
+        }
+    }
+    if last.is_empty() {
+        return Ok(());
+    }
+    let now = Utc::now();
+    let models = last
+        .into_iter()
+        .rev()
+        .map(|(slug, title, position)| exercises::ActiveModel {
             id: Set(Uuid::new_v4()),
             course_id: Set(course_id),
             slug: Set(slug.clone()),
             title: Set(title.clone()),
             position: Set(*position),
-            created_at: Set(Utc::now().into()),
-        };
-        exercises::Entity::insert(model)
-            .on_conflict(
-                OnConflict::columns([exercises::Column::CourseId, exercises::Column::Slug])
-                    .update_columns([exercises::Column::Title, exercises::Column::Position])
-                    .to_owned(),
-            )
-            .exec(db)
-            .await?;
-    }
+            created_at: Set(now.into()),
+        });
+    exercises::Entity::insert_many(models)
+        .on_conflict(
+            OnConflict::columns([exercises::Column::CourseId, exercises::Column::Slug])
+                .update_columns([exercises::Column::Title, exercises::Column::Position])
+                .to_owned(),
+        )
+        .exec(db)
+        .await?;
     Ok(())
 }

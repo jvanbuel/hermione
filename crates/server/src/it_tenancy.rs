@@ -1187,6 +1187,49 @@ async fn a_late_edit_does_not_follow_the_student_to_the_next_exercise() {
 /// by a teacher of that course — and by nobody else. Snapshots carry the text a
 /// student has on screen, so the scoping matters more here than anywhere.
 #[tokio::test]
+async fn upserting_exercises_is_one_statement_and_the_last_duplicate_wins() {
+    let (state, _app) = app().await;
+    let course = tenancy::create_course(&state.db, &format!("up{}", rnd()), "Up", None)
+        .await
+        .unwrap();
+    let item = |slug: &str, title: &str, pos: i32| (slug.to_string(), title.to_string(), pos);
+
+    // Nothing to save is fine, and a slug listed twice keeps its last entry.
+    crate::exercises::upsert(&state.db, course.id, &[])
+        .await
+        .unwrap();
+    crate::exercises::upsert(
+        &state.db,
+        course.id,
+        &[
+            item("a", "A first", 0),
+            item("b", "B", 1),
+            item("a", "A last", 2),
+        ],
+    )
+    .await
+    .unwrap();
+    let rows = crate::exercises::list_for_course(&state.db, course.id)
+        .await
+        .unwrap();
+    let got: Vec<_> = rows
+        .iter()
+        .map(|r| (r.slug.as_str(), r.title.as_str(), r.position))
+        .collect();
+    assert_eq!(got, [("b", "B", 1), ("a", "A last", 2)]);
+
+    // Saving again updates in place rather than adding rows.
+    crate::exercises::upsert(&state.db, course.id, &[item("b", "B renamed", 0)])
+        .await
+        .unwrap();
+    let rows = crate::exercises::list_for_course(&state.db, course.id)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|r| r.slug == "b" && r.title == "B renamed"));
+}
+
+#[tokio::test]
 async fn the_conversation_list_summarises_each_student_in_one_pass() {
     use chrono::{Duration, Utc};
     use hermione_entity::{assistant_conversations, assistant_messages};

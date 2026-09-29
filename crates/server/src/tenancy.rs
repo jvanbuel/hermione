@@ -112,13 +112,34 @@ fn archived_filter(archived: bool) -> sea_orm::sea_query::SimpleExpr {
     }
 }
 
-/// A course's profile fields, set at creation.
-#[derive(Default)]
+/// A course's profile fields, set at creation. Deserialized in place by the
+/// requests that create a course (`#[serde(flatten)]`), so they share one
+/// definition of what the profile is.
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CourseProfile {
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
     pub term: Option<String>,
+    #[serde(default)]
     pub institution: Option<String>,
+    #[serde(default)]
     pub level: Option<String>,
+}
+
+impl CourseProfile {
+    /// The profile as submitted, with each field trimmed and a blank one unset —
+    /// an empty box means "not set".
+    pub fn normalized(&self) -> Self {
+        use crate::text::non_blank;
+        Self {
+            description: non_blank(self.description.as_deref()),
+            term: non_blank(self.term.as_deref()),
+            institution: non_blank(self.institution.as_deref()),
+            level: non_blank(self.level.as_deref()),
+        }
+    }
 }
 
 /// Convenience wrapper (no profile), used by the integration tests; the server

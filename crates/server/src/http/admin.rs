@@ -45,14 +45,8 @@ pub(super) struct CreateCourseRequest {
     name: String,
     #[serde(default)]
     repo_url: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    term: Option<String>,
-    #[serde(default)]
-    institution: Option<String>,
-    #[serde(default)]
-    level: Option<String>,
+    #[serde(flatten)]
+    profile: tenancy::CourseProfile,
 }
 
 pub(super) async fn create_course_handler(
@@ -60,18 +54,12 @@ pub(super) async fn create_course_handler(
     Json(body): Json<CreateCourseRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let repo_url = non_blank(body.repo_url.as_deref());
-    let profile = tenancy::CourseProfile {
-        description: non_blank(body.description.as_deref()),
-        term: non_blank(body.term.as_deref()),
-        institution: non_blank(body.institution.as_deref()),
-        level: non_blank(body.level.as_deref()),
-    };
     let course = tenancy::create_course_with_profile(
         &state.db,
         &body.slug,
         &body.name,
         repo_url.as_deref(),
-        &profile,
+        &body.profile.normalized(),
     )
     .await
     .map_err(|e| {
