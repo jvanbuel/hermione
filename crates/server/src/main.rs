@@ -3,6 +3,7 @@
 
 mod assistant;
 mod auth;
+mod error;
 mod exercises;
 mod files;
 mod github_access;

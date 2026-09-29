@@ -6,8 +6,6 @@
 
 use axum::{
     extract::{Extension, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -16,6 +14,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
 use crate::http::{resolve_course, CourseCtx};
 use crate::state::AppState;
 
@@ -33,15 +32,12 @@ pub async fn broadcast(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<BroadcastRequest>,
-) -> Response {
+) -> ApiResult<Json<serde_json::Value>> {
     let text = body.text.trim();
     if text.is_empty() {
-        return (StatusCode::BAD_REQUEST, "empty message").into_response();
+        return Err(ApiError::bad_request("empty message"));
     }
-    let course_id = match resolve_course(&state, ctx, body.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let course_id = resolve_course(&state, ctx, body.course).await?;
 
     let model = messages::ActiveModel {
         course_id: Set(course_id),
@@ -49,27 +45,22 @@ pub async fn broadcast(
         created_at: Set(Utc::now().into()),
         ..Default::default()
     };
-    match messages::Entity::insert(model)
+    let msg = messages::Entity::insert(model)
         .exec_with_returning(&state.db)
-        .await
-    {
-        Ok(msg) => {
-            // Push to everyone currently connected for this course.
-            state
-                .msg_hub
-                .publish(
-                    &course_id,
-                    crate::state::MessageOut {
-                        id: msg.id,
-                        body: msg.body,
-                        created_at_unix_ms: msg.created_at.timestamp_millis(),
-                    },
-                )
-                .await;
-            Json(serde_json::json!({ "id": msg.id })).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+        .await?;
+    // Push to everyone currently connected for this course.
+    state
+        .msg_hub
+        .publish(
+            &course_id,
+            crate::state::MessageOut {
+                id: msg.id,
+                body: msg.body,
+                created_at_unix_ms: msg.created_at.timestamp_millis(),
+            },
+        )
+        .await;
+    Ok(Json(serde_json::json!({ "id": msg.id })))
 }
 
 #[derive(Deserialize)]
@@ -80,7 +71,7 @@ pub struct PollQuery {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MessageDto {
+pub struct MessageDto {
     id: i64,
     body: String,
     created_at_unix_ms: i64,
@@ -91,27 +82,21 @@ pub async fn inbox(
     State(state): State<AppState>,
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Query(q): Query<PollQuery>,
-) -> Response {
-    let since = q.since.unwrap_or(0);
-    match messages::Entity::find()
+) -> ApiResult<Json<Vec<MessageDto>>> {
+    let rows = messages::Entity::find()
         .filter(messages::Column::CourseId.eq(course_id))
-        .filter(messages::Column::Id.gt(since))
+        .filter(messages::Column::Id.gt(q.since.unwrap_or(0)))
         .order_by_asc(messages::Column::Id)
         .limit(POLL_LIMIT)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => {
-            let dtos: Vec<MessageDto> = rows
-                .into_iter()
-                .map(|m| MessageDto {
-                    id: m.id,
-                    body: m.body,
-                    created_at_unix_ms: m.created_at.timestamp_millis(),
-                })
-                .collect();
-            Json(dtos).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+        .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|m| MessageDto {
+                id: m.id,
+                body: m.body,
+                created_at_unix_ms: m.created_at.timestamp_millis(),
+            })
+            .collect(),
+    ))
 }

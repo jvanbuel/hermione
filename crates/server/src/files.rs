@@ -8,7 +8,6 @@
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -17,6 +16,7 @@ use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrde
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
+use crate::error::ApiResult;
 use crate::http::{resolve_course, CourseCtx, CourseQuery, VerifiedStudent};
 use crate::state::AppState;
 
@@ -85,9 +85,9 @@ pub async fn ingest(
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(events): Json<Vec<FileEventIn>>,
-) -> impl IntoResponse {
+) -> ApiResult<(StatusCode, String)> {
     if events.is_empty() {
-        return (StatusCode::OK, "0").into_response();
+        return Ok((StatusCode::OK, "0".to_string()));
     }
 
     // Only worth a query when something actually needs rescuing.
@@ -138,18 +138,15 @@ pub async fn ingest(
         .collect();
 
     let count = models.len();
-    match file_events::Entity::insert_many(models)
+    file_events::Entity::insert_many(models)
         .exec(&state.db)
-        .await
-    {
-        Ok(_) => (StatusCode::OK, count.to_string()).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+        .await?;
+    Ok((StatusCode::OK, count.to_string()))
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ActivityDto {
+pub struct ActivityDto {
     student: String,
     workspace: Option<String>,
     path: String,
@@ -165,21 +162,14 @@ pub async fn students_activity(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    let rows = match file_events::Entity::find()
+) -> ApiResult<Json<Vec<ActivityDto>>> {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let rows = file_events::Entity::find()
         .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_desc(file_events::Column::At)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     // Keep the most recent event per student (rows are newest-first).
     let mut seen = std::collections::HashSet::new();
@@ -198,7 +188,7 @@ pub async fn students_activity(
         })
         .collect();
 
-    Json(latest).into_response()
+    Ok(Json(latest))
 }
 
 #[derive(Deserialize)]
@@ -209,7 +199,7 @@ pub struct AnalyticsQuery {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct FileTime {
+pub struct FileTime {
     path: String,
     relative_path: Option<String>,
     exercise: Option<String>,
@@ -218,14 +208,14 @@ struct FileTime {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExerciseTime {
+pub struct ExerciseTime {
     exercise: String,
     seconds: i64,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TimeReport {
+pub struct TimeReport {
     student: String,
     total_seconds: i64,
     per_file: Vec<FileTime>,
@@ -240,21 +230,14 @@ pub async fn time_per_file(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<AnalyticsQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    let rows = match file_events::Entity::find()
+) -> ApiResult<Json<TimeReport>> {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let rows = file_events::Entity::find()
         .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::Student.eq(&q.student))
         .order_by_asc(file_events::Column::At)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     use std::collections::HashMap;
     let mut per_file_secs: HashMap<String, (Option<String>, Option<String>, i64)> = HashMap::new();
@@ -301,13 +284,12 @@ pub async fn time_per_file(
         .collect();
     per_exercise.sort_by_key(|e| std::cmp::Reverse(e.seconds));
 
-    Json(TimeReport {
+    Ok(Json(TimeReport {
         student: q.student,
         total_seconds: total,
         per_file,
         per_exercise,
-    })
-    .into_response()
+    }))
 }
 
 #[cfg(test)]
@@ -497,7 +479,7 @@ fn unix_ms_to_dt(ms: i64) -> sea_orm::prelude::DateTimeWithTimeZone {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct OverviewStudent {
+pub struct OverviewStudent {
     student: String,
     file: Option<String>,
     language: Option<String>,
@@ -750,7 +732,7 @@ fn into_group(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Overview {
+pub struct Overview {
     exercises: Vec<ExerciseGroup>,
     /// Students whose current file maps to no exercise.
     no_exercise: Vec<OverviewStudent>,
@@ -760,21 +742,14 @@ pub async fn overview(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    let events = match file_events::Entity::find()
+) -> ApiResult<Json<Overview>> {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let events = file_events::Entity::find()
         .filter(file_events::Column::CourseId.eq(course_id))
         .filter(file_events::Column::At.gt(recent_cutoff()))
         .order_by_asc(file_events::Column::At)
         .all(&state.db)
-        .await
-    {
-        Ok(e) => e,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     // Latest terminal session per student (within this course), plus struggle
     // signals (errors / failed runs) from each student's recent sessions.
@@ -785,26 +760,21 @@ pub async fn overview(
     // scan stays bounded as session history grows — and the dashboard is a live
     // view of the current teaching session anyway.
     let recent = recent_cutoff();
-    match sessions::Entity::find()
+    let recent_sessions = sessions::Entity::find()
         .filter(sessions::Column::CourseId.eq(course_id))
         .filter(sessions::Column::StartedAt.gt(recent))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => {
-            for s in rows {
-                terminals
-                    .entry(s.student.clone())
-                    .or_insert((s.id.to_string(), s.status.clone()));
-                let sig = signals.entry(s.student.clone()).or_default();
-                sig.errors += s.error_count;
-                if matches!(s.exit_code, Some(code) if code != 0) {
-                    sig.failed_runs += 1;
-                }
-            }
+        .await?;
+    for s in recent_sessions {
+        terminals
+            .entry(s.student.clone())
+            .or_insert((s.id.to_string(), s.status.clone()));
+        let sig = signals.entry(s.student.clone()).or_default();
+        sig.errors += s.error_count;
+        if matches!(s.exit_code, Some(code) if code != 0) {
+            sig.failed_runs += 1;
         }
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 
     // Bucket events per student, preserving chronological order.
@@ -970,9 +940,8 @@ pub async fn overview(
 
     no_exercise.sort_by_key(|s| std::cmp::Reverse(s.last_seen_unix_ms));
 
-    Json(Overview {
+    Ok(Json(Overview {
         exercises: output,
         no_exercise,
-    })
-    .into_response()
+    }))
 }

@@ -35,12 +35,13 @@ mod store;
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
 use crate::http::{authorized_course, CourseCtx, VerifiedStudent};
 use crate::solutions::{GitHubRepo, RepoPath, SolutionsSource};
 use crate::state::{AppState, Control};
@@ -61,14 +62,15 @@ pub async fn ingest(
     Extension(CourseCtx(course)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(report): Json<Report>,
-) -> Response {
+) -> ApiResult<StatusCode> {
     // A verified identity overrides the self-asserted name. It must not fall
     // back to it when the identity is unusable: that would let an editor pick
     // its own name on exactly the deployments that verify them.
-    let student = match verified.map(Student::try_from).transpose() {
-        Ok(verified) => verified.unwrap_or(report.student),
-        Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
-    };
+    let student = verified
+        .map(Student::try_from)
+        .transpose()
+        .map_err(|e| ApiError::unauthorized(e.to_string()))?
+        .unwrap_or(report.student);
 
     // Turning a report into a snapshot parses the whole buffer: tens to
     // hundreds of milliseconds of solid CPU, and a watched student sends one
@@ -77,16 +79,12 @@ pub async fn ingest(
     let slot = Slot { course, student };
     let previous = state.snapshots.latest(&slot).map(|latest| latest.snapshot);
     let state_of = report.state;
-    let built =
+    let snapshot =
         tokio::task::spawn_blocking(move || Snapshot::from_report(state_of, previous.as_deref()))
-            .await;
-    let snapshot = match built {
-        Ok(snapshot) => snapshot,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+            .await?;
 
     state.snapshots.insert(slot, snapshot);
-    StatusCode::OK.into_response()
+    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize)]
@@ -147,12 +145,8 @@ pub async fn student_file(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<FileQuery>,
-) -> Response {
-    let course =
-        match authorized_course(&state, ctx, q.course.as_deref().unwrap_or("default")).await {
-            Ok(course) => course,
-            Err(resp) => return resp,
-        };
+) -> ApiResult {
+    let course = authorized_course(&state, ctx, q.course.as_deref().unwrap_or("default")).await?;
     let slot = Slot {
         course: course.id,
         student: q.student,
@@ -172,7 +166,7 @@ pub async fn student_file(
         }
         _ => None,
     };
-    Json(View {
+    Ok(Json(View {
         student: &slot.student,
         // Whether an editor is there to answer is the hub's to say, not
         // something to infer from the side effects of a poll that may have been
@@ -181,7 +175,7 @@ pub async fn student_file(
         latest: latest.as_ref().map(LatestView::from),
         solution,
     })
-    .into_response()
+    .into_response())
 }
 
 /// The student's file against the course's reference solution: find the

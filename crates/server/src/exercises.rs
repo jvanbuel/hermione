@@ -4,7 +4,6 @@
 use axum::{
     extract::{Extension, Query, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -17,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::AuthCtx;
+use crate::error::ApiResult;
 use crate::http::{resolve_course, CourseQuery};
 use crate::state::AppState;
 
@@ -35,7 +35,7 @@ pub async fn list_for_course(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExerciseDto {
+pub struct ExerciseDto {
     slug: String,
     title: String,
     position: i32,
@@ -46,25 +46,18 @@ pub async fn list(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    match list_for_course(&state.db, course_id).await {
-        Ok(rows) => {
-            let dtos: Vec<ExerciseDto> = rows
-                .into_iter()
-                .map(|e| ExerciseDto {
-                    slug: e.slug,
-                    title: e.title,
-                    position: e.position,
-                })
-                .collect();
-            Json(dtos).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+) -> ApiResult<Json<Vec<ExerciseDto>>> {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let rows = list_for_course(&state.db, course_id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|e| ExerciseDto {
+                slug: e.slug,
+                title: e.title,
+                position: e.position,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -90,11 +83,8 @@ pub async fn define(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<DefineRequest>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, body.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+) -> ApiResult<StatusCode> {
+    let course_id = resolve_course(&state, ctx, body.course).await?;
 
     let items: Vec<(String, String, i32)> = body
         .exercises
@@ -112,16 +102,12 @@ pub async fn define(
         })
         .collect();
 
-    if let Err(e) = upsert(&state.db, course_id, &items).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
+    upsert(&state.db, course_id, &items).await?;
     if body.replace {
         let keep: Vec<String> = items.iter().map(|(slug, _, _)| slug.clone()).collect();
-        if let Err(e) = delete_missing(&state.db, course_id, &keep).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        delete_missing(&state.db, course_id, &keep).await?;
     }
-    StatusCode::NO_CONTENT.into_response()
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Deletes a course's exercise definitions whose slug isn't in `keep`. Only the

@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Response,
+        IntoResponse,
     },
     Json,
 };
@@ -27,7 +27,7 @@ use chrono::Utc;
 use futures::StreamExt;
 use hermione_entity::{assistant_conversations, assistant_messages, course_assistants, courses};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    ActiveValue::Set, ColumnTrait, DbErr, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
     QuerySelect,
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
 use crate::http::{resolve_course, CourseCtx, CourseQuery, VerifiedStudent};
 use crate::state::AppState;
 
@@ -560,19 +561,12 @@ pub async fn get_config(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+) -> ApiResult {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
 
-    let row = match course_assistants::Entity::find_by_id(course_id)
+    let row = course_assistants::Entity::find_by_id(course_id)
         .one(&state.db)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     let dto = match row {
         Some(m) => ConfigDto {
@@ -594,7 +588,7 @@ pub async fn get_config(
             configured: false,
         },
     };
-    Json(dto).into_response()
+    Ok(Json(dto).into_response())
 }
 
 /// PUT /api/assistant — upsert the config; syncs the Anthropic Agent when enabled.
@@ -602,18 +596,13 @@ pub async fn put_config(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<PutConfig>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, body.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+) -> ApiResult {
+    let course_id = resolve_course(&state, ctx, body.course).await?;
 
     if body.enabled && !state.assistant.enabled() {
-        return (
-            StatusCode::BAD_REQUEST,
+        return Err(ApiError::bad_request(
             "the assistant is not configured on this server (HERMIONE_ANTHROPIC_API_KEY is unset)",
-        )
-            .into_response();
+        ));
     }
 
     let model = body
@@ -622,13 +611,9 @@ pub async fn put_config(
         .unwrap_or_else(|| state.assistant_default_model.clone());
     let system_prompt = body.system_prompt.unwrap_or_default();
 
-    let existing = match course_assistants::Entity::find_by_id(course_id)
+    let existing = course_assistants::Entity::find_by_id(course_id)
         .one(&state.db)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     // Sync (create/update) the Agent only when the assistant is enabled.
     let (mut agent_id, mut agent_version, mut environment_id) = match &existing {
@@ -665,7 +650,10 @@ pub async fn put_config(
                 environment_id = state.assistant.environment_id.read().await.clone();
             }
             Err(e) => {
-                return (StatusCode::BAD_GATEWAY, format!("agent sync failed: {e}")).into_response()
+                return Err(ApiError::refused(
+                    StatusCode::BAD_GATEWAY,
+                    format!("agent sync failed: {e}"),
+                ))
             }
         }
     }
@@ -684,11 +672,9 @@ pub async fn put_config(
         environment_id,
         existed: existing.is_some(),
     };
-    if let Err(e) = upsert.save(&state.db).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-    }
+    upsert.save(&state.db).await?;
 
-    Json(ConfigDto {
+    Ok(Json(ConfigDto {
         enabled: body.enabled,
         model,
         system_prompt,
@@ -697,7 +683,7 @@ pub async fn put_config(
         available: state.assistant.enabled(),
         configured: agent_id.is_some(),
     })
-    .into_response()
+    .into_response())
 }
 
 /// Small helper to upsert a `course_assistants` row by primary key.
@@ -715,7 +701,7 @@ struct ActiveModelFrom {
 }
 
 impl ActiveModelFrom {
-    async fn save(self, db: &sea_orm::DatabaseConnection) -> Result<(), String> {
+    async fn save(self, db: &sea_orm::DatabaseConnection) -> Result<(), DbErr> {
         let active = course_assistants::ActiveModel {
             course_id: Set(self.course_id),
             enabled: Set(self.enabled),
@@ -728,18 +714,12 @@ impl ActiveModelFrom {
             environment_id: Set(self.environment_id),
             updated_at: Set(Utc::now().into()),
         };
-        let res = if self.existed {
-            course_assistants::Entity::update(active)
-                .exec(db)
-                .await
-                .map(|_| ())
+        if self.existed {
+            course_assistants::Entity::update(active).exec(db).await?;
         } else {
-            course_assistants::Entity::insert(active)
-                .exec(db)
-                .await
-                .map(|_| ())
-        };
-        res.map_err(|e| e.to_string())
+            course_assistants::Entity::insert(active).exec(db).await?;
+        }
+        Ok(())
     }
 }
 
@@ -764,21 +744,14 @@ pub async fn list_conversations(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+) -> ApiResult {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
 
-    let conversations = match assistant_conversations::Entity::find()
+    let conversations = assistant_conversations::Entity::find()
         .filter(assistant_conversations::Column::CourseId.eq(course_id))
         .order_by_desc(assistant_conversations::Column::UpdatedAt)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
 
     // Class-sized lists, so a count + last-message lookup per conversation is
     // fine. The last message also fixes up `last_activity` for older rows whose
@@ -810,7 +783,7 @@ pub async fn list_conversations(
             preview: last.map(|m| preview(&m.body)),
         });
     }
-    Json(out).into_response()
+    Ok(Json(out).into_response())
 }
 
 #[derive(Serialize)]
@@ -828,51 +801,34 @@ pub async fn conversation_messages(
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    let Ok(id) = Uuid::parse_str(&id) else {
-        return (StatusCode::BAD_REQUEST, "invalid conversation id").into_response();
-    };
+) -> ApiResult {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let id = Uuid::parse_str(&id).map_err(|_| ApiError::bad_request("invalid conversation id"))?;
 
-    let conversation = match assistant_conversations::Entity::find_by_id(id)
+    let conversation = assistant_conversations::Entity::find_by_id(id)
         .one(&state.db)
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
     // Scope to the resolved course: a conversation from another course is not
     // visible here even with a valid id.
     let Some(conversation) = conversation.filter(|c| c.course_id == course_id) else {
-        return (StatusCode::NOT_FOUND, "no such conversation").into_response();
+        return Err(ApiError::not_found("no such conversation"));
     };
 
-    let messages = match assistant_messages::Entity::find()
+    let messages = assistant_messages::Entity::find()
         .filter(assistant_messages::Column::ConversationId.eq(conversation.id))
         .order_by_asc(assistant_messages::Column::Id)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => rows
-            .into_iter()
-            .map(|m| HistoryMessage {
-                role: m.role,
-                body: m.body,
-                created_at_unix_ms: m.created_at.timestamp_millis(),
-            })
-            .collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?
+        .into_iter()
+        .map(HistoryMessage::from)
+        .collect();
 
-    Json(ConversationDetail {
+    Ok(Json(ConversationDetail {
         id: conversation.id.to_string(),
         student: conversation.student,
         messages,
     })
-    .into_response()
+    .into_response())
 }
 
 /// Collapses a message body to a short single-line preview.
@@ -899,9 +855,9 @@ struct StatusDto {
 pub async fn status(
     State(state): State<AppState>,
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
-) -> Response {
+) -> ApiResult {
     let enabled = state.assistant.enabled() && assistant_live(&state, course_id).await;
-    Json(StatusDto { enabled }).into_response()
+    Ok(Json(StatusDto { enabled }).into_response())
 }
 
 /// True when the course has an enabled, agent-synced assistant.
@@ -944,10 +900,10 @@ async fn prepare_turn(
     course_id: Uuid,
     verified: Option<String>,
     body: ChatRequest,
-) -> Result<PreparedTurn, Response> {
+) -> ApiResult<PreparedTurn> {
     let message = body.message.trim().to_string();
     if message.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "empty message").into_response());
+        return Err(ApiError::bad_request("empty message"));
     }
     // A verified identity (when enforced) wins over the self-asserted one.
     let student = verified
@@ -955,39 +911,21 @@ async fn prepare_turn(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let Some(student) = student else {
-        return Err((StatusCode::BAD_REQUEST, "missing student").into_response());
+        return Err(ApiError::bad_request("missing student"));
     };
 
-    let row = match course_assistants::Entity::find_by_id(course_id)
+    let not_enabled = || ApiError::not_found("assistant not enabled for this course");
+    let row = course_assistants::Entity::find_by_id(course_id)
         .one(&state.db)
-        .await
-    {
-        Ok(row) => row,
-        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()),
+        .await?
+        .ok_or_else(not_enabled)?;
+    let agent_id = match row.agent_id {
+        Some(id) if row.enabled && state.assistant.enabled() => id,
+        _ => return Err(not_enabled()),
     };
-    let Some(row) = row else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "assistant not enabled for this course",
-        )
-            .into_response());
-    };
-    if !row.enabled || row.agent_id.is_none() || !state.assistant.enabled() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "assistant not enabled for this course",
-        )
-            .into_response());
-    }
-    let agent_id = row.agent_id.unwrap();
 
-    let conversation = find_or_create_conversation(state, course_id, &student)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e).into_response())?;
-
-    if let Err(e) = insert_message(state, conversation.id, "student", &message).await {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, e).into_response());
-    }
+    let conversation = find_or_create_conversation(state, course_id, &student).await?;
+    insert_message(state, conversation.id, "student", &message).await?;
 
     // Ground the turn with light editor context, if provided.
     let prompt = match (&body.file, &body.language) {
@@ -1011,31 +949,19 @@ pub async fn chat(
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(body): Json<ChatRequest>,
-) -> Response {
-    let prepared = match prepare_turn(&state, course_id, verified, body).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+) -> ApiResult {
+    let prepared = prepare_turn(&state, course_id, verified, body).await?;
 
-    let reply = match run_with_session(
+    let reply = run_with_session(
         &state,
         &prepared.conversation,
         &prepared.agent_id,
         &prepared.prompt,
     )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return (StatusCode::BAD_GATEWAY, format!("assistant error: {e}")).into_response()
-        }
-    };
+    .await?;
+    insert_message(&state, prepared.conversation.id, "assistant", &reply).await?;
 
-    if let Err(e) = insert_message(&state, prepared.conversation.id, "assistant", &reply).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-    }
-
-    Json(ChatReply { reply }).into_response()
+    Ok(Json(ChatReply { reply }).into_response())
 }
 
 /// POST /api/assistant/chat/stream — one turn, relayed to the client as SSE.
@@ -1046,11 +972,8 @@ pub async fn chat_stream(
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Json(body): Json<ChatRequest>,
-) -> Response {
-    let prepared = match prepare_turn(&state, course_id, verified, body).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+) -> ApiResult {
+    let prepared = prepare_turn(&state, course_id, verified, body).await?;
 
     let (tx, rx) = mpsc::channel::<TurnEvent>(32);
     let st = state.clone();
@@ -1117,9 +1040,9 @@ pub async fn chat_stream(
     });
 
     let stream = ReceiverStream::new(rx).map(|ev| Ok::<Event, Infallible>(ev.into_event()));
-    Sse::new(stream)
+    Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response()
+        .into_response())
 }
 
 /// Runs a turn, transparently opening a session (or re-opening a stale one).
@@ -1128,11 +1051,18 @@ async fn run_with_session(
     conversation: &assistant_conversations::Model,
     agent_id: &str,
     prompt: &str,
-) -> Result<String, String> {
+) -> ApiResult<String> {
+    // What the upstream said is for the caller: it is a 502, not our failure.
+    let upstream =
+        |e: String| ApiError::refused(StatusCode::BAD_GATEWAY, format!("assistant error: {e}"));
     let mut session_id = match &conversation.session_id {
         Some(s) => s.clone(),
         None => {
-            let s = state.assistant.open_session(agent_id).await?;
+            let s = state
+                .assistant
+                .open_session(agent_id)
+                .await
+                .map_err(upstream)?;
             set_session(state, conversation.id, &s).await?;
             s
         }
@@ -1142,9 +1072,17 @@ async fn run_with_session(
         Ok(reply) => Ok(reply),
         // The session may have terminated/expired — open a fresh one and retry.
         Err(_) => {
-            session_id = state.assistant.open_session(agent_id).await?;
+            session_id = state
+                .assistant
+                .open_session(agent_id)
+                .await
+                .map_err(upstream)?;
             set_session(state, conversation.id, &session_id).await?;
-            state.assistant.run_turn(&session_id, prompt).await
+            state
+                .assistant
+                .run_turn(&session_id, prompt)
+                .await
+                .map_err(upstream)
         }
     }
 }
@@ -1155,6 +1093,16 @@ struct HistoryMessage {
     role: String,
     body: String,
     created_at_unix_ms: i64,
+}
+
+impl From<assistant_messages::Model> for HistoryMessage {
+    fn from(m: assistant_messages::Model) -> Self {
+        HistoryMessage {
+            role: m.role,
+            body: m.body,
+            created_at_unix_ms: m.created_at.timestamp_millis(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1168,48 +1116,34 @@ pub async fn history(
     Extension(CourseCtx(course_id)): Extension<CourseCtx>,
     Extension(VerifiedStudent(verified)): Extension<VerifiedStudent>,
     Query(q): Query<HistoryQuery>,
-) -> Response {
+) -> ApiResult {
     let student = verified
         .or(q.student)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let Some(student) = student else {
-        return Json(Vec::<HistoryMessage>::new()).into_response();
+        return Ok(Json(Vec::<HistoryMessage>::new()).into_response());
     };
 
-    let conversation = match assistant_conversations::Entity::find()
+    let conversation = assistant_conversations::Entity::find()
         .filter(assistant_conversations::Column::CourseId.eq(course_id))
         .filter(assistant_conversations::Column::Student.eq(&student))
         .one(&state.db)
-        .await
-    {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
+        .await?;
     let Some(conversation) = conversation else {
-        return Json(Vec::<HistoryMessage>::new()).into_response();
+        return Ok(Json(Vec::<HistoryMessage>::new()).into_response());
     };
 
-    match assistant_messages::Entity::find()
+    let out: Vec<HistoryMessage> = assistant_messages::Entity::find()
         .filter(assistant_messages::Column::ConversationId.eq(conversation.id))
         .order_by_asc(assistant_messages::Column::Id)
         .limit(HISTORY_LIMIT)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => {
-            let out: Vec<HistoryMessage> = rows
-                .into_iter()
-                .map(|m| HistoryMessage {
-                    role: m.role,
-                    body: m.body,
-                    created_at_unix_ms: m.created_at.timestamp_millis(),
-                })
-                .collect();
-            Json(out).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+        .await?
+        .into_iter()
+        .map(HistoryMessage::from)
+        .collect();
+    Ok(Json(out).into_response())
 }
 
 // --- conversation persistence ----------------------------------------------
@@ -1218,13 +1152,12 @@ async fn find_or_create_conversation(
     state: &AppState,
     course_id: Uuid,
     student: &str,
-) -> Result<assistant_conversations::Model, String> {
+) -> Result<assistant_conversations::Model, DbErr> {
     if let Some(c) = assistant_conversations::Entity::find()
         .filter(assistant_conversations::Column::CourseId.eq(course_id))
         .filter(assistant_conversations::Column::Student.eq(student))
         .one(&state.db)
-        .await
-        .map_err(|e| e.to_string())?
+        .await?
     {
         return Ok(c);
     }
@@ -1240,14 +1173,13 @@ async fn find_or_create_conversation(
     assistant_conversations::Entity::insert(model)
         .exec_with_returning(&state.db)
         .await
-        .map_err(|e| e.to_string())
 }
 
 async fn set_session(
     state: &AppState,
     conversation_id: Uuid,
     session_id: &str,
-) -> Result<(), String> {
+) -> Result<(), DbErr> {
     let model = assistant_conversations::ActiveModel {
         id: Set(conversation_id),
         session_id: Set(Some(session_id.to_string())),
@@ -1256,9 +1188,8 @@ async fn set_session(
     };
     assistant_conversations::Entity::update(model)
         .exec(&state.db)
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .await?;
+    Ok(())
 }
 
 async fn insert_message(
@@ -1266,7 +1197,7 @@ async fn insert_message(
     conversation_id: Uuid,
     role: &str,
     body: &str,
-) -> Result<(), String> {
+) -> Result<(), DbErr> {
     let model = assistant_messages::ActiveModel {
         conversation_id: Set(conversation_id),
         role: Set(role.to_string()),
@@ -1276,7 +1207,6 @@ async fn insert_message(
     };
     assistant_messages::Entity::insert(model)
         .exec(&state.db)
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .await?;
+    Ok(())
 }

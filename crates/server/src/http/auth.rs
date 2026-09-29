@@ -1,29 +1,22 @@
 //! Who is calling: the teacher's session, the super-admin token, an editor's
 //! enrollment token and verified identity, and the student sign-in routes.
 
-use super::assets::serve_asset;
-use crate::auth::constant_time_eq;
-use crate::auth::AuthCtx;
-use crate::state::AppState;
-use crate::student::BlankName;
-use crate::student::Student;
-use crate::tenancy;
-use crate::tenancy::DEFAULT_COURSE_ID;
-use axum::extract::Request;
-use axum::extract::State;
-use axum::http::header;
-use axum::http::HeaderMap;
-use axum::http::StatusCode;
-use axum::middleware::Next;
-use axum::response::Redirect;
-use axum::response::Response;
-use axum::Json;
-use serde::Deserialize;
-use serde::Serialize;
 use std::sync::atomic::Ordering;
 
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+
+use super::assets::serve_asset;
 use super::{CourseCtx, VerifiedStudent};
-use axum::response::IntoResponse;
+use crate::auth::{constant_time_eq, AuthCtx};
+use crate::error::{ApiError, ApiResult};
+use crate::state::AppState;
+use crate::student::{BlankName, Student};
+use crate::tenancy::{self, DEFAULT_COURSE_ID};
 
 /// Name of the teacher session cookie.
 const SESSION_COOKIE: &str = "hermione_session";
@@ -41,17 +34,14 @@ pub(super) struct LoginRequest {
 pub(super) async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
-) -> Response {
-    match tenancy::verify_login(&state.db, &body.username, &body.password).await {
-        Some(admin_id) => {
-            let token = state.auth.create_session(admin_id).await;
-            let cookie = format!(
-                "{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200"
-            );
-            ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
-        }
-        None => (StatusCode::UNAUTHORIZED, "invalid credentials").into_response(),
-    }
+) -> ApiResult {
+    let admin_id = tenancy::verify_login(&state.db, &body.username, &body.password)
+        .await
+        .ok_or_else(|| ApiError::unauthorized("invalid credentials"))?;
+    let token = state.auth.create_session(admin_id).await;
+    let cookie =
+        format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200");
+    Ok(([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
 }
 
 pub(super) async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -95,22 +85,17 @@ pub(super) async fn require_super_admin(
     State(state): State<AppState>,
     request: Request,
     next: Next,
-) -> Response {
-    let Some(expected) = state.admin_token.as_deref() else {
-        return (StatusCode::FORBIDDEN, "provisioning API disabled").into_response();
-    };
-    let ok = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
-        .unwrap_or(false);
-    if ok {
-        next.run(request).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "invalid or missing admin token").into_response()
+) -> ApiResult {
+    let expected = state
+        .admin_token
+        .as_deref()
+        .ok_or_else(|| ApiError::forbidden("provisioning API disabled"))?;
+    let presented = bearer_token(request.headers())
+        .is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()));
+    if !presented {
+        return Err(ApiError::unauthorized("invalid or missing admin token"));
     }
+    Ok(next.run(request).await)
 }
 
 /// The enrollment token an editor sends as `Authorization: Bearer <token>`.
@@ -127,48 +112,42 @@ pub(super) async fn require_ingest(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
-) -> Response {
-    let token = bearer_token(request.headers());
-
-    let course_id = match token {
-        Some(token) => match tenancy::course_by_token(&state.db, token).await {
-            Some(course) => course.id,
-            None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),
-        },
+) -> ApiResult {
+    let course_id = match bearer_token(request.headers()) {
+        Some(token) => {
+            tenancy::course_by_token(&state.db, token)
+                .await
+                .ok_or_else(|| ApiError::unauthorized("invalid enrollment token"))?
+                .id
+        }
         // No token: only allowed in open dev mode, into the default course.
         None if state.open_dev.load(Ordering::Relaxed) => DEFAULT_COURSE_ID,
-        None => return (StatusCode::UNAUTHORIZED, "enrollment token required").into_response(),
+        None => return Err(ApiError::unauthorized("enrollment token required")),
     };
 
     // Verified student identity, enforced when OIDC is configured. When enforced,
     // the trusted student replaces any self-asserted one.
-    let verified = match verified_student(&state, request.headers()) {
-        Ok(verified) => verified,
-        Err(refusal) => return refusal,
-    };
+    let verified = verified_student(&state, request.headers())?;
 
     request.extensions_mut().insert(CourseCtx(course_id));
     request.extensions_mut().insert(VerifiedStudent(verified));
-    next.run(request).await
+    Ok(next.run(request).await)
 }
 
 /// Who a request's identity token says the student is (`x-hermione-identity`).
 ///
 /// `Ok(None)` means the deployment doesn't verify students and this request
 /// carries no valid token, so whatever name it asserts is all there is. `Err` is
-/// the refusal to send back when the deployment does enforce identity and the
-/// request has none. Shared by everything an editor connects to, so the routes
+/// the refusal when the deployment does enforce identity and the request has
+/// none. Shared by everything an editor connects to, so the routes
 /// can't disagree about what "verified" means.
-pub(super) fn verified_student(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<Option<String>, Response> {
+pub(super) fn verified_student(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<String>> {
     let verified = headers
         .get("x-hermione-identity")
         .and_then(|v| v.to_str().ok())
         .and_then(|token| state.identity.verify(token));
     if state.identity.enforced() && verified.is_none() {
-        return Err((StatusCode::UNAUTHORIZED, "verified identity required").into_response());
+        return Err(ApiError::unauthorized("verified identity required"));
     }
     Ok(verified)
 }
@@ -198,7 +177,7 @@ pub(super) struct ExchangeRequest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct IdentityResponse {
+pub(super) struct IdentityResponse {
     identity_token: String,
     student: String,
     expires_in: i64,
@@ -208,11 +187,13 @@ struct IdentityResponse {
 pub(super) async fn auth_exchange(
     State(state): State<AppState>,
     Json(req): Json<ExchangeRequest>,
-) -> Response {
-    match state.identity.verify_idp(&req.provider, &req.token).await {
-        Ok(student) => issue_identity(&state, student),
-        Err(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
-    }
+) -> ApiResult<Json<IdentityResponse>> {
+    let student = state
+        .identity
+        .verify_idp(&req.provider, &req.token)
+        .await
+        .map_err(ApiError::unauthorized)?;
+    issue_identity(&state, student)
 }
 
 #[derive(Deserialize)]
@@ -224,11 +205,13 @@ pub(super) struct DeviceStartRequest {
 pub(super) async fn auth_device_start(
     State(state): State<AppState>,
     Json(req): Json<DeviceStartRequest>,
-) -> Response {
-    match state.identity.device_start(&req.provider).await {
-        Ok(start) => Json(start).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
-    }
+) -> ApiResult<Json<crate::identity::DeviceStart>> {
+    let start = state
+        .identity
+        .device_start(&req.provider)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(start))
 }
 
 #[derive(Deserialize)]
@@ -242,30 +225,31 @@ pub(super) struct DevicePollRequest {
 pub(super) async fn auth_device_poll(
     State(state): State<AppState>,
     Json(req): Json<DevicePollRequest>,
-) -> Response {
-    match state
+) -> ApiResult {
+    let polled = state
         .identity
         .device_poll(&req.provider, &req.device_code)
         .await
-    {
-        Ok(crate::identity::DevicePoll::Pending) => {
-            Json(serde_json::json!({ "status": "pending" })).into_response()
+        .map_err(ApiError::unauthorized)?;
+    match polled {
+        crate::identity::DevicePoll::Pending => {
+            Ok(Json(serde_json::json!({ "status": "pending" })).into_response())
         }
-        Ok(crate::identity::DevicePoll::Done(student)) => issue_identity(&state, student),
-        Err(e) => (StatusCode::UNAUTHORIZED, e).into_response(),
+        crate::identity::DevicePoll::Done(student) => {
+            Ok(issue_identity(&state, student)?.into_response())
+        }
     }
 }
 
-fn issue_identity(state: &AppState, student: String) -> Response {
-    match state.identity.issue(&student) {
-        Some(identity_token) => Json(IdentityResponse {
-            identity_token,
-            student,
-            expires_in: crate::identity::TOKEN_TTL_SECS,
-        })
-        .into_response(),
-        None => (StatusCode::SERVICE_UNAVAILABLE, "identity not configured").into_response(),
-    }
+fn issue_identity(state: &AppState, student: String) -> ApiResult<Json<IdentityResponse>> {
+    let identity_token = state.identity.issue(&student).ok_or_else(|| {
+        ApiError::refused(StatusCode::SERVICE_UNAVAILABLE, "identity not configured")
+    })?;
+    Ok(Json(IdentityResponse {
+        identity_token,
+        student,
+        expires_in: crate::identity::TOKEN_TTL_SECS,
+    }))
 }
 
 /// Extracts the session token from the Cookie header.

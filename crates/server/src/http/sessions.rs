@@ -3,16 +3,15 @@
 use super::scope::authorized_session;
 use super::scope::resolve_course;
 use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use axum::extract::Extension;
 use axum::extract::Path;
 use axum::extract::Query;
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::sse::Event;
 use axum::response::sse::KeepAlive;
 use axum::response::sse::Sse;
-use axum::response::Response;
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use hermione_entity::sessions;
@@ -32,7 +31,7 @@ use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder}
 const HISTORY_PAGE: u64 = 500;
 
 #[derive(Serialize)]
-struct SessionDto {
+pub(super) struct SessionDto {
     id: String,
     student: String,
     command: String,
@@ -64,23 +63,19 @@ pub(super) async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<CourseQuery>,
-) -> Response {
-    let course_id = match resolve_course(&state, ctx, q.course).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
-    match sessions::Entity::find()
+) -> ApiResult<Json<Vec<SessionDto>>> {
+    let course_id = resolve_course(&state, ctx, q.course).await?;
+    let rows = sessions::Entity::find()
         .filter(sessions::Column::CourseId.eq(course_id))
         .order_by_desc(sessions::Column::StartedAt)
         .all(&state.db)
-        .await
-    {
-        Ok(rows) => {
-            let dtos: Vec<SessionDto> = rows.into_iter().map(SessionDto::from).collect();
-            Json(dtos).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+        .await?;
+    Ok(Json(rows.into_iter().map(SessionDto::from).collect()))
+}
+
+/// The session id in a URL, or a refusal saying it isn't one.
+fn parse_session_id(raw: &str) -> ApiResult<Uuid> {
+    Uuid::parse_str(raw).map_err(|_| ApiError::bad_request("invalid session id"))
 }
 
 #[derive(Deserialize)]
@@ -105,14 +100,9 @@ pub(super) async fn stream_session(
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     Query(query): Query<StreamQuery>,
-) -> axum::response::Response {
-    let id = match Uuid::parse_str(&id) {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid session id").into_response(),
-    };
-    if let Err(resp) = authorized_session(&state, ctx, id).await {
-        return resp;
-    }
+) -> ApiResult {
+    let id = parse_session_id(&id)?;
+    authorized_session(&state, ctx, id).await?;
 
     let include_history = query.history.unwrap_or(true);
     let rx = state.hub.subscribe(&id).await;
@@ -154,9 +144,9 @@ pub(super) async fn stream_session(
         }
     };
 
-    Sse::new(stream)
+    Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response()
+        .into_response())
 }
 
 fn sse_from_row(row: &terminal_events::Model) -> Event {
@@ -188,14 +178,9 @@ pub(super) async fn transcript(
     Extension(ctx): Extension<AuthCtx>,
     Path(id): Path<String>,
     Query(query): Query<TranscriptQuery>,
-) -> axum::response::Response {
-    let id = match Uuid::parse_str(&id) {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid session id").into_response(),
-    };
-    if let Err(resp) = authorized_session(&state, ctx, id).await {
-        return resp;
-    }
+) -> ApiResult {
+    let id = parse_session_id(&id)?;
+    authorized_session(&state, ctx, id).await?;
 
     let mut find = terminal_events::Entity::find()
         .filter(terminal_events::Column::SessionId.eq(id))
@@ -212,25 +197,19 @@ pub(super) async fn transcript(
     // of rows in memory at once.
     let mut body = String::new();
     let mut pages = find.paginate(&state.db, HISTORY_PAGE);
-    loop {
-        match pages.fetch_and_next().await {
-            Ok(Some(rows)) => {
-                for r in rows {
-                    body.push_str(&r.text.unwrap_or_else(|| {
-                        crate::text::plain(&BASE64.decode(r.data.as_bytes()).unwrap_or_default())
-                    }));
-                }
-            }
-            Ok(None) => break,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    while let Some(rows) = pages.fetch_and_next().await? {
+        for r in rows {
+            body.push_str(&r.text.unwrap_or_else(|| {
+                crate::text::plain(&BASE64.decode(r.data.as_bytes()).unwrap_or_default())
+            }));
         }
     }
-    (
+    Ok((
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; charset=utf-8",
         )],
         body,
     )
-        .into_response()
+        .into_response())
 }

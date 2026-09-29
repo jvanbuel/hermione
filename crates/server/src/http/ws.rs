@@ -6,6 +6,7 @@ use super::auth::session_cookie;
 use super::auth::verified_student;
 use super::scope::resolve_course;
 use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 use crate::state::MessageOut;
 use crate::student::Slot;
@@ -17,9 +18,6 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use hermione_entity::messages;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
@@ -54,43 +52,45 @@ pub(super) async fn ws_handler(
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
     headers: HeaderMap,
-) -> Response {
+) -> ApiResult {
+    let (course_id, student) = listener(&state, &q, &headers).await?;
+    Ok(ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since, student)))
+}
+
+/// Who is connecting, and to which course: an editor with an enrollment token
+/// (routed by student), or a teacher with a session (routed by nobody).
+async fn listener(
+    state: &AppState,
+    q: &WsQuery,
+    headers: &HeaderMap,
+) -> ApiResult<(Uuid, Option<Student>)> {
     // The header wins over the query, so a client sending both is judged by the
     // one that isn't in a log.
-    let (course_id, student) = if let Some(token) = bearer_token(&headers).or(q.token.as_deref()) {
-        let course = match tenancy::course_by_token(&state.db, token).await {
-            Some(course) => course,
-            None => return (StatusCode::UNAUTHORIZED, "invalid enrollment token").into_response(),
-        };
+    if let Some(token) = bearer_token(headers).or(q.token.as_deref()) {
+        let course = tenancy::course_by_token(&state.db, token)
+            .await
+            .ok_or_else(|| ApiError::unauthorized("invalid enrollment token"))?;
         // An editor's socket is routed by student, so who it says it is has to be
         // true where students are verified.
-        let verified = match verified_student(&state, &headers) {
-            Ok(verified) => verified,
-            Err(refusal) => return refusal,
-        };
-        match routing_student(verified, q.student) {
-            Ok(student) => (course.id, student),
-            Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
-        }
-    } else {
-        let ctx = match state
-            .auth
-            .admin_for(session_cookie(&headers).as_deref())
-            .await
-        {
-            Some(admin_id) => AuthCtx::Admin(admin_id),
-            None if state.open_dev.load(Ordering::Relaxed) => AuthCtx::OpenDev,
-            None => return (StatusCode::UNAUTHORIZED, "login required").into_response(),
-        };
-        match resolve_course(&state, ctx, q.course.clone()).await {
-            // A teacher's socket takes the course's messages only, never anyone's
-            // control frames, whatever `student` it passes.
-            Ok(id) => (id, None),
-            Err(resp) => return resp,
-        }
-    };
+        let verified = verified_student(state, headers)?;
+        let student = routing_student(verified, q.student.clone())
+            .map_err(|e| ApiError::unauthorized(e.to_string()))?;
+        return Ok((course.id, student));
+    }
 
-    ws.on_upgrade(move |socket| message_socket(socket, state, course_id, q.since, student))
+    let ctx = match state
+        .auth
+        .admin_for(session_cookie(headers).as_deref())
+        .await
+    {
+        Some(admin_id) => AuthCtx::Admin(admin_id),
+        None if state.open_dev.load(Ordering::Relaxed) => AuthCtx::OpenDev,
+        None => return Err(ApiError::unauthorized("login required")),
+    };
+    // A teacher's socket takes the course's messages only, never anyone's
+    // control frames, whatever `student` it passes.
+    let course_id = resolve_course(state, ctx, q.course.clone()).await?;
+    Ok((course_id, None))
 }
 
 /// Sends any missed messages (when `since` is given), then tails live ones

@@ -1,23 +1,29 @@
 //! Courses: listing, creating, the settings panel, and who teaches them.
 
-use super::scope::authorized_course;
-use crate::auth::AuthCtx;
-use crate::state::AppState;
-use crate::tenancy;
-use axum::extract::Extension;
-use axum::extract::Path;
-use axum::extract::Query;
-use axum::extract::State;
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::response::Response;
 use axum::Json;
-use serde::Deserialize;
-use serde::Serialize;
+use hermione_entity::courses;
+use serde::{Deserialize, Serialize};
+
+use super::scope::authorized_course;
+use crate::auth::AuthCtx;
+use crate::error::{ApiError, ApiResult};
+use crate::state::AppState;
+use crate::tenancy;
+
+/// `Some(trimmed)` unless it is missing or blank. Every optional text field a
+/// teacher submits is read this way, so an empty box means "not set".
+pub(super) fn non_blank(v: Option<&str>) -> Option<String> {
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CourseDto {
+pub(super) struct CourseDto {
     slug: String,
     name: String,
     repo_url: Option<String>,
@@ -29,8 +35,8 @@ struct CourseDto {
     has_solutions: bool,
 }
 
-impl From<hermione_entity::courses::Model> for CourseDto {
-    fn from(c: hermione_entity::courses::Model) -> Self {
+impl From<courses::Model> for CourseDto {
+    fn from(c: courses::Model) -> Self {
         let has_solutions = crate::solutions::SolutionsSource::from_course(&c).is_some();
         CourseDto {
             slug: c.slug,
@@ -55,19 +61,15 @@ pub(super) async fn list_courses(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Query(q): Query<ListCoursesQuery>,
-) -> Response {
+) -> ApiResult<Json<Vec<CourseDto>>> {
     let archived = matches!(q.archived.as_deref(), Some("1" | "true" | "yes"));
-    let courses = match ctx {
-        AuthCtx::OpenDev => tenancy::all_courses(&state.db, archived).await,
-        AuthCtx::Admin(admin_id) => tenancy::courses_for_admin(&state.db, admin_id, archived).await,
-    };
-    match courses {
-        Ok(rows) => {
-            let dtos: Vec<CourseDto> = rows.into_iter().map(CourseDto::from).collect();
-            Json(dtos).into_response()
+    let rows = match ctx {
+        AuthCtx::OpenDev => tenancy::all_courses(&state.db, archived).await?,
+        AuthCtx::Admin(admin_id) => {
+            tenancy::courses_for_admin(&state.db, admin_id, archived).await?
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    };
+    Ok(Json(rows.into_iter().map(CourseDto::from).collect()))
 }
 
 /// Normalizes a course slug to a URL-safe form (`[a-z0-9-]`), collapsing runs of
@@ -129,62 +131,82 @@ pub(super) struct CreateCourseBody {
     level: Option<String>,
 }
 
-/// Trims a create-body field; empty ⇒ `None`.
-pub(super) fn trimmed(v: &Option<String>) -> Option<String> {
-    v.as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 /// The profile fields from a create body.
 fn create_profile(body: &CreateCourseBody) -> tenancy::CourseProfile {
     tenancy::CourseProfile {
-        description: trimmed(&body.description),
-        term: trimmed(&body.term),
-        institution: trimmed(&body.institution),
-        level: trimmed(&body.level),
+        description: non_blank(body.description.as_deref()),
+        term: non_blank(body.term.as_deref()),
+        institution: non_blank(body.institution.as_deref()),
+        level: non_blank(body.level.as_deref()),
     }
 }
 
-/// The resolved (slug, name, repo_url) for a new course, or a client error
-/// describing what's missing/invalid. A repo URL alone is enough — the slug and
-/// name are derived from it — which is what "link a repo as a course" means.
-fn resolve_new_course(body: &CreateCourseBody) -> Result<(String, String, Option<String>), String> {
-    let repo_url = body
-        .repo_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+/// The resolved (slug, name, repo_url) for a new course, or a refusal saying
+/// what's missing or invalid. A repo URL alone is enough — the slug and name are
+/// derived from it — which is what "link a repo as a course" means.
+fn resolve_new_course(body: &CreateCourseBody) -> ApiResult<(String, String, Option<String>)> {
+    let repo_url = non_blank(body.repo_url.as_deref());
 
     // Slug precedence: an explicit slug, else the repo's short name, else the
     // course name — so any one of the three fields is enough to create a course.
-    let slug = match body
-        .slug
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(explicit) => normalize_slug(explicit)
-            .ok_or_else(|| "slug must contain a letter or digit".to_string())?,
+    let slug = match non_blank(body.slug.as_deref()) {
+        Some(explicit) => normalize_slug(&explicit)
+            .ok_or_else(|| ApiError::bad_request("slug must contain a letter or digit"))?,
         None => repo_url
             .as_deref()
             .and_then(repo_short_name)
             .and_then(|n| normalize_slug(&n))
             .or_else(|| body.name.as_deref().and_then(normalize_slug))
-            .ok_or_else(|| "a name, slug, or repo URL is required".to_string())?,
+            .ok_or_else(|| ApiError::bad_request("a name, slug, or repo URL is required"))?,
     };
-
-    let name = body
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| title_from_slug(&slug));
-
+    let name = non_blank(body.name.as_deref()).unwrap_or_else(|| title_from_slug(&slug));
     Ok((slug, name, repo_url))
+}
+
+/// Best-effort: seeds a new course's exercises from its linked repo's folders
+/// (GitHub only). Returns how many were saved and, when something stopped it, a
+/// note saying why. It never fails course creation.
+async fn seed_exercises(state: &AppState, course: &courses::Model) -> (usize, Option<String>) {
+    let Some(repo) = course.repo_url.as_deref() else {
+        return (0, None);
+    };
+    let Some((owner, name)) = crate::repo::parse_github(repo) else {
+        return (
+            0,
+            Some("exercise seeding supports GitHub repos only".to_string()),
+        );
+    };
+    // Repo-scoped App token first, then the shared token for allow-listed owners,
+    // then unauthenticated (public repos).
+    let credential = state.github.credential_for(&owner, &name).await;
+    let found = match crate::repo::discover_exercises(&owner, &name, credential.token()).await {
+        Ok(found) => found,
+        // When a shared token exists but this owner isn't allow-listed (and no
+        // App token covered it), say so — otherwise the failure looks like a
+        // missing token.
+        Err(e) if credential.withheld() => {
+            return (
+                0,
+                Some(format!(
+                    "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS \
+                     and no GitHub App is installed on the repo, so no token was used"
+                )),
+            )
+        }
+        Err(e) => return (0, Some(e)),
+    };
+    if found.is_empty() {
+        return (0, None);
+    }
+    let items: Vec<(String, String, i32)> = found
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.slug.clone(), e.title.clone(), i as i32))
+        .collect();
+    match crate::exercises::upsert(&state.db, course.id, &items).await {
+        Ok(()) => (items.len(), None),
+        Err(e) => (0, Some(format!("could not save exercises: {e}"))),
+    }
 }
 
 /// POST /api/courses — a signed-in teacher creates a course (optionally linked to
@@ -194,23 +216,19 @@ pub(super) async fn create_course_for_teacher(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Json(body): Json<CreateCourseBody>,
-) -> Response {
-    let (slug, name, repo_url) = match resolve_new_course(&body) {
-        Ok(parts) => parts,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
-    };
+) -> ApiResult {
+    let (slug, name, repo_url) = resolve_new_course(&body)?;
 
     if tenancy::course_by_slug(&state.db, &slug).await.is_some() {
-        return (
+        return Err(ApiError::refused(
             StatusCode::CONFLICT,
             format!("a course with slug '{slug}' already exists"),
-        )
-            .into_response();
+        ));
     }
 
     // Create the course with its profile in one INSERT — never a course without
     // the requested profile.
-    let course = match tenancy::create_course_with_profile(
+    let course = tenancy::create_course_with_profile(
         &state.db,
         &slug,
         &name,
@@ -218,65 +236,21 @@ pub(super) async fn create_course_for_teacher(
         &create_profile(&body),
     )
     .await
-    {
-        Ok(course) => course,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
-    };
+    .map_err(ApiError::bad_request)?;
 
     // The creating teacher becomes a member; open-dev callers aren't a specific
     // admin, so there's nobody to grant (they can already see every course).
     if let AuthCtx::Admin(admin_id) = ctx {
-        if let Err(e) = tenancy::grant_membership(&state.db, admin_id, course.id).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        tenancy::grant_membership(&state.db, admin_id, course.id).await?;
     }
 
-    // Best-effort: seed exercises from the linked repo's folders (GitHub only).
-    // Failures here never fail course creation — they're reported as a note.
-    let mut exercises_seeded = 0usize;
-    let mut seed_note: Option<String> = None;
-    let want_seed = body.seed_exercises.unwrap_or(true);
-    if want_seed {
-        if let Some(repo) = course.repo_url.as_deref() {
-            match crate::repo::parse_github(repo) {
-                Some((owner, name)) => {
-                    // Repo-scoped App token first, then the shared token for
-                    // allow-listed owners, then unauthenticated (public repos).
-                    let credential = state.github.credential_for(&owner, &name).await;
-                    let token = credential.token();
-                    match crate::repo::discover_exercises(&owner, &name, token).await {
-                        Ok(found) if !found.is_empty() => {
-                            let items: Vec<(String, String, i32)> = found
-                                .iter()
-                                .enumerate()
-                                .map(|(i, e)| (e.slug.clone(), e.title.clone(), i as i32))
-                                .collect();
-                            match crate::exercises::upsert(&state.db, course.id, &items).await {
-                                Ok(()) => exercises_seeded = items.len(),
-                                Err(e) => {
-                                    seed_note = Some(format!("could not save exercises: {e}"))
-                                }
-                            }
-                        }
-                        Ok(_) => {}
-                        // When a PAT exists but this owner isn't allow-listed (and no
-                        // app token covered it), say so — otherwise the failure looks
-                        // like a missing token.
-                        Err(e) if credential.withheld() => {
-                            seed_note = Some(format!(
-                                "{e} — owner '{owner}' is not in HERMIONE_GITHUB_ALLOWED_OWNERS \
-                                 and no GitHub App is installed on the repo, so no token was used"
-                            ))
-                        }
-                        Err(e) => seed_note = Some(e),
-                    }
-                }
-                None => seed_note = Some("exercise seeding supports GitHub repos only".to_string()),
-            }
-        }
-    }
+    let (exercises_seeded, seed_note) = if body.seed_exercises.unwrap_or(true) {
+        seed_exercises(&state, &course).await
+    } else {
+        (0, None)
+    };
 
-    (
+    Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
             "slug": course.slug,
@@ -287,14 +261,14 @@ pub(super) async fn create_course_for_teacher(
             "seedNote": seed_note,
         })),
     )
-        .into_response()
+        .into_response())
 }
 
 // --- course detail, update, membership -------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CourseDetailDto {
+pub(super) struct CourseDetailDto {
     slug: String,
     name: String,
     repo_url: Option<String>,
@@ -310,8 +284,6 @@ struct CourseDetailDto {
     level: Option<String>,
 }
 
-/// GET /api/courses/{slug} — full detail incl. the enrollment token and members,
-/// for the course-settings panel.
 /// GET /api/courses/{slug}/tree — the linked repo's directory structure.
 ///
 /// The tree view draws the repo itself rather than inferring folders from the
@@ -326,12 +298,9 @@ pub(super) async fn course_tree(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    let note = |msg: &str| Json(serde_json::json!({ "dirs": [], "note": msg })).into_response();
+) -> ApiResult<Json<serde_json::Value>> {
+    let course = authorized_course(&state, ctx, &slug).await?;
+    let note = |msg: &str| Ok(Json(serde_json::json!({ "dirs": [], "note": msg })));
 
     let Some(repo_url) = course.repo_url.as_deref() else {
         return note("no repository linked to this course");
@@ -341,28 +310,26 @@ pub(super) async fn course_tree(
     };
 
     let credential = state.github.credential_for(&owner, &name).await;
-    let token = credential.token();
-
-    match crate::repo::fetch_dirs(&owner, &name, token).await {
-        Ok(dirs) => Json(serde_json::json!({ "dirs": dirs })).into_response(),
+    match crate::repo::fetch_dirs(&owner, &name, credential.token()).await {
+        Ok(dirs) => Ok(Json(serde_json::json!({ "dirs": dirs }))),
         Err(e) => note(&e),
     }
 }
 
+/// GET /api/courses/{slug} — full detail incl. the enrollment token and members,
+/// for the course-settings panel.
 pub(super) async fn get_course(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    let members = match tenancy::admins_for_course(&state.db, course.id).await {
-        Ok(rows) => rows.into_iter().map(|a| a.username).collect(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    Json(CourseDetailDto {
+) -> ApiResult<Json<CourseDetailDto>> {
+    let course = authorized_course(&state, ctx, &slug).await?;
+    let members = tenancy::admins_for_course(&state.db, course.id)
+        .await?
+        .into_iter()
+        .map(|a| a.username)
+        .collect();
+    Ok(Json(CourseDetailDto {
         slug: course.slug,
         name: course.name,
         repo_url: course.repo_url,
@@ -375,8 +342,7 @@ pub(super) async fn get_course(
         term: course.term,
         institution: course.institution,
         level: course.level,
-    })
-    .into_response()
+    }))
 }
 
 #[derive(Deserialize)]
@@ -406,13 +372,7 @@ pub(super) struct UpdateCourseBody {
 
 /// A PATCH field (double-option): outer present ⇒ set/clear; trims, empty ⇒ clear.
 fn patch_field(v: &Option<Option<String>>) -> Option<Option<String>> {
-    v.as_ref().map(|inner| {
-        inner
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    })
+    v.as_ref().map(|inner| non_blank(inner.as_deref()))
 }
 
 /// A PATCH field that must parse: like [`patch_field`], but a non-empty value is
@@ -420,9 +380,11 @@ fn patch_field(v: &Option<Option<String>>) -> Option<Option<String>> {
 fn validated(
     v: &Option<Option<String>>,
     parse: impl Fn(&str) -> Result<String, crate::solutions::Invalid>,
-) -> Result<Option<Option<String>>, crate::solutions::Invalid> {
+) -> ApiResult<Option<Option<String>>> {
     match patch_field(v) {
-        Some(Some(raw)) => parse(&raw).map(|canonical| Some(Some(canonical))),
+        Some(Some(raw)) => parse(&raw)
+            .map(|canonical| Some(Some(canonical)))
+            .map_err(|e| ApiError::bad_request(e.to_string())),
         other => Ok(other),
     }
 }
@@ -434,34 +396,20 @@ pub(super) async fn patch_course(
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
     Json(body): Json<UpdateCourseBody>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+) -> ApiResult<StatusCode> {
+    let course = authorized_course(&state, ctx, &slug).await?;
 
     // Reference-solution settings end up in requests to GitHub, so they are
     // parsed, and stored in their canonical form, or refused.
-    let solutions_ref = match validated(&body.solutions_ref, |s| {
+    let solutions_ref = validated(&body.solutions_ref, |s| {
         crate::solutions::GitRef::parse(s).map(|r| r.to_string())
-    }) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-    };
-    let solutions_dir = match validated(&body.solutions_dir, |s| {
+    })?;
+    let solutions_dir = validated(&body.solutions_dir, |s| {
         crate::solutions::RepoPath::parse(s).map(|p| p.to_string())
-    }) {
-        Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
-    };
+    })?;
 
     let patch = tenancy::CoursePatch {
-        name: body
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
+        name: non_blank(body.name.as_deref()),
         repo_url: patch_field(&body.repo_url),
         solutions_ref,
         solutions_dir,
@@ -472,16 +420,12 @@ pub(super) async fn patch_course(
     };
 
     if !patch.is_empty() {
-        if let Err(e) = tenancy::update_course(&state.db, course.id, &patch).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        tenancy::update_course(&state.db, course.id, &patch).await?;
     }
     if let Some(archived) = body.archived {
-        if let Err(e) = tenancy::set_course_archived(&state.db, course.id, archived).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
+        tenancy::set_course_archived(&state.db, course.id, archived).await?;
     }
-    StatusCode::NO_CONTENT.into_response()
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// POST /api/courses/{slug}/rotate-token — issue a fresh enrollment token.
@@ -489,15 +433,10 @@ pub(super) async fn rotate_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    match tenancy::rotate_enrollment_token(&state.db, course.id).await {
-        Ok(token) => Json(serde_json::json!({ "enrollmentToken": token })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+) -> ApiResult<Json<serde_json::Value>> {
+    let course = authorized_course(&state, ctx, &slug).await?;
+    let token = tenancy::rotate_enrollment_token(&state.db, course.id).await?;
+    Ok(Json(serde_json::json!({ "enrollmentToken": token })))
 }
 
 #[derive(Deserialize)]
@@ -511,23 +450,14 @@ pub(super) async fn add_member(
     Extension(ctx): Extension<AuthCtx>,
     Path(slug): Path<String>,
     Json(body): Json<AddMemberBody>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+) -> ApiResult<StatusCode> {
+    let course = authorized_course(&state, ctx, &slug).await?;
     let username = body.username.trim();
-    let Some(admin_id) = tenancy::admin_by_username(&state.db, username).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("no admin account named '{username}'"),
-        )
-            .into_response();
-    };
-    match tenancy::grant_membership(&state.db, admin_id, course.id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    let admin_id = tenancy::admin_by_username(&state.db, username)
+        .await
+        .ok_or_else(|| ApiError::not_found(format!("no admin account named '{username}'")))?;
+    tenancy::grant_membership(&state.db, admin_id, course.id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// DELETE /api/courses/{slug}/members/{username} — revoke access. Refuses to
@@ -536,27 +466,22 @@ pub(super) async fn remove_member(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthCtx>,
     Path((slug, username)): Path<(String, String)>,
-) -> Response {
-    let course = match authorized_course(&state, ctx, &slug).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
-    let Some(admin_id) = tenancy::admin_by_username(&state.db, username.trim()).await else {
-        return (StatusCode::NOT_FOUND, "no such admin").into_response();
-    };
+) -> ApiResult<StatusCode> {
+    let course = authorized_course(&state, ctx, &slug).await?;
+    let admin_id = tenancy::admin_by_username(&state.db, username.trim())
+        .await
+        .ok_or_else(|| ApiError::not_found("no such admin"))?;
     // Atomic: locks the membership rows so concurrent removals can't both slip
     // past the last-member check and orphan the course.
-    match tenancy::revoke_membership_checked(&state.db, admin_id, course.id).await {
-        Ok(tenancy::RevokeOutcome::Removed) => StatusCode::NO_CONTENT.into_response(),
-        Ok(tenancy::RevokeOutcome::NotAMember) => {
-            (StatusCode::NOT_FOUND, "not a member of this course").into_response()
+    match tenancy::revoke_membership_checked(&state.db, admin_id, course.id).await? {
+        tenancy::RevokeOutcome::Removed => Ok(StatusCode::NO_CONTENT),
+        tenancy::RevokeOutcome::NotAMember => {
+            Err(ApiError::not_found("not a member of this course"))
         }
-        Ok(tenancy::RevokeOutcome::LastMember) => (
+        tenancy::RevokeOutcome::LastMember => Err(ApiError::refused(
             StatusCode::CONFLICT,
             "cannot remove the last member of a course",
-        )
-            .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        )),
     }
 }
 
